@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>創建代理者 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>創建代理者</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div class="card">
+      <form id="create-agent-form">
+        <div class="form-group">
+          <label for="name">代理者名稱 *</label>
+          <input type="text" id="name" name="name" required maxlength="100">
+        </div>
+        <div class="form-group">
+          <label for="description">功能描述</label>
+          <textarea id="description" name="description" rows="4" maxlength="1000"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="model_type">模型類型 *</label>
+          <select id="model_type" name="model_type" required>
+            <option value="cloud">雲端模型 (Cloud)</option>
+            <option value="local">地端模型 (Local)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="provider">模型提供者</label>
+          <select id="provider" name="provider">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="model_name">模型名稱</label>
+          <input type="text" id="model_name" name="model_name" placeholder="例如: gpt-4, claude-3">
+        </div>
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">創建</button>
+          <a href="/pages/agent-list.html" class="btn btn-secondary">取消</a>
+        </div>
+      </form>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    document.getElementById('create-agent-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const name = document.getElementById('name').value;
+      const description = document.getElementById('description').value;
+      const model_type = document.getElementById('model_type').value;
+      const provider = document.getElementById('provider').value;
+      const model_name = document.getElementById('model_name').value;
+
+      const model_config = {
+        provider,
+        model_name: model_name || (provider === 'openai' ? 'gpt-4' : 'claude-3'),
+      };
+
+      try {
+        await api.post('/agents', {
+          name,
+          description,
+          model_type,
+          model_config,
+        });
+        showSuccess('代理者創建成功！');
+        setTimeout(() => {
+          window.location.href = '/pages/agent-list.html';
+        }, 1000);
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+  </script>
+</body>
+</html>

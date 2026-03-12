@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>聊天 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .chat-container {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 200px);
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      background: var(--bg-color);
+      border-radius: var(--radius);
+      margin-bottom: 1rem;
+    }
+    .message {
+      margin-bottom: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius);
+      max-width: 80%;
+    }
+    .message.user {
+      background: var(--primary-color);
+      color: white;
+      margin-left: auto;
+    }
+    .message.assistant {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+    }
+    .chat-input {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .chat-input input {
+      flex: 1;
+    }
+    .agent-selector {
+      margin-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>聊天</h2>
+    <div id="error-message" class="error-message"></div>
+    <div class="agent-selector">
+      <label for="agent-select">選擇代理者：</label>
+      <select id="agent-select">
+        <option value="">請選擇代理者</option>
+      </select>
+    </div>
+    <div class="chat-container">
+      <div id="chat-messages" class="chat-messages">
+        <p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
+      </div>
+      <form id="chat-form" class="chat-input">
+        <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
+        <button type="submit" class="btn btn-primary" disabled>發送</button>
+      </form>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const agentSelect = document.getElementById('agent-select');
+    const chatMessages = document.getElementById('chat-messages');
+    const chatForm = document.getElementById('chat-form');
+    const messageInput = document.getElementById('message-input');
+    const submitBtn = chatForm.querySelector('button');
+
+    let currentAgentId = null;
+    let currentConversationId = null;
+
+    async function loadAgents() {
+      try {
+        const response = await api.get('/agents');
+        agentSelect.innerHTML = '<option value="">請選擇代理者</option>';
+        
+        response.agents.forEach(agent => {
+          const option = document.createElement('option');
+          option.value = agent.id;
+          option.textContent = agent.name;
+          agentSelect.appendChild(option);
+        });
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const agentParam = urlParams.get('agent');
+        if (agentParam) {
+          agentSelect.value = agentParam;
+          selectAgent(agentParam);
+        }
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    async function selectAgent(agentId) {
+      currentAgentId = agentId;
+      messageInput.disabled = false;
+      submitBtn.disabled = false;
+      
+      try {
+        const response = await api.get(`/agents/${agentId}/conversations`);
+        renderMessages(response.conversations);
+      } catch (error) {
+        chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
+      }
+    }
+
+    function renderMessages(conversations) {
+      if (!conversations || conversations.length === 0) {
+        chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
+        return;
+      }
+
+      const latestConv = conversations[conversations.length - 1];
+      currentConversationId = latestConv.id;
+
+      chatMessages.innerHTML = latestConv.messages.map(msg => `
+        <div class="message ${msg.role}">
+          <p>${msg.content}</p>
+          <small style="opacity: 0.7;">${new Date(msg.timestamp).toLocaleTimeString()}</small>
+        </div>
+      `).join('');
+
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    agentSelect.addEventListener('change', (e) => {
+      if (e.target.value) {
+        selectAgent(e.target.value);
+      } else {
+        currentAgentId = null;
+        messageInput.disabled = true;
+        submitBtn.disabled = true;
+        chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>';
+      }
+    });
+
+    chatForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const message = messageInput.value.trim();
+      if (!message || !currentAgentId) return;
+
+      const userMsg = document.createElement('div');
+      userMsg.className = 'message user';
+      userMsg.innerHTML = `<p>${message}</p>`;
+      chatMessages.appendChild(userMsg);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      messageInput.value = '';
+      messageInput.disabled = true;
+      submitBtn.disabled = true;
+
+      try {
+        const response = await api.post(`/agents/${currentAgentId}/chat`, {
+          message,
+        });
+
+        const assistantMsg = document.createElement('div');
+        assistantMsg.className = 'message assistant';
+        assistantMsg.innerHTML = `<p>${response.response}</p>`;
+        chatMessages.appendChild(assistantMsg);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        currentConversationId = response.conversation_id;
+      } catch (error) {
+        showError(error.message);
+      } finally {
+        messageInput.disabled = false;
+        submitBtn.disabled = false;
+        messageInput.focus();
+      }
+    });
+
+    loadAgents();
+  </script>
+</body>
+</html>

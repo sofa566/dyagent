@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>代理者列表 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+    </div>
+  </nav>
+  <main class="container">
+    <div class="actions">
+      <h2>代理者列表</h2>
+      <a href="/pages/create-agent.html" class="btn btn-primary">創建代理者</a>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="agents-list" class="card">
+      <p>載入中...</p>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    async function loadAgents() {
+      try {
+        const response = await api.get('/agents');
+        const container = document.getElementById('agents-list');
+        
+        if (response.agents.length === 0) {
+          container.innerHTML = '<p>尚未建立任何代理者</p>';
+          return;
+        }
+
+        container.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>名稱</th>
+                <th>描述</th>
+                <th>模型類型</th>
+                <th>建立時間</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${response.agents.map(agent => `
+                <tr>
+                  <td>${agent.name}</td>
+                  <td>${agent.description || '-'}</td>
+                  <td>${agent.model_type}</td>
+                  <td>${new Date(agent.created_at).toLocaleDateString()}</td>
+                  <td>
+                    <a href="/pages/chat.html?agent=${agent.id}" class="btn btn-primary">聊天</a>
+                    <a href="/pages/edit-agent.html?id=${agent.id}" class="btn btn-secondary">編輯</a>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    loadAgents();
+  </script>
+</body>
+</html>

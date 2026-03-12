@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系統日誌 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/admin/users.html">使用者</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>系統日誌</h2>
+    <div id="error-message" class="error-message"></div>
+    <div class="card">
+      <div class="form-group">
+        <label for="level-filter">日誌級別：</label>
+        <select id="level-filter">
+          <option value="">全部</option>
+          <option value="debug">Debug</option>
+          <option value="info">Info</option>
+          <option value="warning">Warning</option>
+          <option value="error">Error</option>
+        </select>
+      </div>
+    </div>
+    <div id="logs-list" class="card">
+      <p>載入中...</p>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      window.location.href = '/pages/dashboard.html';
+    }
+
+    const levelFilter = document.getElementById('level-filter');
+
+    async function loadLogs(level = '') {
+      try {
+        let url = '/logs?limit=50';
+        if (level) {
+          url += `&level=${level}`;
+        }
+        const response = await api.get(url);
+        const container = document.getElementById('logs-list');
+        
+        if (response.logs.length === 0) {
+          container.innerHTML = '<p>尚無日誌記錄</p>';
+          return;
+        }
+
+        container.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>時間</th>
+                <th>級別</th>
+                <th>動作</th>
+                <th>資源類型</th>
+                <th>使用者 ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${response.logs.map(log => `
+                <tr>
+                  <td>${new Date(log.timestamp).toLocaleString()}</td>
+                  <td><span class="badge badge-${log.level}">${log.level}</span></td>
+                  <td>${log.action}</td>
+                  <td>${log.resource_type || '-'}</td>
+                  <td>${log.user_id ? log.user_id.substring(0, 8) + '...' : '-'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    levelFilter.addEventListener('change', (e) => {
+      loadLogs(e.target.value);
+    });
+
+    loadLogs();
+  </script>
+</body>
+</html>

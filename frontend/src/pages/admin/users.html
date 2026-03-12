@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>使用者管理 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/admin/logs.html">日誌</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>使用者管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="users-list" class="card">
+      <p>載入中...</p>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      window.location.href = '/pages/dashboard.html';
+    }
+
+    async function loadUsers() {
+      try {
+        const response = await api.get('/users');
+        const container = document.getElementById('users-list');
+        
+        if (response.users.length === 0) {
+          container.innerHTML = '<p>尚無使用者</p>';
+          return;
+        }
+
+        container.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>使用者名稱</th>
+                <th>電子郵件</th>
+                <th>角色</th>
+                <th>建立時間</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${response.users.map(u => `
+                <tr>
+                  <td>${u.username}</td>
+                  <td>${u.email}</td>
+                  <td><span class="badge badge-${u.role}">${u.role}</span></td>
+                  <td>${new Date(u.created_at).toLocaleDateString()}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    loadUsers();
+  </script>
+</body>
+</html>

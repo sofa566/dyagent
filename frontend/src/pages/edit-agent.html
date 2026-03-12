@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>編輯代理者 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>編輯代理者</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div class="card">
+      <form id="edit-agent-form">
+        <div class="form-group">
+          <label for="name">代理者名稱 *</label>
+          <input type="text" id="name" name="name" required maxlength="100">
+        </div>
+        <div class="form-group">
+          <label for="description">功能描述</label>
+          <textarea id="description" name="description" rows="4" maxlength="1000"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="model_type">模型類型 *</label>
+          <select id="model_type" name="model_type" required>
+            <option value="cloud">雲端模型 (Cloud)</option>
+            <option value="local">地端模型 (Local)</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">儲存</button>
+          <a href="/pages/agent-list.html" class="btn btn-secondary">取消</a>
+          <button type="button" id="delete-btn" class="btn btn-danger">刪除</button>
+        </div>
+      </form>
+    </div>
+  </main>
+
+  <div id="delete-modal" class="modal">
+    <div class="modal-content">
+      <h3>確認刪除</h3>
+      <p>確定要刪除這個代理者嗎？此操作無法復原。</p>
+      <div class="actions">
+        <button id="confirm-delete" class="btn btn-danger">確認刪除</button>
+        <button id="cancel-delete" class="btn btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const agentId = urlParams.get('id');
+
+    if (!agentId) {
+      window.location.href = '/pages/agent-list.html';
+    }
+
+    const form = document.getElementById('edit-agent-form');
+    const deleteModal = document.getElementById('delete-modal');
+    const deleteBtn = document.getElementById('delete-btn');
+    const confirmDelete = document.getElementById('confirm-delete');
+    const cancelDelete = document.getElementById('cancel-delete');
+
+    async function loadAgent() {
+      try {
+        const response = await api.get(`/agents/${agentId}`);
+        document.getElementById('name').value = response.name;
+        document.getElementById('description').value = response.description || '';
+        document.getElementById('model_type').value = response.model_type;
+      } catch (error) {
+        showError(error.message);
+        setTimeout(() => {
+          window.location.href = '/pages/agent-list.html';
+        }, 2000);
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const name = document.getElementById('name').value;
+      const description = document.getElementById('description').value;
+      const model_type = document.getElementById('model_type').value;
+
+      try {
+        await api.put(`/agents/${agentId}`, {
+          name,
+          description,
+          model_type,
+        });
+        showSuccess('代理者更新成功！');
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+
+    deleteBtn.addEventListener('click', () => {
+      deleteModal.classList.add('active');
+    });
+
+    cancelDelete.addEventListener('click', () => {
+      deleteModal.classList.remove('active');
+    });
+
+    confirmDelete.addEventListener('click', async () => {
+      try {
+        await api.delete(`/agents/${agentId}`);
+        window.location.href = '/pages/agent-list.html';
+      } catch (error) {
+        showError(error.message);
+        deleteModal.classList.remove('active');
+      }
+    });
+
+    loadAgent();
+  </script>
+</body>
+</html>

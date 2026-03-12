@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>儀表板 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <div id="app">
+    <nav class="navbar">
+      <div class="nav-brand">
+        <h1>dyagent</h1>
+      </div>
+      <div class="nav-menu">
+        <a href="/pages/dashboard.html">儀表板</a>
+        <a href="/pages/agent-list.html">代理者</a>
+        <a href="/pages/chat.html">聊天</a>
+        <a href="#" id="logout-link">登出</a>
+      </div>
+    </nav>
+    <main class="container">
+      <h2>儀表板</h2>
+      <div id="user-info" class="card">
+        <p>歡迎使用 dyagent</p>
+      </div>
+      <div class="actions">
+        <a href="/pages/create-agent.html" class="btn btn-primary">創建新代理者</a>
+        <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
+        <a href="/pages/chat.html" class="btn btn-secondary">開始聊天</a>
+      </div>
+    </main>
+  </div>
+  <script type="module">
+    import { auth } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const user = auth.getUser();
+    if (user) {
+      document.getElementById('user-info').innerHTML = `
+        <p>歡迎，<strong>${user.username}</strong>！</p>
+        <span class="badge badge-${user.role === 'admin' ? 'admin' : user.role === 'agent_admin' ? 'agent-admin' : 'user'}">${user.role}</span>
+      `;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      auth.logout();
+    });
+  </script>
+</body>
+</html>
