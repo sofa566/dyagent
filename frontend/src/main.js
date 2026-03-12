@@ -53,7 +53,8 @@ const api = {
 
 const auth = {
   async login(email, password) {
-    const response = await api.post('/auth/login', { email, password });
+    // 後端路由為 /api/login（非 /api/auth/login）
+    const response = await api.post('/login', { email, password });
     localStorage.setItem('auth_token', response.token);
     localStorage.setItem('user', JSON.stringify(response.user));
     return response.user;
@@ -97,13 +98,41 @@ function showSuccess(message) {
 
 document.addEventListener('DOMContentLoaded', () => {
   const user = auth.getUser();
+
+  // 若存在 #auth-link，根據登入狀態切換為 登入/登出
   const authLink = document.getElementById('auth-link');
+  if (authLink) {
+    if (user) {
+      authLink.textContent = '登出';
+      authLink.href = '#logout';
+      authLink.id = 'logout-link'; // 正規化 id，後續用同一套綁定
+    } else {
+      authLink.textContent = '登入';
+      authLink.href = '/pages/login.html';
+    }
+  }
+
+  // 確保導覽列有登出按鈕（已登入時）
   if (user) {
-    authLink.textContent = '登出';
-    authLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      auth.logout();
-    });
+    let logoutLink = document.getElementById('logout-link');
+    if (!logoutLink) {
+      const navMenu = document.querySelector('.nav-menu');
+      if (navMenu) {
+        logoutLink = document.createElement('a');
+        logoutLink.id = 'logout-link';
+        logoutLink.href = '#logout';
+        logoutLink.textContent = '登出';
+        navMenu.appendChild(logoutLink);
+      }
+    }
+
+    if (logoutLink) {
+      logoutLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        const ok = window.confirm('確定要登出嗎？');
+        if (ok) auth.logout();
+      });
+    }
   }
 });
 
