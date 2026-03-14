@@ -50,6 +50,13 @@
     .agent-selector {
       margin-bottom: 1rem;
     }
+    /* JSON syntax highlight */
+    .json { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .json .json-key { color: #6b7280; }        /* slate-500 */
+    .json .json-string { color: #0ea5e9; }     /* sky-500 */
+    .json .json-number { color: #d97706; }     /* amber-600 */
+    .json .json-boolean { color: #c0392b; }    /* red-600 */
+    .json .json-null { color: #64748b; font-style: italic; } /* slate-500 */
   </style>
 </head>
 <body>
@@ -220,9 +227,9 @@
       meta.appendChild(copyBtn);
 
       const pre = document.createElement('pre');
-      pre.className = 'code';
+      pre.className = 'code json';
       pre.style.whiteSpace = 'pre-wrap';
-      pre.textContent = JSON.stringify(frame, null, 2);
+      pre.innerHTML = syntaxHighlight(JSON.stringify(frame, null, 2));
 
       row.appendChild(meta);
       row.appendChild(pre);
@@ -380,6 +387,32 @@
         </div>
       `).join('');
       chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // 安全轉義與簡易 JSON 語法高亮
+    function escapeHTML(str) {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function syntaxHighlight(jsonText) {
+      // 先整體轉義，確保安全
+      let html = escapeHTML(jsonText);
+      // 字串（含可能的鍵），先標記，再將作為鍵的字串（後接冒號）改為 key 樣式
+      html = html.replace(/("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*")(?\s*:)?/g, (match, group1, isKey) => {
+        if (isKey) {
+          return '<span class="json-key">' + group1 + '</span>:';
+        }
+        return '<span class="json-string">' + group1 + '</span>';
+      });
+      // 數字
+      html = html.replace(/\b-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+\-]?\d+)?\b/g, (m) => '<span class="json-number">' + m + '</span>');
+      // 布林與 null
+      html = html.replace(/\b(true|false)\b/g, '<span class="json-boolean">$1</span>');
+      html = html.replace(/\bnull\b/g, '<span class="json-null">null</span>');
+      return html;
     }
 
     agentSelect.addEventListener('change', (e) => {
