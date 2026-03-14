@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM 設定 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>dyagent</h1>
+    </div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>LLM 設定</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div class="card">
+      <form id="llm-form">
+        <div class="form-group">
+          <label for="tier">層級 (tier)</label>
+          <select id="tier" name="tier">
+            <option value="">（不指定，沿用預設）</option>
+            <option value="cloud">cloud（雲端）</option>
+            <option value="onprem">onprem（地端）</option>
+          </select>
+        </div>
+
+        <div id="cloud-group">
+          <h3 style="margin: 1rem 0 0.5rem;">雲端設定</h3>
+          <div class="form-group">
+            <label for="provider">雲端供應商 (provider)</label>
+            <select id="provider" name="provider">
+              <option value="">（不指定）</option>
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+              <option value="gemini">gemini</option>
+              <option value="azure">azure</option>
+              <option value="openrouter">openrouter</option>
+              <option value="grok">grok/xAI</option>
+            </select>
+          </div>
+
+          <div id="azure-subgroup">
+            <div class="form-group">
+              <label for="azure_endpoint">Azure 端點 (azure_endpoint)</label>
+              <input type="text" id="azure_endpoint" name="azure_endpoint" placeholder="例如：https://your-azure-openai.openai.azure.com">
+            </div>
+            <div class="form-group">
+              <label for="azure_api_version">Azure API 版本 (azure_api_version)</label>
+              <input type="text" id="azure_api_version" name="azure_api_version" placeholder="例如：2024-02-15-preview">
+            </div>
+            <div class="form-group">
+              <label for="azure_deployment">Azure 部署名稱 (azure_deployment)</label>
+              <input type="text" id="azure_deployment" name="azure_deployment" placeholder="例如：gpt-4o">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="model">模型名稱 (model)</label>
+            <input type="text" id="model" name="model" placeholder="例如：gpt-4o">
+            <small style="color: var(--text-secondary);">建議：OpenAI gpt-4o、Anthropic claude-3-5-sonnet-20240620、Gemini gemini-1.5-pro</small>
+          </div>
+
+          <div class="form-group">
+            <label for="base_url">雲端端點 (base_url)</label>
+            <input type="text" id="base_url" name="base_url" placeholder="例如：https://openrouter.ai/api/v1">
+            <small style="color: var(--text-secondary);">多數雲端供應商可留空（使用預設端點）。OpenRouter 需填 https://openrouter.ai/api/v1。</small>
+          </div>
+        </div>
+
+        <div id="onprem-group">
+          <h3 style="margin: 1rem 0 0.5rem;">地端設定</h3>
+          <div class="form-group">
+            <label for="onprem_provider">地端提供者 (onprem_provider)</label>
+            <select id="onprem_provider" name="onprem_provider">
+              <option value="">（不指定）</option>
+              <option value="ollama">ollama</option>
+              <option value="vllm">vllm</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="onprem_base_url">地端端點 (onprem_base_url)</label>
+            <input type="text" id="onprem_base_url" name="onprem_base_url" placeholder="例如：http://localhost:11434">
+            <small style="color: var(--text-secondary);">Ollama 預設為 http://localhost:11434；vLLM 常見為 http://localhost:8000/v1。</small>
+          </div>
+          <div class="form-group">
+            <label for="model-onprem">模型名稱 (model)</label>
+            <input type="text" id="model-onprem" name="model-onprem" placeholder="例如：qwen3:8b-16k">
+            <small style="color: var(--text-secondary);">Ollama 會自動帶上前綴 ollama/</small>
+          </div>
+        </div>
+
+        <hr>
+        <div class="form-group">
+          <label for="api_key_ref">金鑰引用 (api_key_ref)</label>
+          <input type="text" id="api_key_ref" name="api_key_ref" placeholder="建議用環境變數名稱，如 OPENAI_API_KEY_TEAM_A">
+          <small style="color: var(--text-secondary);">建議使用 api_key_ref 指向環境變數或祕密管理，避免明文金鑰落地。</small>
+        </div>
+        <div class="form-group">
+          <label for="api_key">直接金鑰 (api_key)</label>
+          <input type="password" id="api_key" name="api_key" placeholder="不建議，僅於測試時暫用；建議改用 api_key_ref">
+          <small style="color: var(--text-secondary);">此欄位僅供測試，請優先使用上方 api_key_ref。</small>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">儲存</button>
+          <button type="button" id="test-btn" class="btn">測試連線</button>
+          <a href="/pages/agent-list.html" class="btn btn-secondary">返回</a>
+        </div>
+      </form>
+    </div>
+
+    <div id="test-result" class="card" style="margin-top: 16px; display: none;"></div>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const agentId = urlParams.get('id');
+    if (!agentId) {
+      window.location.href = '/pages/agent-list.html';
+    }
+
+    const form = document.getElementById('llm-form');
+    const testBtn = document.getElementById('test-btn');
+    const testResult = document.getElementById('test-result');
+
+    function getFormConfig() {
+      const cfg = {};
+      const tier = document.getElementById('tier').value.trim();
+      const provider = document.getElementById('provider').value.trim();
+      const modelCloud = document.getElementById('model').value.trim();
+      const base_url = document.getElementById('base_url').value.trim();
+      const azure_endpoint = document.getElementById('azure_endpoint').value.trim();
+      const azure_api_version = document.getElementById('azure_api_version').value.trim();
+      const azure_deployment = document.getElementById('azure_deployment').value.trim();
+      const onprem_provider = document.getElementById('onprem_provider').value.trim();
+      const onprem_base_url = document.getElementById('onprem_base_url').value.trim();
+      const modelOnprem = document.getElementById('model-onprem').value.trim();
+      const api_key_ref = document.getElementById('api_key_ref').value.trim();
+      const api_key = document.getElementById('api_key').value.trim();
+
+      if (tier) cfg.tier = tier;
+      if (provider) cfg.provider = provider;
+      if (modelCloud) cfg.model = modelCloud;
+      if (base_url) cfg.base_url = base_url;
+      if (azure_endpoint) cfg.azure_endpoint = azure_endpoint;
+      if (azure_api_version) cfg.azure_api_version = azure_api_version;
+      if (azure_deployment) cfg.azure_deployment = azure_deployment;
+      if (onprem_provider) cfg.onprem_provider = onprem_provider;
+      if (onprem_base_url) cfg.onprem_base_url = onprem_base_url;
+      if (modelOnprem) cfg.model = modelOnprem; // onprem 模型也寫入同一鍵
+      if (api_key_ref) cfg.api_key_ref = api_key_ref;
+      if (api_key) cfg.api_key = api_key;
+
+      return cfg;
+    }
+
+    function updateVisibility() {
+      const tier = document.getElementById('tier').value;
+      const cloud = document.getElementById('cloud-group');
+      const onprem = document.getElementById('onprem-group');
+      const azureSub = document.getElementById('azure-subgroup');
+      const provider = document.getElementById('provider').value;
+      if (tier === 'cloud') {
+        cloud.style.display = 'block';
+        onprem.style.display = 'none';
+      } else if (tier === 'onprem') {
+        cloud.style.display = 'none';
+        onprem.style.display = 'block';
+      } else {
+        // 未指定：兩組皆顯示，方便瀏覽，但驗證時會更嚴謹
+        cloud.style.display = 'block';
+        onprem.style.display = 'block';
+      }
+      azureSub.style.display = (provider === 'azure') ? 'block' : 'none';
+    }
+
+    function applyProviderPresets() {
+      const provider = document.getElementById('provider').value;
+      const base = document.getElementById('base_url');
+      const model = document.getElementById('model');
+      const presets = {
+        openai: { base_url: '', model: 'gpt-4o' },
+        anthropic: { base_url: '', model: 'claude-3-5-sonnet-20240620' },
+        gemini: { base_url: '', model: 'gemini-1.5-pro' },
+        azure: { base_url: '', model: '' },
+        openrouter: { base_url: 'https://openrouter.ai/api/v1', model: '' },
+        grok: { base_url: '', model: 'grok-2' },
+      };
+      const p = presets[provider];
+      if (!p) return;
+      if (!base.value && p.base_url) base.value = p.base_url;
+      if (!model.value && p.model) model.value = p.model;
+    }
+
+    function applyOnpremPresets() {
+      const prov = document.getElementById('onprem_provider').value;
+      const base = document.getElementById('onprem_base_url');
+      const model = document.getElementById('model-onprem');
+      if (prov === 'ollama') {
+        if (!base.value) base.value = 'http://localhost:11434';
+        if (!model.value) model.value = 'qwen3:8b-16k';
+      } else if (prov === 'vllm') {
+        if (!base.value) base.value = 'http://localhost:8000/v1';
+      }
+    }
+
+    function validateConfig(cfg, { forTest } = { forTest: false }) {
+      const tier = cfg.tier || '';
+      // 若 tier=cloud：至少要 provider 與 model
+      if (tier === 'cloud') {
+        if (!cfg.provider) throw new Error('請選擇雲端供應商 provider');
+        if (!cfg.model) throw new Error('請輸入雲端模型名稱 model');
+        if (cfg.provider === 'openrouter' && !cfg.base_url) throw new Error('OpenRouter 請填寫 base_url');
+      }
+      // 若 tier=onprem：至少要 onprem_provider / onprem_base_url / model
+      if (tier === 'onprem') {
+        if (!cfg.onprem_provider) throw new Error('請選擇地端提供者 onprem_provider');
+        if (!cfg.onprem_base_url) throw new Error('請輸入地端端點 onprem_base_url');
+        if (!cfg.model) throw new Error('請輸入地端模型名稱 model');
+      }
+      // 若未指定 tier，嘗試寬鬆規則：只要提供 cloud 或 onprem 的必要組合即可
+      if (!tier) {
+        const cloudOk = cfg.provider && cfg.model;
+        const onpremOk = cfg.onprem_provider && cfg.onprem_base_url && cfg.model;
+        if (!cloudOk && !onpremOk && !forTest) {
+          throw new Error('請至少完成一組設定（雲端：provider+model；或地端：onprem_provider+onprem_base_url+model）');
+        }
+      }
+    }
+
+    async function loadAgent() {
+      try {
+        const resp = await api.get(`/agents/${agentId}`);
+        const cfg = resp.model_config || {};
+        // 填入值（僅在存在時覆蓋）
+        if (cfg.tier) document.getElementById('tier').value = cfg.tier;
+        if (cfg.provider) document.getElementById('provider').value = cfg.provider;
+        if (cfg.model) {
+          // 無法得知 model 屬於 cloud 還是 onprem，優先填 cloud 欄位
+          document.getElementById('model').value = cfg.model;
+          document.getElementById('model-onprem').value = cfg.model;
+        }
+        if (cfg.base_url) document.getElementById('base_url').value = cfg.base_url;
+        if (cfg.azure_endpoint) document.getElementById('azure_endpoint').value = cfg.azure_endpoint;
+        if (cfg.azure_api_version) document.getElementById('azure_api_version').value = cfg.azure_api_version;
+        if (cfg.azure_deployment) document.getElementById('azure_deployment').value = cfg.azure_deployment;
+        if (cfg.onprem_provider) document.getElementById('onprem_provider').value = cfg.onprem_provider;
+        if (cfg.onprem_base_url) document.getElementById('onprem_base_url').value = cfg.onprem_base_url;
+        if (cfg.api_key_ref) document.getElementById('api_key_ref').value = cfg.api_key_ref;
+        // 不回填 api_key（避免明文落地）
+        updateVisibility();
+      } catch (e) {
+        showError(e.message);
+        setTimeout(() => (window.location.href = '/pages/agent-list.html'), 1500);
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const model_config = getFormConfig();
+        validateConfig(model_config);
+        await api.put(`/agents/${agentId}/llm-config`, { model_config });
+        showSuccess('LLM 設定已儲存');
+      } catch (e) {
+        showError(e.message);
+      }
+    });
+
+    testBtn.addEventListener('click', async () => {
+      try {
+        const overrides = getFormConfig();
+        validateConfig(overrides, { forTest: true });
+        const result = await api.post(`/agents/${agentId}/llm-test`, overrides);
+        testResult.style.display = 'block';
+        if (result && result.ok) {
+          testResult.classList.remove('error-message');
+          testResult.classList.add('success-message');
+        } else {
+          testResult.classList.remove('success-message');
+          testResult.classList.add('error-message');
+        }
+        const jsonStr = JSON.stringify(result, null, 2);
+        testResult.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <h3 style="margin:0;">測試結果</h3>
+            <button id="copy-json" class="btn btn-secondary" type="button">複製 JSON</button>
+            <button id="health-soft" class="btn" type="button">健康檢查(soft)</button>
+            <button id="health-hard" class="btn" type="button">健康檢查(hard)</button>
+          </div>
+          <pre style="margin-top:8px;">${jsonStr}</pre>
+        `;
+        const copyBtn = document.getElementById('copy-json');
+        copyBtn.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(jsonStr); showSuccess('已複製測試結果'); } catch {}
+        });
+        document.getElementById('health-soft').addEventListener('click', async () => runHealth('soft'));
+        document.getElementById('health-hard').addEventListener('click', async () => runHealth('hard'));
+      } catch (e) {
+        showError(e.message);
+      }
+    });
+
+    async function runHealth(mode) {
+      try {
+        const overrides = getFormConfig();
+        const body = { overrides, mode };
+        const res = await api.post(`/agents/${agentId}/llm-health`, body);
+        testResult.style.display = 'block';
+        const ok = res && res.ok;
+        testResult.classList.toggle('success-message', !!ok);
+        testResult.classList.toggle('error-message', !ok);
+        testResult.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <h3 style="margin:0;">健康檢查(${mode})</h3>
+            <button id="copy-health" class="btn btn-secondary" type="button">複製 JSON</button>
+          </div>
+          <pre style="margin-top:8px;">${JSON.stringify(res, null, 2)}</pre>
+        `;
+        document.getElementById('copy-health').addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(JSON.stringify(res, null, 2)); showSuccess('已複製結果'); } catch {}
+        });
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    document.getElementById('tier').addEventListener('change', () => { updateVisibility(); });
+    document.getElementById('provider').addEventListener('change', () => { applyProviderPresets(); });
+    document.getElementById('onprem_provider').addEventListener('change', () => { applyOnpremPresets(); });
+
+    updateVisibility();
+    loadAgent();
+  </script>
+</body>
+</html>

@@ -15,6 +15,7 @@
       <a href="/pages/dashboard.html">儀表板</a>
       <a href="/pages/agent-list.html">代理者</a>
       <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
     </div>
   </nav>
   <main class="container">
@@ -79,12 +80,13 @@
       };
 
       try {
-        await api.post('/agents', {
+        // 後端 /api/agents 期望參數以 query 形式傳遞（name/description/model_type）
+        const qs = new URLSearchParams({
           name,
           description,
           model_type,
-          model_config,
         });
+        await api.request(`/agents?${qs.toString()}`, { method: 'POST' });
         showSuccess('代理者創建成功！');
         setTimeout(() => {
           window.location.href = '/pages/agent-list.html';

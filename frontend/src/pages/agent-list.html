@@ -15,6 +15,7 @@
       <a href="/pages/dashboard.html">儀表板</a>
       <a href="/pages/agent-list.html">代理者</a>
       <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
     </div>
   </nav>
   <main class="container">
@@ -65,6 +66,7 @@
                   <td>
                     <a href="/pages/chat.html?agent=${agent.id}" class="btn btn-primary">聊天</a>
                     <a href="/pages/edit-agent.html?id=${agent.id}" class="btn btn-secondary">編輯</a>
+                    <a href="/pages/agent-llm.html?id=${agent.id}" class="btn">LLM 設定</a>
                   </td>
                 </tr>
               `).join('')}
