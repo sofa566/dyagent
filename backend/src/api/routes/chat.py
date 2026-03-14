@@ -3,12 +3,13 @@ from typing import Any
 import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import ProgrammingError, OperationalError
+from pydantic import BaseModel
 
 from src.core.database import get_db
 from src.models import User, Agent, Conversation, Message
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
-from src.api.errors import not_found_error, validation_error
+from src.api.errors import not_found_error, validation_error, forbidden_error
 from src.services.chat_router import ChatRouter
 from src.core.logging import get_logger
 from src.api.errors import service_unavailable_error
@@ -17,7 +18,12 @@ router = APIRouter()
 _log = get_logger("api.chat")
 
 
-@router.post('/agents/{agent_id}/chat')
+class ChatResponse(BaseModel):
+    response: str
+    conversation_id: str
+
+
+@router.post('/agents/{agent_id}/chat', response_model=ChatResponse)
 async def chat_with_agent(
     agent_id: str,
     message: str,
@@ -146,7 +152,6 @@ async def chat_with_agent(
         if str(e) == 'no_route':
             raise service_unavailable_error('模型路由不可用，請檢查金鑰或端點設定')
         raise
-
     assistant_message = Message(
         conversation_id=conversation.id,
         role='assistant',
@@ -164,14 +169,38 @@ async def chat_with_agent(
         db.add(assistant_message)
         db.commit()
 
-    resp: dict[str, Any] = {
-        'response': response_content,
-        'conversation_id': str(conversation.id),
-    }
-    # 若為結構化輸出模式，回傳 structured 欄位（文本回覆預期可為空字串）
-    if format and format.lower() == 'json_schema':
-        resp['structured'] = router.last_structured() or {}
-    return resp
+    # 強制轉為字串以避免 None 導致的 JSON null
+    return ChatResponse(response=str(response_content or ''), conversation_id=str(conversation.id))
+
+
+@router.post('/conversations/{conversation_id}/tools/{tool_name}')
+async def invoke_tool(
+    conversation_id: str,
+    tool_name: str,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'chat'):
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(conversation_id))
+    except ValueError:
+        raise not_found_error('Conversation', conversation_id)
+
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if conv is None:
+        raise not_found_error('Conversation', conversation_id)
+
+    agent = db.query(Agent).filter(Agent.id == conv.agent_id).first()
+    if agent is None:
+        raise not_found_error('Agent', str(conv.agent_id))
+
+    router = ChatRouter()
+    # 工具呼叫走 ChatRouter 白名單與事件流
+    result = router.call_tool(session_id=str(conv.id), tool=tool_name, payload=payload or {})
+    return result
 
 
 @router.get('/agents/{agent_id}/conversations')

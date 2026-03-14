@@ -90,6 +90,17 @@
           <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
           <button type="submit" class="btn btn-primary" disabled>發送</button>
         </form>
+        <details id="tools-panel" class="tools" style="margin-top:0.75rem;">
+          <summary>可用工具</summary>
+          <div id="tools-list" class="tools-list" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;"></div>
+          <div class="tool-runner" style="display:flex;flex-direction:column;gap:6px;">
+            <input id="tool-name" type="text" placeholder="例如 mcp:資料查詢 或 skillX" />
+            <input id="tool-conv" type="text" placeholder="會話 ID（預設取最新）" />
+            <textarea id="tool-payload" rows="3" placeholder='JSON 參數，例如 {"q":"你好"}'></textarea>
+            <button id="run-tool" class="btn">執行工具</button>
+            <pre id="tool-output" class="code" style="white-space:pre-wrap;"></pre>
+          </div>
+        </details>
       </section>
     </div>
   </main>
@@ -108,6 +119,12 @@
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
+    const toolsList = document.getElementById('tools-list');
+    const runToolBtn = document.getElementById('run-tool');
+    const toolNameInput = document.getElementById('tool-name');
+    const toolConvInput = document.getElementById('tool-conv');
+    const toolPayloadInput = document.getElementById('tool-payload');
+    const toolOutput = document.getElementById('tool-output');
 
     let currentAgentId = null;
     let currentConversationId = null;
@@ -161,6 +178,17 @@
         } else {
           chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
         }
+        // 載入此代理者可用工具清單
+        try {
+          const integ = await api.get(`/agents/${agentId}/integrations`);
+          const skills = Array.isArray(integ.skills) ? integ.skills : [];
+          const mcps = Array.isArray(integ.mcp_config) ? integ.mcp_config : [];
+          const items = [];
+          skills.forEach(s => items.push({ name: s, type: 'skill' }));
+          mcps.filter(c => c && c.enabled).forEach(c => items.push({ name: `mcp:${c.name}`, type: 'mcp' }));
+          toolsList.innerHTML = items.length ? items.map(x => `<span class="tag">${x.name}</span>`).join('') : '<div class="muted">（此代理者未啟用任何工具）</div>';
+          toolConvInput.value = currentConversationId || '';
+        } catch {}
         // 後台暖機 LLM 路由（不影響 UI；忽略錯誤）
         try { await api.post(`/agents/${agentId}/llm-test`, {}); } catch {}
       } catch (error) {
@@ -240,6 +268,24 @@
         messageInput.disabled = true;
         submitBtn.disabled = true;
         chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>';
+      }
+    });
+
+    runToolBtn.addEventListener('click', async () => {
+      try {
+        const tool = (toolNameInput.value || '').trim();
+        if (!tool) { toolOutput.textContent = '請輸入工具名稱'; return; }
+        let convId = (toolConvInput.value || '').trim();
+        if (!convId) convId = currentConversationId || '';
+        if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
+        let body = {};
+        if (toolPayloadInput.value.trim()) {
+          try { body = JSON.parse(toolPayloadInput.value); } catch { toolOutput.textContent = 'JSON 參數格式錯誤'; return; }
+        }
+        const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, body);
+        toolOutput.textContent = JSON.stringify(res, null, 2);
+      } catch (e) {
+        toolOutput.textContent = e.message || '執行工具失敗';
       }
     });
 

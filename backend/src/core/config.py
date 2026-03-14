@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     LLM_HARD_FAIL_ON_NO_ROUTE: bool = False
     # MCP 連線測試/呼叫逾時（毫秒）
     MCP_HTTP_TIMEOUT_MS: int = 4000
+    # MCP 白名單（以逗號分隔的 base_url 列表），供 /mcp/servers 顯示
+    MCP_WHITELIST: str = ""
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
