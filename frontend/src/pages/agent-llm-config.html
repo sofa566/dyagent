@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>代理者 LLM 設定</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/agent-list.html">代理者清單</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>代理者 LLM 設定</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>MCP 連線</h3>
+      <div id="mcp-list"></div>
+      <button id="add-mcp" class="btn" type="button">新增連線</button>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>Skills</h3>
+      <div id="skills-list"></div>
+      <div style="margin-top:0.5rem;">
+        <input id="new-skill" type="text" placeholder="新增自定義 Skill 名稱" />
+        <button id="add-skill" class="btn" type="button">新增</button>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>RAG</h3>
+      <label><input type="checkbox" id="rag-enabled" /> 啟用 RAG</label>
+      <div style="margin-top:0.5rem;">
+        <input id="rag-sources" type="text" placeholder="來源（以逗號分隔的集合/索引）" />
+      </div>
+      <div style="margin-top:0.5rem;">
+        <label>topK：</label>
+        <input id="rag-topk" type="number" min="1" max="50" value="5" style="width:80px;" />
+      </div>
+      <div style="margin-top:0.5rem;">
+        <input id="rag-query" type="text" placeholder="測試查詢關鍵字" />
+        <button id="test-rag" class="btn" type="button">測試檢索</button>
+      </div>
+      <pre id="rag-output" class="code" style="white-space:pre-wrap;"></pre>
+    </section>
+
+    <div style="display:flex;gap:8px;">
+      <button id="save" class="btn btn-primary" type="button">儲存</button>
+      <a id="back" class="btn" href="/pages/agent-list.html">返回</a>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const url = new URL(window.location.href);
+    const agentId = url.searchParams.get('id');
+    if (!agentId) {
+      showError('缺少代理者 id');
+    }
+
+    const mcpList = document.getElementById('mcp-list');
+    const skillsList = document.getElementById('skills-list');
+    const addMcpBtn = document.getElementById('add-mcp');
+    const addSkillBtn = document.getElementById('add-skill');
+    const newSkillInput = document.getElementById('new-skill');
+    const ragEnabled = document.getElementById('rag-enabled');
+    const ragSources = document.getElementById('rag-sources');
+    const ragTopK = document.getElementById('rag-topk');
+    const ragQuery = document.getElementById('rag-query');
+    const testRagBtn = document.getElementById('test-rag');
+    const ragOutput = document.getElementById('rag-output');
+    const saveBtn = document.getElementById('save');
+
+    let state = { mcp_config: [], skills: [], rag_config: { enabled: false, sources: [], topK: 5 } };
+
+    function renderMcp() {
+      mcpList.innerHTML = '';
+      state.mcp_config.forEach((c, idx) => {
+        const row = document.createElement('div');
+        row.style.marginBottom = '6px';
+        row.innerHTML = `
+          <input data-k="name" data-i="${idx}" placeholder="名稱" value="${c.name || ''}" />
+          <input data-k="base_url" data-i="${idx}" placeholder="base_url" value="${c.base_url || ''}" style="width:320px;" />
+          <label><input type="checkbox" data-k="enabled" data-i="${idx}" ${c.enabled ? 'checked' : ''}/> 啟用</label>
+          <button class="btn" data-act="test" data-i="${idx}">測試</button>
+          <button class="btn" data-act="del" data-i="${idx}">移除</button>
+        `;
+        mcpList.appendChild(row);
+      });
+    }
+
+    function renderSkills() {
+      skillsList.innerHTML = '';
+      state.skills.forEach((s, idx) => {
+        const row = document.createElement('div');
+        row.style.marginBottom = '6px';
+        row.innerHTML = `
+          <label><input type="checkbox" data-act="toggle-skill" data-i="${idx}" checked/> ${s}</label>
+          <button class="btn" data-act="remove-skill" data-i="${idx}">移除</button>
+        `;
+        skillsList.appendChild(row);
+      });
+    }
+
+    async function load() {
+      try {
+        const res = await api.get(`/agents/${agentId}/integrations`);
+        state.mcp_config = Array.isArray(res.mcp_config) ? res.mcp_config : [];
+        state.skills = Array.isArray(res.skills) ? res.skills : [];
+        state.rag_config = res.rag_config || { enabled: false, sources: [], topK: 5 };
+        renderMcp();
+        renderSkills();
+        ragEnabled.checked = !!state.rag_config.enabled;
+        ragSources.value = (state.rag_config.sources || []).join(',');
+        ragTopK.value = state.rag_config.topK || 5;
+      } catch (e) {
+        showError(e.message || '載入失敗');
+      }
+    }
+
+    addMcpBtn.addEventListener('click', () => {
+      state.mcp_config.push({ name: '', base_url: '', enabled: false });
+      renderMcp();
+    });
+
+    mcpList.addEventListener('input', (e) => {
+      const t = e.target;
+      const k = t.getAttribute('data-k');
+      const i = parseInt(t.getAttribute('data-i'), 10);
+      if (Number.isInteger(i) && k) {
+        if (k === 'enabled') state.mcp_config[i][k] = t.checked;
+        else state.mcp_config[i][k] = t.value;
+      }
+    });
+    mcpList.addEventListener('click', async (e) => {
+      const t = e.target;
+      if (t.getAttribute('data-act') === 'del') {
+        const i = parseInt(t.getAttribute('data-i'), 10);
+        state.mcp_config.splice(i, 1);
+        renderMcp();
+      } else if (t.getAttribute('data-act') === 'test') {
+        const i = parseInt(t.getAttribute('data-i'), 10);
+        const c = state.mcp_config[i];
+        try {
+          const r = await api.post(`/agents/${agentId}/mcp-test`, { connection: c });
+          if (r.ok) showSuccess('MCP 測試成功'); else showError(r.error || 'MCP 測試失敗');
+        } catch (err) {
+          showError(err.message || 'MCP 測試錯誤');
+        }
+      }
+    });
+
+    addSkillBtn.addEventListener('click', () => {
+      const v = (newSkillInput.value || '').trim();
+      if (!v) return;
+      if (!state.skills.includes(v)) state.skills.push(v);
+      newSkillInput.value = '';
+      renderSkills();
+    });
+    skillsList.addEventListener('click', (e) => {
+      const t = e.target;
+      const act = t.getAttribute('data-act');
+      const i = parseInt(t.getAttribute('data-i'), 10);
+      if (act === 'remove-skill') {
+        state.skills.splice(i, 1);
+        renderSkills();
+      } else if (act === 'toggle-skill') {
+        // 目前 skills 僅記錄已啟用名單；取消等同移除
+        state.skills.splice(i, 1);
+        renderSkills();
+      }
+    });
+
+    testRagBtn.addEventListener('click', async () => {
+      try {
+        const sources = (ragSources.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        const topK = parseInt(ragTopK.value, 10) || 5;
+        const query = (ragQuery.value || '').trim() || 'test';
+        const r = await api.post(`/agents/${agentId}/rag-test`, { query, sources, topK });
+        ragOutput.textContent = JSON.stringify(r, null, 2);
+      } catch (e) {
+        showError(e.message || 'RAG 測試錯誤');
+      }
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      try {
+        const sources = (ragSources.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        const topK = parseInt(ragTopK.value, 10) || 5;
+        const enabled = !!ragEnabled.checked;
+        const payload = { mcp_config: state.mcp_config, skills: state.skills, rag_config: { enabled, sources, topK } };
+        await api.put(`/agents/${agentId}/integrations`, payload);
+        showSuccess('已儲存');
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>
