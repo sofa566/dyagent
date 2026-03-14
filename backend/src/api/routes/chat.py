@@ -198,8 +198,8 @@ async def invoke_tool(
         raise not_found_error('Agent', str(conv.agent_id))
 
     router = ChatRouter()
-    # 工具呼叫走 ChatRouter 白名單與事件流
-    result = router.call_tool(session_id=str(conv.id), tool=tool_name, payload=payload or {})
+    # 工具呼叫：優先走 WS 串流（若不可用則回退 HTTP），並強制白名單
+    result = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload=payload or {}, db=db, agent_id=str(agent.id))
     return result
 
 

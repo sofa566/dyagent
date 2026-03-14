@@ -67,39 +67,7 @@ class ChatRouter:
         except TypeError:
             self._llm.init_for_session(session_id=session_id, preferred_tier=tier)
 
-        # 讀取代理者整合設定並構建提示前綴（MCP/Skills/RAG）
-        # - 僅在提供 DB 時嘗試讀取；失敗時不影響流程
-        agent_ctx: dict[str, Any] = {"skills": [], "mcp": [], "rag": {"enabled": False, "sources": [], "topK": 5}}
-        try:
-            if db is not None:
-                ag = db.query(Agent).filter(Agent.id == agent_id).first()
-                if ag is not None:
-                    # 正規化 MCP 為 list
-                    mcp_raw = ag.mcp_config or []
-                    if isinstance(mcp_raw, dict):
-                        mcp_list = list(mcp_raw.values())
-                    elif isinstance(mcp_raw, list):
-                        mcp_list = mcp_raw
-                    else:
-                        mcp_list = []
-                    agent_ctx["mcp"] = [c for c in mcp_list if isinstance(c, dict) and c.get("enabled")]
-                    agent_ctx["skills"] = [s for s in (ag.skills or []) if isinstance(s, str) and s.strip()]
-                    rc = ag.rag_config or {}
-                    agent_ctx["rag"] = {
-                        "enabled": bool(rc.get("enabled", False)),
-                        "sources": list(rc.get("sources", []) or []),
-                        "topK": int(rc.get("topK", 5) or 5),
-                    }
-        except Exception as _e:
-            self._log.warning("agent.integrations.load_failed", error=str(_e))
-
-        # 允許的工具名（若未來加入工具呼叫時作為白名單）
-        self._allowed_tools = set(agent_ctx.get("skills", [])) | {f"mcp:{(c.get('name') or '').strip()}" for c in agent_ctx.get("mcp", []) if isinstance(c, dict)}
-        # 建立 MCP 名稱對連線的映射
-        self._mcp_map = {}
-        for c in agent_ctx.get("mcp", []) or []:
-            if isinstance(c, dict) and c.get("enabled") and c.get("name"):
-                self._mcp_map[str(c.get("name")).strip()] = c
+        agent_ctx = self._prepare_integrations(db=db, agent_id=agent_id)
 
         # 若啟用 RAG，嘗試構建最小檢索上下文（目前無嵌入/檢索，先提供來源標籤提示）
         rag_prefix = ""
@@ -196,6 +164,85 @@ class ChatRouter:
         self.write_event_finish(session_id=session_id)
 
         return output_text
+
+    def _prepare_integrations(self, *, db: Optional[Session], agent_id: str) -> dict[str, Any]:
+        agent_ctx: dict[str, Any] = {"skills": [], "mcp": [], "rag": {"enabled": False, "sources": [], "topK": 5}}
+        try:
+            if db is not None:
+                ag = db.query(Agent).filter(Agent.id == agent_id).first()
+                if ag is not None:
+                    mcp_raw = ag.mcp_config or []
+                    if isinstance(mcp_raw, dict):
+                        mcp_list = list(mcp_raw.values())
+                    elif isinstance(mcp_raw, list):
+                        mcp_list = mcp_raw
+                    else:
+                        mcp_list = []
+                    agent_ctx["mcp"] = [c for c in mcp_list if isinstance(c, dict) and c.get("enabled")]
+                    agent_ctx["skills"] = [s for s in (ag.skills or []) if isinstance(s, str) and s.strip()]
+                    rc = ag.rag_config or {}
+                    agent_ctx["rag"] = {
+                        "enabled": bool(rc.get("enabled", False)),
+                        "sources": list(rc.get("sources", []) or []),
+                        "topK": int(rc.get("topK", 5) or 5),
+                    }
+        except Exception as _e:
+            self._log.warning("agent.integrations.load_failed", error=str(_e))
+        # 允許的工具名（若未來加入工具呼叫時作為白名單）
+        self._allowed_tools = set(agent_ctx.get("skills", [])) | {f"mcp:{(c.get('name') or '').strip()}" for c in agent_ctx.get("mcp", []) if isinstance(c, dict)}
+        # 建立 MCP 名稱對連線的映射
+        self._mcp_map = {}
+        for c in agent_ctx.get("mcp", []) or []:
+            if isinstance(c, dict) and c.get("enabled") and c.get("name"):
+                self._mcp_map[str(c.get("name")).strip()] = c
+        return agent_ctx
+
+    async def call_tool_async(self, *, session_id: str, tool: str, payload: dict, db: Optional[Session] = None, agent_id: Optional[str] = None) -> dict:
+        # 若提供 agent_id 與 db，先載入整合設定以建立白名單
+        if agent_id and db is not None:
+            self._prepare_integrations(db=db, agent_id=agent_id)
+        # 名稱/白名單與 doom-loop 同步邏輯
+        name = (tool or "").strip()
+        if not name:
+            self.write_event_tool_error(session_id=session_id, tool="<empty>", error="invalid_tool")
+            return {"ok": False, "error": "invalid_tool"}
+        if name not in getattr(self, "_allowed_tools", set()):
+            self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
+            return {"ok": False, "error": "tool_not_allowed"}
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+            return {"ok": False, "error": "doom_loop_denied"}
+
+        # 僅在 MCP 工具時優先走 WS JSON-RPC 串流
+        if name.startswith("mcp:"):
+            conn_name = name.split(":", 1)[1]
+            conn = getattr(self, "_mcp_map", {}).get(conn_name)
+            if not conn:
+                self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_connection_not_found")
+                return {"ok": False, "error": "mcp_connection_not_found"}
+            base_url = str(conn.get("base_url") or "").strip()
+            auth = conn.get("auth") if isinstance(conn, dict) else None
+            if not base_url:
+                self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
+                return {"ok": False, "error": "mcp_invalid_base_url"}
+            # 嘗試 WS 串流呼叫
+            try:
+                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools.invoke", params={"tool": conn_name, "arguments": payload or {}}, auth=auth if isinstance(auth, dict) else None):
+                    # 可在此寫入逐段事件，先保留最小行為：若拿到 result 即成功
+                    if isinstance(frame, dict) and ("result" in frame or frame.get("ok") is True):
+                        self.write_event_tool_result(session_id=session_id, tool=name, result={"ok": True})
+                        return {"ok": True, "result": frame.get("result", frame)}
+                    if isinstance(frame, dict) and ("error" in frame or frame.get("ok") is False):
+                        # 結束於錯誤
+                        self.write_event_tool_error(session_id=session_id, tool=name, error=str(frame.get("error")))
+                        return {"ok": False, "error": str(frame.get("error"))}
+            except Exception as e:
+                # WS 不可用或失敗時，落回同步 HTTP 邏輯
+                self._log.warning("mcp.ws.stream_failed_fallback_http", error=str(e))
+                return self.call_tool(session_id=session_id, tool=name, payload=payload)
+
+        # 其他情況沿用同步路徑
+        return self.call_tool(session_id=session_id, tool=name, payload=payload)
 
     def _maybe_handle_tool_call(self, *, session_id: str, text: str) -> str | None:
         marker = "[[CALL tool="
