@@ -97,10 +97,11 @@
             <input id="tool-name" type="text" placeholder="例如 mcp:資料查詢 或 skillX" />
             <input id="tool-conv" type="text" placeholder="會話 ID（預設取最新）" />
             <textarea id="tool-payload" rows="3" placeholder='JSON 參數，例如 {"q":"你好"}'></textarea>
-            <button id="run-tool" class="btn">執行工具</button>
-            <pre id="tool-output" class="code" style="white-space:pre-wrap;"></pre>
-          </div>
-        </details>
+          <button id="run-tool" class="btn">執行工具</button>
+          <button id="stream-tool" class="btn">串流執行（SSE）</button>
+          <pre id="tool-output" class="code" style="white-space:pre-wrap;"></pre>
+        </div>
+      </details>
       </section>
     </div>
   </main>
@@ -121,6 +122,7 @@
     const submitBtn = chatForm.querySelector('button');
     const toolsList = document.getElementById('tools-list');
     const runToolBtn = document.getElementById('run-tool');
+    const streamToolBtn = document.getElementById('stream-tool');
     const toolNameInput = document.getElementById('tool-name');
     const toolConvInput = document.getElementById('tool-conv');
     const toolPayloadInput = document.getElementById('tool-payload');
@@ -306,6 +308,49 @@
         // 可擴充：在面板下方渲染最近 5 筆歷史
       } catch (e) {
         toolOutput.textContent = e.message || '執行工具失敗';
+      }
+    });
+
+    streamToolBtn.addEventListener('click', async () => {
+      try {
+        const tool = (toolNameInput.value || '').trim();
+        if (!tool) { toolOutput.textContent = '請輸入工具名稱'; return; }
+        let convId = (toolConvInput.value || '').trim();
+        if (!convId) convId = currentConversationId || '';
+        if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
+        toolOutput.textContent = '';
+        const token = localStorage.getItem('auth_token');
+        // 以 fetch 串流方式讀取 SSE（因 EventSource 無法帶自訂標頭）
+        const resp = await fetch(`/api/conversations/${convId}/tools/${encodeURIComponent(tool)}/stream`, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (!resp.ok || !resp.body) {
+          toolOutput.textContent = `串流建立失敗：HTTP ${resp.status}`;
+          return;
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            if (chunk.startsWith('data: ')) {
+              try {
+                const jsonStr = chunk.replace(/^data:\s*/, '');
+                const obj = JSON.parse(jsonStr);
+                toolOutput.textContent += `\n${JSON.stringify(obj)}`;
+              } catch {}
+            }
+          }
+        }
+      } catch (e) {
+        toolOutput.textContent = e.message || '串流執行錯誤';
       }
     });
 
