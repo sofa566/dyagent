@@ -6,11 +6,17 @@
   <title>聊天 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
   <style>
-    .chat-container {
-      display: flex;
-      flex-direction: column;
-      height: calc(100vh - 200px);
-    }
+    .chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; min-height: calc(100vh - 220px); }
+    .sidebar { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius); padding: 0.75rem; overflow-y: auto; }
+    .sidebar h3 { margin-bottom: 0.5rem; font-size: 1rem; }
+    .conv-list { list-style: none; margin: 0; padding: 0; }
+    .conv-item { padding: 0.5rem; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent; }
+    .conv-item:hover { background: #f8fafc; border-color: var(--border-color); }
+    .conv-item.active { background: #eef2ff; border-color: var(--primary-color); }
+    .conv-title { font-weight: 600; font-size: 0.95rem; }
+    .conv-meta { color: var(--text-secondary); font-size: 0.8rem; }
+
+    .chat-container { display: flex; flex-direction: column; height: 100%; }
     .chat-messages {
       flex: 1;
       overflow-y: auto;
@@ -67,14 +73,21 @@
         <option value="">請選擇代理者</option>
       </select>
     </div>
-    <div class="chat-container">
-      <div id="chat-messages" class="chat-messages">
-        <p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
-      </div>
-      <form id="chat-form" class="chat-input">
-        <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
-        <button type="submit" class="btn btn-primary" disabled>發送</button>
-      </form>
+    <div class="chat-layout">
+      <aside class="sidebar">
+        <h3>聊天紀錄</h3>
+        <ul id="conv-list" class="conv-list"></ul>
+        <div id="conv-empty" class="conv-meta" style="display:none; text-align:center; padding: 0.5rem;">尚無聊天紀錄</div>
+      </aside>
+      <section class="chat-container">
+        <div id="chat-messages" class="chat-messages">
+          <p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
+        </div>
+        <form id="chat-form" class="chat-input">
+          <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
+          <button type="submit" class="btn btn-primary" disabled>發送</button>
+        </form>
+      </section>
     </div>
   </main>
   <script type="module">
@@ -86,16 +99,20 @@
 
     const agentSelect = document.getElementById('agent-select');
     const chatMessages = document.getElementById('chat-messages');
+    const convList = document.getElementById('conv-list');
+    const convEmpty = document.getElementById('conv-empty');
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
 
     let currentAgentId = null;
     let currentConversationId = null;
+    let currentConversations = [];
 
     async function loadAgents() {
       try {
-        const response = await api.get('/agents');
+        // 一般使用者沒有 read_agent 權限，改呼叫 public 清單
+        const response = await api.get('/agents/public');
         agentSelect.innerHTML = '<option value="">請選擇代理者</option>';
         
         response.agents.forEach(agent => {
@@ -107,9 +124,11 @@
 
         const urlParams = new URLSearchParams(window.location.search);
         const agentParam = urlParams.get('agent');
-        if (agentParam) {
-          agentSelect.value = agentParam;
-          selectAgent(agentParam);
+        const lastAgent = localStorage.getItem('last_agent_id');
+        const initial = agentParam || lastAgent;
+        if (initial && [...agentSelect.options].some(o => o.value === initial)) {
+          agentSelect.value = initial;
+          selectAgent(initial);
         }
       } catch (error) {
         showError(error.message);
@@ -120,31 +139,69 @@
       currentAgentId = agentId;
       messageInput.disabled = false;
       submitBtn.disabled = false;
+      localStorage.setItem('last_agent_id', agentId);
       
       try {
+        // 側欄載入中狀態
+        convEmpty.style.display = 'none';
+        convList.innerHTML = '<li class="conv-item"><div class="conv-meta">載入中…</div></li>';
         const response = await api.get(`/agents/${agentId}/conversations`);
-        renderMessages(response.conversations);
+        currentConversations = Array.isArray(response.conversations) ? response.conversations : [];
+        renderSidebar(currentConversations);
+        if (currentConversations.length > 0) {
+          // 預設載入最新一筆
+          currentConversationId = currentConversations[0].id;
+          // 訊息面板載入中
+          chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">載入中…</p>';
+          renderMessagesById(currentConversationId);
+        } else {
+          chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
+        }
       } catch (error) {
-        chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
+        chatMessages.innerHTML = '<p style="text-align: center; color: var(--error-color);">載入失敗，請稍後再試</p>';
       }
     }
 
-    function renderMessages(conversations) {
+    function snippetTitle(conv) {
+      if (conv.title && conv.title.trim()) return conv.title;
+      const firstUser = (conv.messages || []).find(m => m.role === 'user');
+      const text = firstUser ? (firstUser.content || '') : '';
+      return text.length > 20 ? text.slice(0, 20) + '…' : (text || '新對話');
+    }
+
+    function renderSidebar(conversations) {
+      convList.innerHTML = '';
       if (!conversations || conversations.length === 0) {
-        chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
+        convEmpty.style.display = 'block';
         return;
       }
+      convEmpty.style.display = 'none';
+      conversations.forEach((c) => {
+        const li = document.createElement('li');
+        li.className = 'conv-item' + (c.id === currentConversationId ? ' active' : '');
+        li.dataset.id = c.id;
+        const title = snippetTitle(c);
+        const meta = c.last_interacted_at ? new Date(c.last_interacted_at).toLocaleString() : '';
+        li.innerHTML = `<div class="conv-title">${title}</div><div class="conv-meta">${meta}</div>`;
+        li.addEventListener('click', () => {
+          currentConversationId = c.id;
+          renderMessagesById(c.id);
+          Array.from(convList.children).forEach(el => el.classList.remove('active'));
+          li.classList.add('active');
+        });
+        convList.appendChild(li);
+      });
+    }
 
-      const latestConv = conversations[conversations.length - 1];
-      currentConversationId = latestConv.id;
-
-      chatMessages.innerHTML = latestConv.messages.map(msg => `
+    function renderMessagesById(convId) {
+      const conv = (currentConversations || []).find(c => c.id === convId);
+      if (!conv) return;
+      chatMessages.innerHTML = (conv.messages || []).map(msg => `
         <div class="message ${msg.role}">
           <p>${msg.content}</p>
-          <small style="opacity: 0.7;">${new Date(msg.timestamp).toLocaleTimeString()}</small>
+          <small style="opacity: 0.7;">${msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</small>
         </div>
       `).join('');
-
       chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
@@ -175,8 +232,13 @@
       submitBtn.disabled = true;
 
       try {
-        const response = await api.post(`/agents/${currentAgentId}/chat`, {
-          message,
+        // 後端 /api/agents/{id}/chat 依測試約定使用查詢參數 message
+        const qs = new URLSearchParams({ message });
+        // 傳送中狀態
+        const oldPlaceholder = messageInput.placeholder;
+        messageInput.placeholder = '傳送中…';
+        const response = await api.request(`/agents/${currentAgentId}/chat?${qs.toString()}`, {
+          method: 'POST',
         });
 
         const assistantMsg = document.createElement('div');
@@ -186,11 +248,24 @@
         chatMessages.scrollTop = chatMessages.scrollHeight;
 
         currentConversationId = response.conversation_id;
+        // 重新讀取清單以反映 last_interacted_at 變更
+        try {
+          const refreshed = await api.get(`/agents/${currentAgentId}/conversations`);
+          currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+          renderSidebar(currentConversations);
+        } catch {}
       } catch (error) {
         showError(error.message);
+        // 顯示錯誤於訊息區
+        const errMsg = document.createElement('div');
+        errMsg.className = 'message assistant';
+        errMsg.innerHTML = `<p style="color: var(--error-color);">發送失敗：${error.message}</p>`;
+        chatMessages.appendChild(errMsg);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
       } finally {
         messageInput.disabled = false;
         submitBtn.disabled = false;
+        messageInput.placeholder = '輸入訊息...';
         messageInput.focus();
       }
     });

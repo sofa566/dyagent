@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from typing import Any
 import uuid
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from src.core.database import get_db
 from src.models import User, Agent, Conversation, Message
@@ -9,8 +10,10 @@ from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.chat_router import ChatRouter
+from src.core.logging import get_logger
 
 router = APIRouter()
+_log = get_logger("api.chat")
 
 
 @router.post('/agents/{agent_id}/chat')
@@ -39,15 +42,32 @@ async def chat_with_agent(
     if not message or len(message.strip()) == 0:
         raise validation_error('Message cannot be empty')
 
-    conversation = db.query(Conversation).filter(
-        Conversation.agent_id == agent_id
-    ).order_by(Conversation.created_at.desc()).first()
+    # 嘗試以新欄位（user_id / last_interacted_at）查詢；若資料庫尚未遷移，退回舊邏輯
+    try:
+        conversation = db.query(Conversation).filter(
+            Conversation.agent_id == agent_id,
+            (Conversation.user_id == current_user.id)
+        ).order_by(Conversation.last_interacted_at.desc()).first()
+    except (ProgrammingError, OperationalError) as e:
+        _log.warning("db.migration.missing_columns", hint="conversations.user_id/last_interacted_at", error=str(e))
+        conversation = db.query(Conversation).filter(
+            Conversation.agent_id == agent_id
+        ).order_by(Conversation.created_at.desc()).first()
 
     if not conversation:
-        conversation = Conversation(agent_id=agent_id)
-        db.add(conversation)
-        db.commit()
-        db.refresh(conversation)
+        try:
+            conversation = Conversation(agent_id=agent_id, user_id=current_user.id)
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+        except (ProgrammingError, OperationalError) as e:
+            _log.warning("db.migration.missing_columns", hint="conversations.user_id", error=str(e))
+            # 退回不含 user_id 的建立，確保功能不中斷
+            db.rollback()
+            conversation = Conversation(agent_id=agent_id)
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
 
     user_message = Message(
         conversation_id=conversation.id,
@@ -55,7 +75,17 @@ async def chat_with_agent(
         content=message,
     )
     db.add(user_message)
-    db.commit()
+    # 更新最近互動時間（若欄位存在）
+    try:
+        from datetime import datetime as _dt
+        setattr(conversation, 'last_interacted_at', _dt.utcnow())
+        db.commit()
+    except (ProgrammingError, OperationalError) as e:
+        _log.warning("db.migration.missing_columns", hint="conversations.last_interacted_at", error=str(e))
+        db.rollback()
+        # 退回：僅提交訊息
+        db.add(user_message)
+        db.commit()
 
     # 使用 ChatRouter 執行單輪回合以產生助理回覆
     router = ChatRouter()
@@ -116,7 +146,16 @@ async def chat_with_agent(
         content=response_content,
     )
     db.add(assistant_message)
-    db.commit()
+    try:
+        from datetime import datetime as _dt
+        setattr(conversation, 'last_interacted_at', _dt.utcnow())
+        db.commit()
+    except (ProgrammingError, OperationalError) as e:
+        _log.warning("db.migration.missing_columns", hint="conversations.last_interacted_at", error=str(e))
+        db.rollback()
+        # 退回：僅提交訊息
+        db.add(assistant_message)
+        db.commit()
 
     resp: dict[str, Any] = {
         'response': response_content,
@@ -148,9 +187,16 @@ async def get_conversations(
     if not agent:
         raise not_found_error('Agent', agent_id)
 
-    conversations = db.query(Conversation).filter(
-        Conversation.agent_id == agent_id
-    ).all()
+    try:
+        conversations = db.query(Conversation).filter(
+            Conversation.agent_id == agent_id,
+            (Conversation.user_id == current_user.id)
+        ).order_by(Conversation.last_interacted_at.desc()).all()
+    except (ProgrammingError, OperationalError) as e:
+        _log.warning("db.migration.missing_columns", hint="conversations.user_id/last_interacted_at", error=str(e))
+        conversations = db.query(Conversation).filter(
+            Conversation.agent_id == agent_id
+        ).order_by(Conversation.created_at.desc()).all()
 
     result = []
     for conv in conversations:
@@ -161,6 +207,7 @@ async def get_conversations(
         result.append({
             'id': str(conv.id),
             'agent_id': str(conv.agent_id),
+            'title': (conv.title or ''),
             'messages': [
                 {
                     'id': str(m.id),
@@ -171,6 +218,7 @@ async def get_conversations(
                 for m in messages
             ],
             'created_at': conv.created_at.isoformat() if (conv.created_at is not None) else None,
+            'last_interacted_at': conv.last_interacted_at.isoformat() if getattr(conv, 'last_interacted_at', None) else None,
         })
 
     return {'conversations': result}

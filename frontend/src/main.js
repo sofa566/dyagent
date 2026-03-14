@@ -57,6 +57,12 @@ const auth = {
     const response = await api.post('/login', { email, password });
     localStorage.setItem('auth_token', response.token);
     localStorage.setItem('user', JSON.stringify(response.user));
+    // 一般使用者登入後直接導向聊天頁
+    try {
+      if (response.user && response.user.role === 'user') {
+        window.location.href = '/pages/chat.html';
+      }
+    } catch {}
     return response.user;
   },
 
@@ -114,6 +120,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 確保導覽列有登出按鈕（已登入時）
   if (user) {
+    // 針對聊天頁：若為一般使用者，僅顯示登出按鈕
+    try {
+      const isChatPage = window.location.pathname.endsWith('/pages/chat.html');
+      if (isChatPage && user.role === 'user') {
+        const navMenu = document.querySelector('.nav-menu');
+        if (navMenu) {
+          // 保留現有的 #auth-link / #logout-link，其餘移除
+          Array.from(navMenu.querySelectorAll('a')).forEach((a) => {
+            if (a.id !== 'logout-link' && a.id !== 'auth-link') {
+              navMenu.removeChild(a);
+            }
+          });
+        }
+      }
+    } catch {}
+
     let logoutLink = document.getElementById('logout-link');
     if (!logoutLink) {
       const navMenu = document.querySelector('.nav-menu');
