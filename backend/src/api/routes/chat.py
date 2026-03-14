@@ -259,6 +259,167 @@ async def stream_tool(
     return StreamingResponse(_gen(), media_type='text/event-stream')
 
 
+@router.get('/agents/{agent_id}/chat/stream')
+async def chat_stream(
+    agent_id: str,
+    message: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SSE 串流聊天：以 LLM 串流文字增量，遇到工具呼叫（[[CALL tool=...]]+JSON）即時串流工具結果。"""
+    if not check_permission(current_user, 'chat'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    if not message or len(message.strip()) == 0:
+        raise validation_error('Message cannot be empty')
+
+    # 會話與 user 訊息（與同步端點一致）
+    try:
+        conversation = db.query(Conversation).filter(
+            Conversation.agent_id == agent_id,
+            (Conversation.user_id == current_user.id)
+        ).order_by(Conversation.last_interacted_at.desc()).first()
+    except (ProgrammingError, OperationalError):
+        conversation = db.query(Conversation).filter(
+            Conversation.agent_id == agent_id
+        ).order_by(Conversation.created_at.desc()).first()
+    if not conversation:
+        try:
+            conversation = Conversation(agent_id=agent_id, user_id=current_user.id)
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+        except (ProgrammingError, OperationalError):
+            db.rollback()
+            conversation = Conversation(agent_id=agent_id)
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+
+    user_message = Message(conversation_id=conversation.id, role='user', content=message)
+    db.add(user_message)
+    try:
+        from datetime import datetime as _dt
+        setattr(conversation, 'last_interacted_at', _dt.utcnow())
+        db.commit()
+    except (ProgrammingError, OperationalError):
+        db.rollback()
+        db.add(user_message)
+        db.commit()
+
+    router = ChatRouter()
+    # 準備 overrides
+    overrides: dict[str, Any] = {}
+    try:
+        cfg = agent.model_config or {}
+        if isinstance(cfg, dict):
+            agent_model_type = str(agent.model_type) if getattr(agent, 'model_type', None) is not None else ''
+            if agent_model_type == 'local' and not bool(cfg.get('tier')):
+                overrides['tier'] = 'onprem'
+            if agent_model_type == 'cloud' and not bool(cfg.get('tier')):
+                overrides['tier'] = 'cloud'
+            for k in (
+                'tier','provider','model','base_url','onprem_provider','onprem_base_url','api_key','api_key_ref',
+                'azure_endpoint','azure_api_version','azure_deployment','azure_api_key_ref'):
+                v = cfg.get(k)
+                if v:
+                    overrides[k] = v
+            if not overrides.get('onprem_base_url') and isinstance(cfg.get('onprem'), dict):
+                v = cfg.get('onprem', {}).get('base_url')
+                if v:
+                    overrides['onprem_base_url'] = v
+            if not overrides.get('provider') and isinstance(cfg.get('cloud'), dict):
+                v = cfg.get('cloud', {}).get('provider')
+                if v:
+                    overrides['provider'] = v
+            if not overrides.get('model') and isinstance(cfg.get('cloud'), dict):
+                v = cfg.get('cloud', {}).get('model')
+                if v:
+                    overrides['model'] = v
+    except Exception:
+        overrides = {}
+
+    try:
+        router._llm.init_for_session(session_id=str(conversation.id), preferred_tier=overrides.get('tier'), overrides=overrides)
+    except TypeError:
+        router._llm.init_for_session(session_id=str(conversation.id), preferred_tier=overrides.get('tier'))
+
+    agent_ctx = router._prepare_integrations(db=db, agent_id=str(agent.id))
+    mcp_names = ",".join([str(c.get("name") or "").strip() for c in agent_ctx.get("mcp", []) if isinstance(c, dict) and c.get("enabled")])
+    skills_names = ",".join(agent_ctx.get("skills", []))
+    rag = agent_ctx.get('rag', {}) or {}
+    rag_prefix = f"\n[RAG] sources={','.join(rag.get('sources', []) or [])} topK={int(rag.get('topK', 5) or 5)}" if rag.get('enabled') else ''
+    prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
+    composed_user_message = f"{prefix}{message}"
+
+    async def _gen():
+        buffer = ''
+        detected_tool = False
+        tool_name = ''
+        tool_payload: dict[str, Any] = {}
+        for delta in router._llm.stream_complete(prompt=composed_user_message, tier=overrides.get('tier')):
+            if not isinstance(delta, str):
+                continue
+            buffer += delta
+            if not detected_tool:
+                mk = '[[CALL tool='
+                p = buffer.find(mk)
+                if p >= 0:
+                    tail = buffer[p + len(mk):]
+                    end = tail.find(']]')
+                    if end >= 0:
+                        tool_name = tail[:end].strip()
+                        after = tail[end+2:].lstrip()
+                        js = after.find('{')
+                        je = after.rfind('}')
+                        if js >= 0 and je >= 0 and je > js:
+                            try:
+                                tool_payload = _json.loads(after[js:je+1])
+                            except Exception:
+                                tool_payload = {}
+                        detected_tool = True
+            # 推送文字增量
+            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(delta, ensure_ascii=False)} }}\n\n"
+
+            if detected_tool:
+                detected_tool = False
+                # 通知前端工具開始
+                yield f"data: {{\"type\":\"tool_start\",\"name\":{_json.dumps(tool_name)} }}\n\n"
+                if tool_name.startswith('mcp:') and hasattr(router, '_mcp'):
+                    conn = getattr(router, '_mcp_map', {}).get(tool_name.split(':',1)[1])
+                    if conn and conn.get('base_url'):
+                        base_url = str(conn.get('base_url') or '').strip()
+                        auth = conn.get('auth') if isinstance(conn, dict) else None
+                        try:
+                            async for frame in router._mcp.stream_rpc_call_ws(
+                                base_url=base_url,
+                                method='tools.invoke',
+                                params={'tool': tool_name.split(':',1)[1], 'arguments': tool_payload or {}},
+                                auth=auth if isinstance(auth, dict) else None,
+                            ):
+                                yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(frame, ensure_ascii=False)} }}\n\n"
+                        except Exception:
+                            res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
+                            yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
+                else:
+                    res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
+                    yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
+
+        yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+
+    return StreamingResponse(_gen(), media_type='text/event-stream')
+
+
 @router.get('/agents/{agent_id}/conversations')
 async def get_conversations(
     agent_id: str,
