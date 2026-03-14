@@ -9,6 +9,7 @@ from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.chat_router import ChatRouter
 from src.services.llm_client import LLMClient
+from src.services.mcp_client import MCPClient
 
 router = APIRouter()
 
@@ -189,7 +190,7 @@ async def test_agent_mcp(
     if not base_url or not isinstance(base_url, str):
         return {'ok': False, 'error': '缺少 base_url'}
 
-    # 最小化測試：僅檢查 URL 格式，不對外連線
+    # 先檢查 URL 格式
     try:
         from urllib.parse import urlparse
         u = urlparse(base_url)
@@ -198,7 +199,11 @@ async def test_agent_mcp(
     except Exception:
         return {'ok': False, 'error': 'base_url 格式不正確'}
 
-    return {'ok': True, 'error': None, 'details': {}}
+    # 真實連線測試（httpx，短逾時，分類錯誤）
+    client = MCPClient()
+    auth = (conn or {}).get('auth') if isinstance(conn, dict) else None
+    result = client.test_connection(base_url=base_url, auth=auth if isinstance(auth, dict) else None)
+    return result
 
 
 @router.post('/agents/{agent_id}/rag-test')

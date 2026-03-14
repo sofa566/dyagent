@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     # False = 回傳骨架佔位文字（開發期不中斷；預設值以維持測試穩定）
     # True  = 回傳 503 並不寫入助理訊息
     LLM_HARD_FAIL_ON_NO_ROUTE: bool = False
+    # MCP 連線測試/呼叫逾時（毫秒）
+    MCP_HTTP_TIMEOUT_MS: int = 4000
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
