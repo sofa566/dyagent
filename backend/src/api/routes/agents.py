@@ -13,6 +13,33 @@ from src.services.llm_client import LLMClient
 router = APIRouter()
 
 
+@router.get('/agents/public')
+async def list_public_agents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """提供一般使用者可見的代理者清單。
+
+    - 權限：僅需 `chat`（一般使用者具備）
+    - 欄位：僅回傳基本資訊供前端選擇
+    """
+    if not check_permission(current_user, 'chat'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+
+    agents = db.query(Agent).all()
+    return {
+        'agents': [
+            {
+                'id': str(a.id),
+                'name': a.name,
+                'description': a.description,
+            }
+            for a in agents
+        ]
+    }
+
+
 @router.get('/agents')
 async def list_agents(
     db: Session = Depends(get_db),

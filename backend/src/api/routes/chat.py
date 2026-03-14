@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Body
 from typing import Any
 import uuid
 from sqlalchemy.orm import Session
@@ -222,3 +222,108 @@ async def get_conversations(
         })
 
     return {'conversations': result}
+
+
+@router.post('/agents/{agent_id}/conversations')
+async def create_conversation(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """建立一個新的會話（屬於目前使用者與指定代理者）。"""
+    if not check_permission(current_user, 'chat'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    # 嘗試以 user_id 欄位建立；若資料庫尚未遷移，回退為無 user_id 建立
+    try:
+        conv = Conversation(agent_id=agent_id, user_id=current_user.id)
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+    except (ProgrammingError, OperationalError) as e:
+        _log.warning("db.migration.missing_columns", hint="conversations.user_id", error=str(e))
+        db.rollback()
+        conv = Conversation(agent_id=agent_id)
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
+    _li = getattr(conv, 'last_interacted_at', None)
+    return {
+        'id': str(conv.id),
+        'agent_id': str(conv.agent_id),
+        'title': getattr(conv, 'title', None) or '',
+        'messages': [],
+        'created_at': conv.created_at.isoformat() if (conv.created_at is not None) else None,
+        'last_interacted_at': _li.isoformat() if _li is not None else None,
+    }
+
+
+@router.put('/conversations/{conversation_id}/title')
+async def rename_conversation(
+    conversation_id: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """重新命名一個會話的標題（僅限目前使用者擁有的會話）。"""
+    if not check_permission(current_user, 'chat'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(conversation_id))
+    except ValueError:
+        raise not_found_error('Conversation', conversation_id)
+
+    title = (payload or {}).get('title') if isinstance(payload, dict) else None
+    if not isinstance(title, str) or not title.strip():
+        raise validation_error('標題不可為空')
+    title = title.strip()
+    if len(title) > 200:
+        raise validation_error('標題長度不可超過 200 字元')
+
+    # 僅允許擁有者重新命名
+    try:
+        conv = db.query(Conversation).filter(
+            Conversation.id == conversation_id,
+            (Conversation.user_id == current_user.id)
+        ).first()
+    except (ProgrammingError, OperationalError) as e:
+        _log.warning("db.migration.missing_columns", hint="conversations.user_id/title", error=str(e))
+        # 若無 user_id 欄位，退回只比對 id（風險：在未遷移期間不做擁有者檢查）
+        conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+
+    if not conv:
+        raise not_found_error('Conversation', conversation_id)
+
+    # 嘗試更新標題；若 title 欄位不存在，回報友善錯誤
+    try:
+        setattr(conv, 'title', title)
+        db.commit()
+        db.refresh(conv)
+    except (ProgrammingError, OperationalError):
+        db.rollback()
+        raise validation_error('系統尚未啟用會話標題欄位，請聯繫管理員更新資料庫')
+
+    _li2 = getattr(conv, 'last_interacted_at', None)
+    return {
+        'ok': True,
+        'conversation': {
+            'id': str(conv.id),
+            'agent_id': str(conv.agent_id),
+            'title': getattr(conv, 'title', None) or '',
+            'created_at': conv.created_at.isoformat() if (conv.created_at is not None) else None,
+            'last_interacted_at': _li2.isoformat() if _li2 is not None else None,
+        }
+    }
