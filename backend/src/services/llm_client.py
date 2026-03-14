@@ -64,17 +64,22 @@ class LLMClient:
         )
 
     def cloud_default(self, *, prompt: str) -> str:
-        """雲端預設路由（骨架）。回傳文字輸出。
+        """雲端預設路由（骨架）。
 
+        注意：為避免誤判為「回聲」回覆，骨架不再回傳原始 prompt，
+        僅給出最小可見佔位文字，提示尚未連接真實模型。
         後續將以 langchain-litellm 串流/完成呼叫替換此回傳。
         """
         # TODO: 以 LangChain + LiteLLM 取代，並加入串流/重試/逾時
-        return f"[cloud:{self._cloud_provider}] {prompt}"
+        return "（模型尚未連接；已使用雲端骨架回覆）"
 
     def onprem_default(self, *, prompt: str) -> str:
-        """地端預設路由（骨架）。回傳文字輸出。"""
+        """地端預設路由（骨架）。
+
+        同上，不回傳原始 prompt，避免出現與使用者輸入相同的回聲效果。
+        """
         # TODO: 以 LangChain + LiteLLM 取代，並加入串流/重試/逾時
-        return f"[onprem:{self._onprem_base_url}] {prompt}"
+        return "（模型尚未連接；已使用地端骨架回覆）"
 
     def complete(self, *, prompt: str, tier: Optional[str] = None) -> str:
         """根據 tier（cloud/onprem）選擇路由執行。

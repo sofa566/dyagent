@@ -75,7 +75,10 @@
     </div>
     <div class="chat-layout">
       <aside class="sidebar">
-        <h3>聊天紀錄</h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <h3 style="margin:0;">聊天紀錄</h3>
+          <button id="new-conv" class="btn btn-secondary" type="button">新對話</button>
+        </div>
         <ul id="conv-list" class="conv-list"></ul>
         <div id="conv-empty" class="conv-meta" style="display:none; text-align:center; padding: 0.5rem;">尚無聊天紀錄</div>
       </aside>
@@ -101,6 +104,7 @@
     const chatMessages = document.getElementById('chat-messages');
     const convList = document.getElementById('conv-list');
     const convEmpty = document.getElementById('conv-empty');
+    const newConvBtn = document.getElementById('new-conv');
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
@@ -157,6 +161,8 @@
         } else {
           chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
         }
+        // 後台暖機 LLM 路由（不影響 UI；忽略錯誤）
+        try { await api.post(`/agents/${agentId}/llm-test`, {}); } catch {}
       } catch (error) {
         chatMessages.innerHTML = '<p style="text-align: center; color: var(--error-color);">載入失敗，請稍後再試</p>';
       }
@@ -182,12 +188,33 @@
         li.dataset.id = c.id;
         const title = snippetTitle(c);
         const meta = c.last_interacted_at ? new Date(c.last_interacted_at).toLocaleString() : '';
-        li.innerHTML = `<div class="conv-title">${title}</div><div class="conv-meta">${meta}</div>`;
+        li.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+            <div class="conv-title" style="flex:1;">${title}</div>
+            <button class="btn" data-action="rename" title="重新命名" style="padding:2px 6px;">✎</button>
+          </div>
+          <div class="conv-meta">${meta}</div>
+        `;
         li.addEventListener('click', () => {
           currentConversationId = c.id;
           renderMessagesById(c.id);
           Array.from(convList.children).forEach(el => el.classList.remove('active'));
           li.classList.add('active');
+        });
+        // 重新命名事件（阻止冒泡，避免同時觸發切換）
+        li.querySelector('[data-action="rename"]').addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const newTitle = window.prompt('輸入新的會話標題（最多 200 字）', snippetTitle(c));
+          if (!newTitle || !newTitle.trim()) return;
+          try {
+            const res = await api.put(`/conversations/${c.id}/title`, { title: newTitle.trim() });
+            if (res && res.ok) {
+              c.title = newTitle.trim();
+              renderSidebar(conversations);
+            }
+          } catch (e) {
+            showError(e.message || '重新命名失敗');
+          }
         });
         convList.appendChild(li);
       });
@@ -213,6 +240,34 @@
         messageInput.disabled = true;
         submitBtn.disabled = true;
         chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>';
+      }
+    });
+
+    newConvBtn.addEventListener('click', async () => {
+      if (!currentAgentId) {
+        showError('請先選擇代理者');
+        return;
+      }
+      try {
+        const res = await api.post(`/agents/${currentAgentId}/conversations`, {});
+        if (res && res.id) {
+          // 將新會話插入最前面
+          const conv = {
+            id: res.id,
+            agent_id: res.agent_id,
+            title: res.title || '',
+            messages: [],
+            created_at: res.created_at,
+            last_interacted_at: res.last_interacted_at,
+          };
+          currentConversations = [conv, ...(currentConversations || [])];
+          currentConversationId = conv.id;
+          renderSidebar(currentConversations);
+          renderMessagesById(currentConversationId);
+          messageInput.focus();
+        }
+      } catch (e) {
+        showError(e.message || '新對話建立失敗');
       }
     });
 
