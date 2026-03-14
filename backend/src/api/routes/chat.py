@@ -4,6 +4,8 @@ import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import ProgrammingError, OperationalError
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+import json as _json
 
 from src.core.database import get_db
 from src.models import User, Agent, Conversation, Message
@@ -201,6 +203,60 @@ async def invoke_tool(
     # 工具呼叫：優先走 WS 串流（若不可用則回退 HTTP），並強制白名單
     result = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload=payload or {}, db=db, agent_id=str(agent.id))
     return result
+
+
+@router.get('/conversations/{conversation_id}/tools/{tool_name}/stream')
+async def stream_tool(
+    conversation_id: str,
+    tool_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """以 SSE 方式串流工具輸出。優先走 MCP WS JSON-RPC；若不可用則回退單段 HTTP 結果。
+
+    備註：目前為最小骨架；前端可用 EventSource 訂閱。
+    """
+    if not check_permission(current_user, 'chat'):
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(conversation_id))
+    except ValueError:
+        raise not_found_error('Conversation', conversation_id)
+
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if conv is None:
+        raise not_found_error('Conversation', conversation_id)
+
+    agent = db.query(Agent).filter(Agent.id == conv.agent_id).first()
+    if agent is None:
+        raise not_found_error('Agent', str(conv.agent_id))
+
+    router = ChatRouter()
+
+    async def _gen():
+        # 準備白名單/連線映射
+        router._prepare_integrations(db=db, agent_id=str(agent.id))
+        # 僅對 mcp:* 嘗試 WS 串流；其他工具回單段
+        if tool_name.startswith('mcp:') and hasattr(router, '_mcp'):
+            conn_name = tool_name.split(':', 1)[1]
+            conn = getattr(router, '_mcp_map', {}).get(conn_name)
+            if conn and conn.get('base_url'):
+                base_url = str(conn.get('base_url') or '').strip()
+                auth = conn.get('auth') if isinstance(conn, dict) else None
+                async for frame in router._mcp.stream_rpc_call_ws(
+                    base_url=base_url,
+                    method='tools.invoke',
+                    params={'tool': conn_name, 'arguments': {}},
+                    auth=auth if isinstance(auth, dict) else None,
+                ):
+                    yield f"data: {_json.dumps(frame, ensure_ascii=False)}\n\n"
+                return
+        # 回退：單段結果
+        res = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload={}, db=db, agent_id=str(agent.id))
+        yield f"data: {_json.dumps(res, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_gen(), media_type='text/event-stream')
 
 
 @router.get('/agents/{agent_id}/conversations')
