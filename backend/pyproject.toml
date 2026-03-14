@@ -36,6 +36,7 @@ python_classes = "Test*"
 python_functions = "test_*"
 asyncio_mode = "auto"
 addopts = "-v --strict-markers"
+log_level = "INFO"
 
 [tool.coverage.run]
 source = ["src"]
