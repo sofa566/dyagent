@@ -19,6 +19,7 @@ from src.models import Log, Agent
 from src.models.events import EventPart
 from src.core.config import settings
 from src.services.permission_service import PermissionService
+from src.services.mcp_client import MCPClient
 
 
 class ChatRouter:
@@ -35,6 +36,7 @@ class ChatRouter:
         # Doom loop 檢測：保存最近工具呼叫紀錄 (tool, normalized_input)
         self._recent_tool_calls: deque[Tuple[str, str]] = deque(maxlen=32)
         self._perm = PermissionService()
+        self._mcp = MCPClient()
 
     def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: Optional[str] = None, db: Optional[Session] = None, llm_overrides: Optional[dict] = None) -> str:
         """執行單輪回合並回傳助理文字。
@@ -93,6 +95,11 @@ class ChatRouter:
 
         # 允許的工具名（若未來加入工具呼叫時作為白名單）
         self._allowed_tools = set(agent_ctx.get("skills", [])) | {f"mcp:{(c.get('name') or '').strip()}" for c in agent_ctx.get("mcp", []) if isinstance(c, dict)}
+        # 建立 MCP 名稱對連線的映射
+        self._mcp_map = {}
+        for c in agent_ctx.get("mcp", []) or []:
+            if isinstance(c, dict) and c.get("enabled") and c.get("name"):
+                self._mcp_map[str(c.get("name")).strip()] = c
 
         # 若啟用 RAG，嘗試構建最小檢索上下文（目前無嵌入/檢索，先提供來源標籤提示）
         rag_prefix = ""
@@ -154,6 +161,15 @@ class ChatRouter:
         if refs_block:
             output_text = f"{output_text}{refs_block}"
 
+        # 嘗試解析工具呼叫（Function-Call 簡易協議）：
+        # 格式：[[CALL tool=mcp:NAME]]\n{...JSON...}
+        try:
+            handled = self._maybe_handle_tool_call(session_id=session_id, text=output_text)
+            if handled is not None:
+                output_text = handled
+        except Exception as e:
+            self._log.warning("toolcall.parse_failed", error=str(e))
+
         # 簡易估算 tokens 與成本（後續以供應商資料覆蓋）
         approx_tokens = max(1, len(output_text) // 4)
         self._last_metrics = {
@@ -180,6 +196,81 @@ class ChatRouter:
         self.write_event_finish(session_id=session_id)
 
         return output_text
+
+    def _maybe_handle_tool_call(self, *, session_id: str, text: str) -> str | None:
+        marker = "[[CALL tool="
+        idx = text.find(marker)
+        if idx < 0:
+            return None
+        try:
+            tail = text[idx + len(marker):]
+            name_end = tail.find("]]")
+            if name_end < 0:
+                return None
+            tool_name = tail[:name_end].strip()
+            # 取 JSON 主體
+            after = tail[name_end + 2 :].lstrip()  # 跳過 "]]"
+            # 嘗試讀取第一個大括號 JSON
+            j_start = after.find("{")
+            j_end = after.rfind("}")
+            payload = {}
+            if j_start >= 0 and j_end >= 0 and j_end > j_start:
+                import json as _json
+                payload = _json.loads(after[j_start : j_end + 1])
+            # 呼叫工具
+            result = self.call_tool(session_id=session_id, tool=tool_name, payload=payload)
+            # 以簡易格式附加工具結果
+            if result.get("ok"):
+                return f"{text}\n\n[Tool Result] {tool_name}: success"
+            return f"{text}\n\n[Tool Result] {tool_name}: failed ({result.get('error')})"
+        except Exception:
+            return None
+
+    # 公用：以白名單強制的工具呼叫（未來供工具規劃/LLM function call 整合）
+    def call_tool(self, *, session_id: str, tool: str, payload: dict) -> dict:
+        # 正規化名稱
+        name = (tool or "").strip()
+        if not name:
+            self.write_event_tool_error(session_id=session_id, tool="<empty>", error="invalid_tool")
+            return {"ok": False, "error": "invalid_tool"}
+
+        # 白名單檢查
+        if name not in self._allowed_tools:
+            self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
+            return {"ok": False, "error": "tool_not_allowed"}
+
+        # Doom loop 檢測與事件記錄
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+            return {"ok": False, "error": "doom_loop_denied"}
+
+        # MCP 工具：命名慣例 mcp:<conn-name>
+        if name.startswith("mcp:"):
+            conn_name = name.split(":", 1)[1]
+            conn = self._mcp_map.get(conn_name)
+            if not conn:
+                self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_connection_not_found")
+                return {"ok": False, "error": "mcp_connection_not_found"}
+            base_url = str(conn.get("base_url") or "").strip()
+            if not base_url:
+                self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
+                return {"ok": False, "error": "mcp_invalid_base_url"}
+            # 佔位呼叫
+            try:
+                res = self._mcp.invoke(base_url=base_url, name=conn_name, arguments=payload or {})
+                self.write_event_tool_result(session_id=session_id, tool=name, result={"ok": True})
+                return {"ok": True, "result": res}
+            except Exception as e:
+                self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                return {"ok": False, "error": str(e)}
+
+        # 其他工具（如本地 Skills）：暫以佔位回傳
+        try:
+            self.write_event_tool_result(session_id=session_id, tool=name, result={"ok": True})
+            return {"ok": True, "result": {"tool": name, "data": payload or {}}}
+        except Exception as e:
+            self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+            return {"ok": False, "error": str(e)}
 
     # 取得最近一次回合的度量（tokens/cost 等）
     def last_metrics(self) -> dict | None:

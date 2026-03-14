@@ -121,6 +121,7 @@ class MCPClient:
             arguments or {},
             {"tool": name, "arguments": arguments or {}},
         ]
+        last_error: Exception | None = None
         with httpx.Client(timeout=self._timeout) as client:
             for (method, url), body in zip(candidates, payloads):
                 try:
@@ -136,6 +137,37 @@ class MCPClient:
                     self._log.warning("mcp.invoke.attempt_failed", url=url, error=str(e))
                     last_error = e
                     continue
+        # 嘗試 JSON-RPC 2.0 端點（HTTP）
+        rpc = self.rpc_call(base_url=base_url, method="tools.invoke", params={"tool": name, "arguments": arguments or {}}, auth=auth)
+        if rpc.get("ok"):
+            return {"ok": True, "tool": name, "data": rpc.get("result")}
         # 全部失敗：回傳分類錯誤
-        reason = self._classify_error(last_error) if 'last_error' in locals() else "unknown_error"
+        try:
+            reason = self._classify_error(last_error) if last_error is not None else "unknown_error"
+        except Exception:
+            reason = "unknown_error"
         return {"ok": False, "error": reason, "tool": name}
+
+    def rpc_call(self, *, base_url: str, method: str, params: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """以 JSON-RPC 2.0 嘗試呼叫 MCP 服務（HTTP 傳輸）。
+
+        端點猜測：/jsonrpc 或 /rpc；回傳統一結構 {ok, result|error}
+        """
+        headers = self._build_headers(auth)
+        body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+        for path in ("/jsonrpc", "/rpc"):
+            url = base_url.rstrip("/") + path
+            try:
+                with httpx.Client(timeout=self._timeout) as client:
+                    r = client.post(url, headers=headers, json=body)
+                    r.raise_for_status()
+                    data = r.json()
+                    if isinstance(data, dict) and data.get("jsonrpc") == "2.0":
+                        if "result" in data:
+                            return {"ok": True, "result": data.get("result")}
+                        if "error" in data:
+                            return {"ok": False, "error": data.get("error")}
+            except Exception as e:
+                self._log.warning("mcp.rpc.attempt_failed", url=url, error=str(e))
+                continue
+        return {"ok": False, "error": "rpc_unavailable"}

@@ -125,6 +125,7 @@
     const toolConvInput = document.getElementById('tool-conv');
     const toolPayloadInput = document.getElementById('tool-payload');
     const toolOutput = document.getElementById('tool-output');
+    let toolHistory = [];
 
     let currentAgentId = null;
     let currentConversationId = null;
@@ -186,7 +187,24 @@
           const items = [];
           skills.forEach(s => items.push({ name: s, type: 'skill' }));
           mcps.filter(c => c && c.enabled).forEach(c => items.push({ name: `mcp:${c.name}`, type: 'mcp' }));
-          toolsList.innerHTML = items.length ? items.map(x => `<span class="tag">${x.name}</span>`).join('') : '<div class="muted">（此代理者未啟用任何工具）</div>';
+          if (items.length) {
+            toolsList.innerHTML = '';
+            items.forEach(x => {
+              const el = document.createElement('span');
+              el.className = 'tag';
+              el.textContent = x.name;
+              el.style.cursor = 'pointer';
+              el.title = '點擊帶入工具名稱';
+              el.addEventListener('click', () => {
+                toolNameInput.value = x.name;
+                // 簡易模板：mcp 預設 {"q":"查詢"}；skill 預設 {}
+                toolPayloadInput.value = x.type === 'mcp' ? '{"q": "查詢"}' : '{}';
+              });
+              toolsList.appendChild(el);
+            });
+          } else {
+            toolsList.innerHTML = '<div class="muted">（此代理者未啟用任何工具）</div>';
+          }
           toolConvInput.value = currentConversationId || '';
         } catch {}
         // 後台暖機 LLM 路由（不影響 UI；忽略錯誤）
@@ -284,6 +302,8 @@
         }
         const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, body);
         toolOutput.textContent = JSON.stringify(res, null, 2);
+        toolHistory.unshift({ t: new Date().toISOString(), tool, convId, body, res });
+        // 可擴充：在面板下方渲染最近 5 筆歷史
       } catch (e) {
         toolOutput.textContent = e.message || '執行工具失敗';
       }
