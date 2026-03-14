@@ -101,6 +101,8 @@ class LLMClient:
         - 完成時記錄 tokens/cost（估算）
         """
         start_ts = time.time()
+        # 預設清空路由資訊；真實供應商/路徑會在各分支填入
+        self._last_route = {}
         self._log.info("llm.stream.start", prompt_len=len(prompt), tier=tier or self._default_tier)
         attempt = 0
         while True:
@@ -119,6 +121,12 @@ class LLMClient:
                 if not used_langchain:
                     # 骨架：以本地字串切分模擬兩段串流
                     text = self.complete(prompt=prompt, tier=tier)
+                    # 標記為本地降級路由
+                    self._last_route = {
+                        "tier": (tier or getattr(self, "_session_tier", None) or self._default_tier),
+                        "provider": "",
+                        "fallback": True,
+                    }
                     mid = max(1, len(text) // 2)
                     part1, part2 = text[:mid], text[mid:]
                     local_buf = text
@@ -140,6 +148,11 @@ class LLMClient:
                     # 最終降級為本地切片輸出而不是丟出
                     self._log.error("llm.stream.error.final_fallback", error=str(e), attempt=attempt)
                     text = self.complete(prompt=prompt, tier=tier)
+                    self._last_route = {
+                        "tier": (tier or getattr(self, "_session_tier", None) or self._default_tier),
+                        "provider": "",
+                        "fallback": True,
+                    }
                     mid = max(1, len(text) // 2)
                     part1, part2 = text[:mid], text[mid:]
                     local_buf = text

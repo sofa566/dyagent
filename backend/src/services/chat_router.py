@@ -111,7 +111,21 @@ class ChatRouter:
             "cost": 0.0,
         }
 
-        # 結束事件
+        # 若啟用「無可用路由即硬失敗」，且本輪為降級/骨架輸出，則回傳錯誤（不寫助理訊息）
+        try:
+            info = self._llm.last_route_info()
+            is_fallback = not info or (str(info.get("provider")) == "fallback")
+        except Exception:
+            is_fallback = False
+        if getattr(settings, "LLM_HARD_FAIL_ON_NO_ROUTE", False) and is_fallback:
+            # 記錄工具錯誤並結束事件
+            self.write_event_tool_error(session_id=session_id, tool="llm", error="no_route")
+            self.write_event_step_finish(session_id=session_id)
+            self.write_event_finish(session_id=session_id)
+            # 以 RuntimeError 讓上層路由轉成 503（不回傳文字、不寫入助理訊息）
+            raise RuntimeError("no_route")
+
+        # 正常結束事件
         self.write_event_step_finish(session_id=session_id)
         self.write_event_finish(session_id=session_id)
 

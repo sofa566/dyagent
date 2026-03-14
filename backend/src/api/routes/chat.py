@@ -11,6 +11,7 @@ from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.chat_router import ChatRouter
 from src.core.logging import get_logger
+from src.api.errors import service_unavailable_error
 
 router = APIRouter()
 _log = get_logger("api.chat")
@@ -131,14 +132,20 @@ async def chat_with_agent(
     except Exception:
         overrides = {}
 
-    response_content = router.single_turn(
-        session_id=str(conversation.id),
-        agent_id=str(agent.id),
-        user_message=message,
-        tier=overrides.get('tier'),  # 若 Agent 指定 tier 則覆蓋
-        db=db,      # 傳入 DB 以便事件/審計寫盤
-        llm_overrides=overrides,
-    )
+    try:
+        response_content = router.single_turn(
+            session_id=str(conversation.id),
+            agent_id=str(agent.id),
+            user_message=message,
+            tier=overrides.get('tier'),  # 若 Agent 指定 tier 則覆蓋
+            db=db,      # 傳入 DB 以便事件/審計寫盤
+            llm_overrides=overrides,
+        )
+    except RuntimeError as e:
+        # 若啟用硬失敗且沒有可用模型路由，回傳 503 並不寫入助理訊息
+        if str(e) == 'no_route':
+            raise service_unavailable_error('模型路由不可用，請檢查金鑰或端點設定')
+        raise
 
     assistant_message = Message(
         conversation_id=conversation.id,

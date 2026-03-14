@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 60
     # Doom loop 防護門檻（連續相同工具+輸入觸發）
     DOOM_LOOP_THRESHOLD: int = 3
+    # 無可用模型路由時是否改為「硬失敗」：
+    # False = 回傳骨架佔位文字（開發期不中斷；預設值以維持測試穩定）
+    # True  = 回傳 503 並不寫入助理訊息
+    LLM_HARD_FAIL_ON_NO_ROUTE: bool = False
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
