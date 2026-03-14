@@ -89,6 +89,7 @@
         <form id="chat-form" class="chat-input">
           <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
           <button type="submit" class="btn btn-primary" disabled>發送</button>
+          <button id="stream-send" type="button" class="btn" disabled>串流發送</button>
         </form>
         <details id="tools-panel" class="tools" style="margin-top:0.75rem;">
           <summary>可用工具</summary>
@@ -120,6 +121,7 @@
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
+    const streamSendBtn = document.getElementById('stream-send');
     const toolsList = document.getElementById('tools-list');
     const runToolBtn = document.getElementById('run-tool');
     const streamToolBtn = document.getElementById('stream-tool');
@@ -208,6 +210,8 @@
             toolsList.innerHTML = '<div class="muted">（此代理者未啟用任何工具）</div>';
           }
           toolConvInput.value = currentConversationId || '';
+          // 啟用串流發送按鈕
+          streamSendBtn.disabled = false;
         } catch {}
         // 後台暖機 LLM 路由（不影響 UI；忽略錯誤）
         try { await api.post(`/agents/${agentId}/llm-test`, {}); } catch {}
@@ -442,6 +446,63 @@
         submitBtn.disabled = false;
         messageInput.placeholder = '輸入訊息...';
         messageInput.focus();
+      }
+    });
+
+    streamSendBtn.addEventListener('click', async () => {
+      const msg = (messageInput.value || '').trim();
+      if (!msg || !currentAgentId) return;
+      // 建立助理訊息區塊
+      const assistantMsg = document.createElement('div');
+      assistantMsg.className = 'message assistant';
+      const p = document.createElement('p');
+      assistantMsg.appendChild(p);
+      chatMessages.appendChild(assistantMsg);
+      // 串流聊天
+      try {
+        const token = localStorage.getItem('auth_token');
+        const url = `/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: msg });
+        const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!resp.ok || !resp.body) {
+          p.textContent = `串流失敗：HTTP ${resp.status}`;
+          return;
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            if (!chunk.startsWith('data: ')) continue;
+            try {
+              const payload = JSON.parse(chunk.replace(/^data:\s*/, ''));
+              if (payload.type === 'text' && typeof payload.delta === 'string') {
+                p.textContent += payload.delta;
+              } else if (payload.type === 'tool_start') {
+                const card = document.createElement('div');
+                card.className = 'tool-card';
+                card.innerHTML = `<div class="tool-card__header">工具：${payload.name}</div><div class="tool-card__body"></div>`;
+                assistantMsg.appendChild(card);
+              } else if (payload.type === 'tool') {
+                const bodies = assistantMsg.querySelectorAll('.tool-card__body');
+                const body = bodies[bodies.length - 1] || null;
+                if (body) {
+                  body.textContent += `\n` + JSON.stringify(payload.frame);
+                }
+              } else if (payload.type === 'done') {
+                // 完成
+              }
+            } catch {}
+          }
+        }
+        messageInput.value = '';
+      } catch (e) {
+        p.textContent += `\n[錯誤] ${(e && e.message) || '串流錯誤'}`;
       }
     });
 
