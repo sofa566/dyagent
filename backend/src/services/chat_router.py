@@ -15,7 +15,7 @@ from collections import deque
 from src.services.llm_client import LLMClient
 from src.core.logging import get_logger
 from sqlalchemy.orm import Session
-from src.models import Log
+from src.models import Log, Agent
 from src.models.events import EventPart
 from src.core.config import settings
 from src.services.permission_service import PermissionService
@@ -65,6 +65,54 @@ class ChatRouter:
         except TypeError:
             self._llm.init_for_session(session_id=session_id, preferred_tier=tier)
 
+        # 讀取代理者整合設定並構建提示前綴（MCP/Skills/RAG）
+        # - 僅在提供 DB 時嘗試讀取；失敗時不影響流程
+        agent_ctx: dict[str, Any] = {"skills": [], "mcp": [], "rag": {"enabled": False, "sources": [], "topK": 5}}
+        try:
+            if db is not None:
+                ag = db.query(Agent).filter(Agent.id == agent_id).first()
+                if ag is not None:
+                    # 正規化 MCP 為 list
+                    mcp_raw = ag.mcp_config or []
+                    if isinstance(mcp_raw, dict):
+                        mcp_list = list(mcp_raw.values())
+                    elif isinstance(mcp_raw, list):
+                        mcp_list = mcp_raw
+                    else:
+                        mcp_list = []
+                    agent_ctx["mcp"] = [c for c in mcp_list if isinstance(c, dict) and c.get("enabled")]
+                    agent_ctx["skills"] = [s for s in (ag.skills or []) if isinstance(s, str) and s.strip()]
+                    rc = ag.rag_config or {}
+                    agent_ctx["rag"] = {
+                        "enabled": bool(rc.get("enabled", False)),
+                        "sources": list(rc.get("sources", []) or []),
+                        "topK": int(rc.get("topK", 5) or 5),
+                    }
+        except Exception as _e:
+            self._log.warning("agent.integrations.load_failed", error=str(_e))
+
+        # 允許的工具名（若未來加入工具呼叫時作為白名單）
+        self._allowed_tools = set(agent_ctx.get("skills", [])) | {f"mcp:{(c.get('name') or '').strip()}" for c in agent_ctx.get("mcp", []) if isinstance(c, dict)}
+
+        # 若啟用 RAG，嘗試構建最小檢索上下文（目前無嵌入/檢索，先提供來源標籤提示）
+        rag_prefix = ""
+        refs_block = ""
+        try:
+            rag = agent_ctx.get("rag", {})
+            if rag and rag.get("enabled"):
+                sources = rag.get("sources", []) or []
+                topk = rag.get("topK", 5) or 5
+                rag_prefix = f"\n[RAG] sources={','.join(sources)} topK={topk}"
+                refs_block = "\n\nReferences:\n- （目前未連接檢索服務，無可用引用）"
+        except Exception:
+            pass
+
+        # 為模型加入能力提示前綴，讓回覆能考量可用能力（即使目前為骨架）
+        mcp_names = ",".join([str(c.get("name") or "").strip() for c in agent_ctx.get("mcp", []) if isinstance(c, dict) and c.get("enabled")])
+        skills_names = ",".join(agent_ctx.get("skills", []))
+        prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
+        composed_user_message = f"{prefix}{user_message}"
+
         # 若啟用結構化輸出模式：強制 StructuredOutput 工具並於成功後立即結束（T017 預留）
         if self._structured_mode is not None:
             # 強制注入固定工具 ID，並視為 toolChoice=required（規格要求）
@@ -86,7 +134,7 @@ class ChatRouter:
         # 串流取得輸出（簡化為兩段），並寫入 reasoning/text 事件
         chunks: List[str] = []
         try:
-            for delta in self._llm.stream_complete(prompt=user_message, tier=tier):
+            for delta in self._llm.stream_complete(prompt=composed_user_message, tier=tier):
                 # 視需要可區分 reasoning/text；此處以 text 事件示意
                 chunks.append(delta)
                 self.write_event_text(session_id=session_id, delta=delta)
@@ -103,6 +151,8 @@ class ChatRouter:
             return self._friendly_error_message(reason)
 
         output_text = "".join(chunks)
+        if refs_block:
+            output_text = f"{output_text}{refs_block}"
 
         # 簡易估算 tokens 與成本（後續以供應商資料覆蓋）
         approx_tokens = max(1, len(output_text) // 4)

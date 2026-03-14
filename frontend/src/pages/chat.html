@@ -298,7 +298,16 @@
 
         const assistantMsg = document.createElement('div');
         assistantMsg.className = 'message assistant';
-        assistantMsg.innerHTML = `<p>${response.response}</p>`;
+        // 嘗試將 References 區塊分離呈現
+        const text = String(response.response || '');
+        const refIdx = text.indexOf('\n\nReferences:');
+        if (refIdx >= 0) {
+          const main = text.slice(0, refIdx);
+          const refs = text.slice(refIdx + 2); // 去除前置換行
+          assistantMsg.innerHTML = `<p>${main}</p><pre style="white-space:pre-wrap;margin-top:6px;background:var(--card-bg);border:1px solid var(--border-color);padding:6px;">${refs}</pre>`;
+        } else {
+          assistantMsg.innerHTML = `<p>${text}</p>`;
+        }
         chatMessages.appendChild(assistantMsg);
         chatMessages.scrollTop = chatMessages.scrollHeight;
 
