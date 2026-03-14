@@ -100,7 +100,7 @@
             <textarea id="tool-payload" rows="3" placeholder='JSON 參數，例如 {"q":"你好"}'></textarea>
           <button id="run-tool" class="btn">執行工具</button>
           <button id="stream-tool" class="btn">串流執行（SSE）</button>
-          <pre id="tool-output" class="code" style="white-space:pre-wrap;"></pre>
+          <div id="tool-output" class="tool-output"></div>
         </div>
       </details>
       </section>
@@ -130,6 +130,104 @@
     const toolPayloadInput = document.getElementById('tool-payload');
     const toolOutput = document.getElementById('tool-output');
     let toolHistory = [];
+
+    // 輔助：建立工具卡片（標題、狀態、內容、操作）
+    function createToolCard(name) {
+      const card = document.createElement('div');
+      card.className = 'tool-card';
+      card.style.border = '1px solid var(--border-color)';
+      card.style.borderRadius = '8px';
+      card.style.padding = '8px';
+      card.style.margin = '8px 0';
+
+      const header = document.createElement('div');
+      header.className = 'tool-card__header';
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.justifyContent = 'space-between';
+
+      const title = document.createElement('div');
+      title.innerHTML = `<strong>工具：</strong>${name}`;
+
+      const status = document.createElement('span');
+      status.className = 'tool-card__status';
+      status.textContent = '執行中…';
+      status.style.color = 'var(--text-secondary)';
+
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '6px';
+      const collapseBtn = document.createElement('button');
+      collapseBtn.className = 'btn';
+      collapseBtn.textContent = '收合';
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'btn';
+      clearBtn.textContent = '清除內容';
+
+      actions.appendChild(collapseBtn);
+      actions.appendChild(clearBtn);
+
+      header.appendChild(title);
+      header.appendChild(status);
+      header.appendChild(actions);
+
+      const body = document.createElement('div');
+      body.className = 'tool-card__body';
+      body.style.marginTop = '6px';
+      body.style.maxHeight = '240px';
+      body.style.overflow = 'auto';
+      body.style.background = 'var(--card-bg)';
+      body.style.border = '1px dashed var(--border-color)';
+      body.style.padding = '6px';
+
+      collapseBtn.addEventListener('click', () => {
+        const visible = body.style.display !== 'none';
+        body.style.display = visible ? 'none' : 'block';
+        collapseBtn.textContent = visible ? '展開' : '收合';
+      });
+      clearBtn.addEventListener('click', () => {
+        body.innerHTML = '';
+      });
+
+      card.appendChild(header);
+      card.appendChild(body);
+      return { card, body, status };
+    }
+
+    function appendFrame(container, frame) {
+      const row = document.createElement('div');
+      row.style.borderTop = '1px solid var(--border-subtle, #e5e5e5)';
+      row.style.paddingTop = '6px';
+      row.style.marginTop = '6px';
+
+      const meta = document.createElement('div');
+      meta.style.display = 'flex';
+      meta.style.alignItems = 'center';
+      meta.style.justifyContent = 'space-between';
+      const ts = new Date().toLocaleTimeString();
+      meta.innerHTML = `<span style="color:var(--text-secondary)">${ts}</span>`;
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'btn';
+      copyBtn.textContent = '複製 JSON';
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(JSON.stringify(frame, null, 2));
+          copyBtn.textContent = '已複製';
+          setTimeout(() => (copyBtn.textContent = '複製 JSON'), 1500);
+        } catch {}
+      });
+      meta.appendChild(copyBtn);
+
+      const pre = document.createElement('pre');
+      pre.className = 'code';
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent = JSON.stringify(frame, null, 2);
+
+      row.appendChild(meta);
+      row.appendChild(pre);
+      container.appendChild(row);
+    }
 
     let currentAgentId = null;
     let currentConversationId = null;
@@ -306,12 +404,23 @@
         if (toolPayloadInput.value.trim()) {
           try { body = JSON.parse(toolPayloadInput.value); } catch { toolOutput.textContent = 'JSON 參數格式錯誤'; return; }
         }
+        const holder = document.createElement('div');
+        const { card, body: b, status } = createToolCard(tool);
+        holder.appendChild(card);
+        toolOutput.prepend(holder);
         const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, body);
-        toolOutput.textContent = JSON.stringify(res, null, 2);
+        appendFrame(b, res);
+        status.textContent = (res && res.ok) ? '完成' : '失敗';
+        status.style.color = (res && res.ok) ? 'var(--ok-color, #198754)' : 'var(--error-color, #c0392b)';
         toolHistory.unshift({ t: new Date().toISOString(), tool, convId, body, res });
-        // 可擴充：在面板下方渲染最近 5 筆歷史
       } catch (e) {
-        toolOutput.textContent = e.message || '執行工具失敗';
+        const holder = document.createElement('div');
+        const { card, body: b, status } = createToolCard((toolNameInput.value || '').trim() || 'tool');
+        holder.appendChild(card);
+        toolOutput.prepend(holder);
+        appendFrame(b, { ok: false, error: e.message || '執行工具失敗' });
+        status.textContent = '失敗';
+        status.style.color = 'var(--error-color, #c0392b)';
       }
     });
 
@@ -322,7 +431,10 @@
         let convId = (toolConvInput.value || '').trim();
         if (!convId) convId = currentConversationId || '';
         if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
-        toolOutput.textContent = '';
+        const holder = document.createElement('div');
+        const { card, body: b, status } = createToolCard(tool);
+        holder.appendChild(card);
+        toolOutput.prepend(holder);
         const token = localStorage.getItem('auth_token');
         // 以 fetch 串流方式讀取 SSE（因 EventSource 無法帶自訂標頭）
         const resp = await fetch(`/api/conversations/${convId}/tools/${encodeURIComponent(tool)}/stream`, {
@@ -330,7 +442,9 @@
           headers: { 'Authorization': `Bearer ${token}` },
         });
         if (!resp.ok || !resp.body) {
-          toolOutput.textContent = `串流建立失敗：HTTP ${resp.status}`;
+          appendFrame(b, { ok: false, error: `串流建立失敗：HTTP ${resp.status}` });
+          status.textContent = '失敗';
+          status.style.color = 'var(--error-color, #c0392b)';
           return;
         }
         const reader = resp.body.getReader();
@@ -348,13 +462,24 @@
               try {
                 const jsonStr = chunk.replace(/^data:\s*/, '');
                 const obj = JSON.parse(jsonStr);
-                toolOutput.textContent += `\n${JSON.stringify(obj)}`;
+                if (obj && obj.type === 'tool') {
+                  appendFrame(b, obj.frame);
+                } else if (obj && obj.type === 'done') {
+                  status.textContent = '完成';
+                  status.style.color = 'var(--ok-color, #198754)';
+                }
               } catch {}
             }
           }
         }
       } catch (e) {
-        toolOutput.textContent = e.message || '串流執行錯誤';
+        const holder = document.createElement('div');
+        const { card, body: b, status } = createToolCard((toolNameInput.value || '').trim() || 'tool');
+        holder.appendChild(card);
+        toolOutput.prepend(holder);
+        appendFrame(b, { ok: false, error: e.message || '串流執行錯誤' });
+        status.textContent = '失敗';
+        status.style.color = 'var(--error-color, #c0392b)';
       }
     });
 
@@ -484,15 +609,19 @@
               if (payload.type === 'text' && typeof payload.delta === 'string') {
                 p.textContent += payload.delta;
               } else if (payload.type === 'tool_start') {
-                const card = document.createElement('div');
-                card.className = 'tool-card';
-                card.innerHTML = `<div class="tool-card__header">工具：${payload.name}</div><div class="tool-card__body"></div>`;
-                assistantMsg.appendChild(card);
+                const built = createToolCard(payload.name);
+                activeToolCard = built;
+                assistantMsg.appendChild(built.card);
               } else if (payload.type === 'tool') {
-                const bodies = assistantMsg.querySelectorAll('.tool-card__body');
-                const body = bodies[bodies.length - 1] || null;
-                if (body) {
-                  body.textContent += `\n` + JSON.stringify(payload.frame);
+                if (activeToolCard) {
+                  appendFrame(activeToolCard.body, payload.frame);
+                  if (payload.frame && (payload.frame.ok === true)) {
+                    activeToolCard.status.textContent = '完成';
+                    activeToolCard.status.style.color = 'var(--ok-color, #198754)';
+                  } else if (payload.frame && payload.frame.ok === false) {
+                    activeToolCard.status.textContent = '失敗';
+                    activeToolCard.status.style.color = 'var(--error-color, #c0392b)';
+                  }
                 }
               } else if (payload.type === 'done') {
                 // 完成
