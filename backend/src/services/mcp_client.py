@@ -9,10 +9,11 @@ MCP 客戶端骨架
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, AsyncGenerator
 import httpx
 from src.core.logging import get_logger
 from src.core.config import settings
+from urllib.parse import urlparse, urlunparse
 
 
 class MCPClient:
@@ -171,3 +172,69 @@ class MCPClient:
                 self._log.warning("mcp.rpc.attempt_failed", url=url, error=str(e))
                 continue
         return {"ok": False, "error": "rpc_unavailable"}
+
+    # ===== WebSocket JSON-RPC (Async) =====
+    def _to_ws_url(self, base_url: str, path: str) -> str:
+        u = urlparse(base_url)
+        scheme = 'wss' if u.scheme == 'https' else 'ws'
+        new = u._replace(scheme=scheme)
+        p = path if path.startswith('/') else ('/' + path)
+        return urlunparse(new._replace(path=p))
+
+    async def rpc_call_ws(self, *, base_url: str, method: str, params: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """以 WebSocket JSON-RPC 2.0 呼叫單次方法。
+
+        需求：伺服端支援 WS 並以 settings.MCP_WS_PATH 為端點；
+        若環境缺少 websockets 套件或伺服器不可用，回傳 {ok: False, error: ws_not_available}。
+        """
+        try:
+            import websockets  # type: ignore
+            import json as _json
+        except Exception:
+            return {"ok": False, "error": "ws_not_available"}
+
+        url = self._to_ws_url(base_url, getattr(settings, 'MCP_WS_PATH', '/ws'))
+        headers = self._build_headers(auth)
+        try:
+            async with websockets.connect(url, extra_headers=headers, close_timeout=self._timeout) as ws:  # type: ignore
+                req = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+                await ws.send(_json.dumps(req, ensure_ascii=False))
+                raw = await ws.recv()
+                data = _json.loads(raw)
+                if isinstance(data, dict) and data.get("jsonrpc") == "2.0":
+                    if "result" in data:
+                        return {"ok": True, "result": data.get("result")}
+                    if "error" in data:
+                        return {"ok": False, "error": data.get("error")}
+                return {"ok": False, "error": "invalid_rpc_response"}
+        except Exception as e:
+            self._log.warning("mcp.ws.rpc_failed", url=url, error=str(e))
+            return {"ok": False, "error": self._classify_error(e)}
+
+    async def stream_rpc_call_ws(self, *, base_url: str, method: str, params: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """以 WebSocket JSON-RPC 2.0 串流模式收取多段輸出。
+
+        回傳每段訊息的原始 JSON（已解析為 dict）。遇到包含 result 或 error 時結束。
+        若不可用則直接 yield 一段 {ok: False, error: 'ws_not_available'} 後結束。
+        """
+        try:
+            import websockets  # type: ignore
+            import json as _json
+        except Exception:
+            yield {"ok": False, "error": "ws_not_available"}
+            return
+
+        url = self._to_ws_url(base_url, getattr(settings, 'MCP_WS_PATH', '/ws'))
+        headers = self._build_headers(auth)
+        try:
+            async with websockets.connect(url, extra_headers=headers, close_timeout=self._timeout) as ws:  # type: ignore
+                req = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+                await ws.send(_json.dumps(req, ensure_ascii=False))
+                while True:
+                    raw = await ws.recv()
+                    data = _json.loads(raw)
+                    yield data
+                    if isinstance(data, dict) and ("result" in data or "error" in data):
+                        break
+        except Exception as e:
+            yield {"ok": False, "error": self._classify_error(e)}

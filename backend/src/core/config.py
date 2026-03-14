@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     MCP_HTTP_TIMEOUT_MS: int = 4000
     # MCP 白名單（以逗號分隔的 base_url 列表），供 /mcp/servers 顯示
     MCP_WHITELIST: str = ""
+    # MCP WebSocket JSON-RPC 端點（相對路徑），如服務支援 ws(s)
+    MCP_WS_PATH: str = "/ws"
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
