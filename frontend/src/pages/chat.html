@@ -57,6 +57,12 @@
     .json .json-number { color: #d97706; }     /* amber-600 */
     .json .json-boolean { color: #c0392b; }    /* red-600 */
     .json .json-null { color: #64748b; font-style: italic; } /* slate-500 */
+    /* Tool card badges/alerts */
+    .tool-badge { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; background: #9ca3af; }
+    .tool-badge.running { background: #f59e0b; }
+    .tool-badge.ok { background: #198754; }
+    .tool-badge.error { background: #c0392b; }
+    .tool-alert { background: #fdecea; color: #7f1d1d; border: 1px solid #f5c2c0; padding: 6px; border-radius: 6px; margin-top: 6px; display: none; }
   </style>
 </head>
 <body>
@@ -154,7 +160,12 @@
       header.style.justifyContent = 'space-between';
 
       const title = document.createElement('div');
-      title.innerHTML = `<strong>工具：</strong>${name}`;
+      const badge = document.createElement('span');
+      badge.className = 'tool-badge running';
+      title.appendChild(badge);
+      const titleText = document.createElement('span');
+      titleText.innerHTML = `<strong>工具：</strong>${name}`;
+      title.appendChild(titleText);
 
       const status = document.createElement('span');
       status.className = 'tool-card__status';
@@ -196,9 +207,13 @@
         body.innerHTML = '';
       });
 
+      const alert = document.createElement('div');
+      alert.className = 'tool-alert';
+
       card.appendChild(header);
+      card.appendChild(alert);
       card.appendChild(body);
-      return { card, body, status };
+      return { card, body, status, badge, alert, _state: 'running' };
     }
 
     function appendFrame(container, frame) {
@@ -234,6 +249,31 @@
       row.appendChild(meta);
       row.appendChild(pre);
       container.appendChild(row);
+    }
+
+    function setCardStatus(meta, state, msg) {
+      // state: 'running' | 'ok' | 'error'
+      meta._state = state;
+      meta.badge.classList.remove('running', 'ok', 'error');
+      if (state === 'ok') {
+        meta.badge.classList.add('ok');
+        meta.status.textContent = '完成';
+        meta.status.style.color = 'var(--ok-color, #198754)';
+        meta.alert.style.display = 'none';
+      } else if (state === 'error') {
+        meta.badge.classList.add('error');
+        meta.status.textContent = '失敗';
+        meta.status.style.color = 'var(--error-color, #c0392b)';
+        if (msg) {
+          meta.alert.textContent = String(msg);
+          meta.alert.style.display = 'block';
+        }
+      } else {
+        meta.badge.classList.add('running');
+        meta.status.textContent = '執行中…';
+        meta.status.style.color = 'var(--text-secondary)';
+        meta.alert.style.display = 'none';
+      }
     }
 
     let currentAgentId = null;
@@ -438,22 +478,20 @@
           try { body = JSON.parse(toolPayloadInput.value); } catch { toolOutput.textContent = 'JSON 參數格式錯誤'; return; }
         }
         const holder = document.createElement('div');
-        const { card, body: b, status } = createToolCard(tool);
-        holder.appendChild(card);
+        const meta = createToolCard(tool);
+        holder.appendChild(meta.card);
         toolOutput.prepend(holder);
         const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, body);
-        appendFrame(b, res);
-        status.textContent = (res && res.ok) ? '完成' : '失敗';
-        status.style.color = (res && res.ok) ? 'var(--ok-color, #198754)' : 'var(--error-color, #c0392b)';
+        appendFrame(meta.body, res);
+        if (res && res.ok) setCardStatus(meta, 'ok'); else setCardStatus(meta, 'error', (res && res.error) || '執行失敗');
         toolHistory.unshift({ t: new Date().toISOString(), tool, convId, body, res });
       } catch (e) {
         const holder = document.createElement('div');
-        const { card, body: b, status } = createToolCard((toolNameInput.value || '').trim() || 'tool');
-        holder.appendChild(card);
+        const meta = createToolCard((toolNameInput.value || '').trim() || 'tool');
+        holder.appendChild(meta.card);
         toolOutput.prepend(holder);
-        appendFrame(b, { ok: false, error: e.message || '執行工具失敗' });
-        status.textContent = '失敗';
-        status.style.color = 'var(--error-color, #c0392b)';
+        appendFrame(meta.body, { ok: false, error: e.message || '執行工具失敗' });
+        setCardStatus(meta, 'error', e.message || '執行工具失敗');
       }
     });
 
@@ -465,8 +503,8 @@
         if (!convId) convId = currentConversationId || '';
         if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
         const holder = document.createElement('div');
-        const { card, body: b, status } = createToolCard(tool);
-        holder.appendChild(card);
+        const meta = createToolCard(tool);
+        holder.appendChild(meta.card);
         toolOutput.prepend(holder);
         const token = localStorage.getItem('auth_token');
         // 以 fetch 串流方式讀取 SSE（因 EventSource 無法帶自訂標頭）
@@ -475,9 +513,8 @@
           headers: { 'Authorization': `Bearer ${token}` },
         });
         if (!resp.ok || !resp.body) {
-          appendFrame(b, { ok: false, error: `串流建立失敗：HTTP ${resp.status}` });
-          status.textContent = '失敗';
-          status.style.color = 'var(--error-color, #c0392b)';
+          appendFrame(meta.body, { ok: false, error: `串流建立失敗：HTTP ${resp.status}` });
+          setCardStatus(meta, 'error', `串流建立失敗：HTTP ${resp.status}`);
           return;
         }
         const reader = resp.body.getReader();
@@ -496,10 +533,11 @@
                 const jsonStr = chunk.replace(/^data:\s*/, '');
                 const obj = JSON.parse(jsonStr);
                 if (obj && obj.type === 'tool') {
-                  appendFrame(b, obj.frame);
+                  appendFrame(meta.body, obj.frame);
+                  if (obj.frame && obj.frame.ok === false) setCardStatus(meta, 'error', obj.frame.error || '執行失敗');
+                  else if (obj.frame && obj.frame.ok === true) setCardStatus(meta, 'ok');
                 } else if (obj && obj.type === 'done') {
-                  status.textContent = '完成';
-                  status.style.color = 'var(--ok-color, #198754)';
+                  if (meta._state === 'running') setCardStatus(meta, 'ok');
                 }
               } catch {}
             }
@@ -507,12 +545,11 @@
         }
       } catch (e) {
         const holder = document.createElement('div');
-        const { card, body: b, status } = createToolCard((toolNameInput.value || '').trim() || 'tool');
-        holder.appendChild(card);
+        const meta = createToolCard((toolNameInput.value || '').trim() || 'tool');
+        holder.appendChild(meta.card);
         toolOutput.prepend(holder);
-        appendFrame(b, { ok: false, error: e.message || '串流執行錯誤' });
-        status.textContent = '失敗';
-        status.style.color = 'var(--error-color, #c0392b)';
+        appendFrame(meta.body, { ok: false, error: e.message || '串流執行錯誤' });
+        setCardStatus(meta, 'error', e.message || '串流執行錯誤');
       }
     });
 
@@ -648,16 +685,14 @@
               } else if (payload.type === 'tool') {
                 if (activeToolCard) {
                   appendFrame(activeToolCard.body, payload.frame);
-                  if (payload.frame && (payload.frame.ok === true)) {
-                    activeToolCard.status.textContent = '完成';
-                    activeToolCard.status.style.color = 'var(--ok-color, #198754)';
-                  } else if (payload.frame && payload.frame.ok === false) {
-                    activeToolCard.status.textContent = '失敗';
-                    activeToolCard.status.style.color = 'var(--error-color, #c0392b)';
-                  }
+                  if (payload.frame && payload.frame.ok === false)
+                    setCardStatus(activeToolCard, 'error', payload.frame.error || '執行失敗');
+                  else if (payload.frame && payload.frame.ok === true)
+                    setCardStatus(activeToolCard, 'ok');
                 }
               } else if (payload.type === 'done') {
                 // 完成
+                if (activeToolCard && activeToolCard._state === 'running') setCardStatus(activeToolCard, 'ok');
               }
             } catch {}
           }
