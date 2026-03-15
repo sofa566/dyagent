@@ -427,6 +427,34 @@
         </div>
       `).join('');
       chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      // 載入並渲染此對話的工具事件（持久化卡片）
+      (async () => {
+        try {
+          const ev = await api.get(`/conversations/${convId}/events?types=tool_input,tool_result,tool_error`);
+          const list = Array.isArray(ev.events) ? ev.events : [];
+          list.forEach(e => {
+            if (!e || !e.type) return;
+            // 僅將 result/error 呈現為卡片；input 可作為後續擴充
+            if (e.type === 'tool_result' || e.type === 'tool_error') {
+              const name = (e.payload && e.payload.tool) ? e.payload.tool : 'tool';
+              const meta = createToolCard(name);
+              // result: 目前 payload 為 { tool, keys: [...] } 或完整 frame（若可用）
+              // error: { tool, error }
+              if (e.type === 'tool_error') {
+                setCardStatus(meta, 'error', (e.payload && e.payload.error) || '執行失敗');
+                appendFrame(meta.body, e.payload || {});
+              } else {
+                setCardStatus(meta, 'ok');
+                appendFrame(meta.body, e.payload || {});
+              }
+              const holder = document.createElement('div');
+              holder.appendChild(meta.card);
+              chatMessages.appendChild(holder);
+            }
+          });
+        } catch {}
+      })();
     }
 
     // 安全轉義與簡易 JSON 語法高亮

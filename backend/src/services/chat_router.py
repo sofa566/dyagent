@@ -230,7 +230,7 @@ class ChatRouter:
                 async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools.invoke", params={"tool": conn_name, "arguments": payload or {}}, auth=auth if isinstance(auth, dict) else None):
                     # 可在此寫入逐段事件，先保留最小行為：若拿到 result 即成功
                     if isinstance(frame, dict) and ("result" in frame or frame.get("ok") is True):
-                        self.write_event_tool_result(session_id=session_id, tool=name, result={"ok": True})
+                        self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
                         return {"ok": True, "result": frame.get("result", frame)}
                     if isinstance(frame, dict) and ("error" in frame or frame.get("ok") is False):
                         # 結束於錯誤
@@ -305,7 +305,7 @@ class ChatRouter:
             # 佔位呼叫
             try:
                 res = self._mcp.invoke(base_url=base_url, name=conn_name, arguments=payload or {})
-                self.write_event_tool_result(session_id=session_id, tool=name, result={"ok": True})
+                self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                 return {"ok": True, "result": res}
             except Exception as e:
                 self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
@@ -313,8 +313,9 @@ class ChatRouter:
 
         # 其他工具（如本地 Skills）：暫以佔位回傳
         try:
-            self.write_event_tool_result(session_id=session_id, tool=name, result={"ok": True})
-            return {"ok": True, "result": {"tool": name, "data": payload or {}}}
+            local_res = {"tool": name, "data": payload or {}, "ok": True}
+            self.write_event_tool_result(session_id=session_id, tool=name, result=local_res)
+            return {"ok": True, "result": local_res}
         except Exception as e:
             self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
             return {"ok": False, "error": str(e)}

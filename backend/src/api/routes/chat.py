@@ -9,6 +9,7 @@ import json as _json
 
 from src.core.database import get_db
 from src.models import User, Agent, Conversation, Message
+from src.models.events import EventPart
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error, forbidden_error
@@ -418,6 +419,41 @@ async def chat_stream(
         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
 
     return StreamingResponse(_gen(), media_type='text/event-stream')
+
+
+@router.get('/conversations/{conversation_id}/events')
+async def list_conversation_events(
+    conversation_id: str,
+    types: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'chat'):
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(conversation_id))
+    except ValueError:
+        raise not_found_error('Conversation', conversation_id)
+
+    q = db.query(EventPart).filter(EventPart.conversation_id == conversation_id)
+    type_list = None
+    if types:
+        type_list = [t.strip() for t in types.split(',') if t.strip()]
+        if type_list:
+            q = q.filter(EventPart.type.in_(type_list))
+    rows = q.order_by(EventPart.created_at.asc()).all()
+    def _to_dict(e: EventPart):
+        try:
+            return {
+                'id': str(e.id),
+                'type': e.type,
+                'payload': e.payload,
+                'created_at': e.created_at.isoformat() if e.created_at else None,
+            }
+        except Exception:
+            return {'id': None, 'type': None, 'payload': None, 'created_at': None}
+    return {'events': [_to_dict(r) for r in rows]}
 
 
 @router.get('/agents/{agent_id}/conversations')
