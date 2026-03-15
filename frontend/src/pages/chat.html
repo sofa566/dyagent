@@ -63,6 +63,10 @@
     .tool-badge.ok { background: #198754; }
     .tool-badge.error { background: #c0392b; }
     .tool-alert { background: #fdecea; color: #7f1d1d; border: 1px solid #f5c2c0; padding: 6px; border-radius: 6px; margin-top: 6px; display: none; }
+    /* Progress */
+    .tool-progress { margin-top: 6px; background: #f1f5f9; border: 1px solid #e5e7eb; height: 8px; border-radius: 999px; overflow: hidden; display: none; }
+    .tool-progress__bar { height: 100%; width: 0%; background: linear-gradient(90deg, #60a5fa 0%, #0ea5e9 100%); transition: width 0.2s ease; }
+    .tool-progress__meta { display: none; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
   </style>
 </head>
 <body>
@@ -210,10 +214,21 @@
       const alert = document.createElement('div');
       alert.className = 'tool-alert';
 
+      const prog = document.createElement('div');
+      prog.className = 'tool-progress';
+      const bar = document.createElement('div');
+      bar.className = 'tool-progress__bar';
+      prog.appendChild(bar);
+      const progMeta = document.createElement('div');
+      progMeta.className = 'tool-progress__meta';
+      progMeta.textContent = '0%';
+
       card.appendChild(header);
       card.appendChild(alert);
+      card.appendChild(prog);
+      card.appendChild(progMeta);
       card.appendChild(body);
-      return { card, body, status, badge, alert, _state: 'running' };
+      return { card, body, status, badge, alert, prog, bar, progMeta, _state: 'running', _progress: 0 };
     }
 
     function appendFrame(container, frame) {
@@ -260,6 +275,9 @@
         meta.status.textContent = '完成';
         meta.status.style.color = 'var(--ok-color, #198754)';
         meta.alert.style.display = 'none';
+        updateProgress(meta, 100);
+        meta.prog.style.display = 'none';
+        meta.progMeta.style.display = 'none';
       } else if (state === 'error') {
         meta.badge.classList.add('error');
         meta.status.textContent = '失敗';
@@ -268,11 +286,29 @@
           meta.alert.textContent = String(msg);
           meta.alert.style.display = 'block';
         }
+        meta.prog.style.display = 'none';
+        meta.progMeta.style.display = 'none';
       } else {
         meta.badge.classList.add('running');
         meta.status.textContent = '執行中…';
         meta.status.style.color = 'var(--text-secondary)';
         meta.alert.style.display = 'none';
+        meta.prog.style.display = 'block';
+        meta.progMeta.style.display = 'block';
+      }
+    }
+
+    function updateProgress(meta, value) {
+      if (!meta || !meta.bar) return;
+      let v = Number(value);
+      if (Number.isNaN(v)) return;
+      v = Math.max(0, Math.min(100, Math.round(v)));
+      meta._progress = v;
+      meta.bar.style.width = v + '%';
+      if (meta.progMeta) meta.progMeta.textContent = v + '%';
+      if (v >= 100 && meta._state === 'running') {
+        // 自動標記完成
+        setCardStatus(meta, 'ok');
       }
     }
 
@@ -564,6 +600,12 @@
                   appendFrame(meta.body, obj.frame);
                   if (obj.frame && obj.frame.ok === false) setCardStatus(meta, 'error', obj.frame.error || '執行失敗');
                   else if (obj.frame && obj.frame.ok === true) setCardStatus(meta, 'ok');
+                  // 嘗試讀取進度欄位（progress/percent/value）
+                  const f = obj.frame || {};
+                  const cand = (typeof f.progress === 'number' ? f.progress
+                    : (typeof f.percent === 'number' ? f.percent
+                    : (typeof f.value === 'number' ? f.value : null)));
+                  if (cand !== null) updateProgress(meta, cand);
                 } else if (obj && obj.type === 'done') {
                   if (meta._state === 'running') setCardStatus(meta, 'ok');
                 }
@@ -717,6 +759,11 @@
                     setCardStatus(activeToolCard, 'error', payload.frame.error || '執行失敗');
                   else if (payload.frame && payload.frame.ok === true)
                     setCardStatus(activeToolCard, 'ok');
+                  const f = payload.frame || {};
+                  const cand = (typeof f.progress === 'number' ? f.progress
+                    : (typeof f.percent === 'number' ? f.percent
+                    : (typeof f.value === 'number' ? f.value : null)));
+                  if (cand !== null) updateProgress(activeToolCard, cand);
                 }
               } else if (payload.type === 'done') {
                 // 完成
