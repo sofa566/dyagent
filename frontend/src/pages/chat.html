@@ -65,7 +65,7 @@
     .tool-alert { background: #fdecea; color: #7f1d1d; border: 1px solid #f5c2c0; padding: 6px; border-radius: 6px; margin-top: 6px; display: none; }
     /* Progress */
     .tool-progress { margin-top: 6px; background: #f1f5f9; border: 1px solid #e5e7eb; height: 8px; border-radius: 999px; overflow: hidden; display: none; }
-    .tool-progress__bar { height: 100%; width: 0%; background: linear-gradient(90deg, #60a5fa 0%, #0ea5e9 100%); transition: width 0.2s ease; }
+    .tool-progress__bar { height: 100%; width: 0%; background: #60a5fa; transition: width 0.2s ease, background-color 0.2s ease; }
     .tool-progress__meta { display: none; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
   </style>
 </head>
@@ -228,7 +228,7 @@
       card.appendChild(prog);
       card.appendChild(progMeta);
       card.appendChild(body);
-      return { card, body, status, badge, alert, prog, bar, progMeta, _state: 'running', _progress: 0 };
+      return { card, body, status, badge, alert, prog, bar, progMeta, _state: 'running', _progress: 0, _t0: Date.now(), _lastTs: null, _lastProg: 0 };
     }
 
     function appendFrame(container, frame) {
@@ -275,7 +275,7 @@
         meta.status.textContent = '完成';
         meta.status.style.color = 'var(--ok-color, #198754)';
         meta.alert.style.display = 'none';
-        updateProgress(meta, 100);
+        updateProgress(meta, 100, 0);
         meta.prog.style.display = 'none';
         meta.progMeta.style.display = 'none';
       } else if (state === 'error') {
@@ -298,18 +298,50 @@
       }
     }
 
-    function updateProgress(meta, value) {
+    function updateProgress(meta, value, etaSeconds) {
       if (!meta || !meta.bar) return;
       let v = Number(value);
       if (Number.isNaN(v)) return;
       v = Math.max(0, Math.min(100, Math.round(v)));
       meta._progress = v;
       meta.bar.style.width = v + '%';
-      if (meta.progMeta) meta.progMeta.textContent = v + '%';
+      // 色彩從紅(0)到綠(120)之間漸變
+      const hue = Math.round((v / 100) * 120);
+      meta.bar.style.backgroundColor = `hsl(${hue}, 70%, 50%)`;
+      // 估算/顯示剩餘時間
+      let etaText = '';
+      if (typeof etaSeconds === 'number' && isFinite(etaSeconds) && etaSeconds >= 0) {
+        etaText = ` · ${formatSeconds(etaSeconds)} 剩餘`;
+      } else {
+        const now = Date.now();
+        if (meta._lastTs != null && v > meta._lastProg) {
+          const dp = v - meta._lastProg;
+          const dt = (now - meta._lastTs) / 1000; // s
+          const speed = dp / dt; // % per s
+          if (speed > 0 && v < 100) {
+            const remain = (100 - v) / speed; // s
+            if (isFinite(remain) && remain >= 0) etaText = ` · ${formatSeconds(remain)} 剩餘`;
+          }
+        } else if (v > 0) {
+          const elapsed = (now - (meta._t0 || now)) / 1000; // s
+          const remain = elapsed * (100 - v) / v;
+          if (isFinite(remain) && remain >= 0) etaText = ` · ${formatSeconds(remain)} 剩餘`;
+        }
+        meta._lastTs = now;
+        meta._lastProg = v;
+      }
+      if (meta.progMeta) meta.progMeta.textContent = v + '%' + etaText;
       if (v >= 100 && meta._state === 'running') {
         // 自動標記完成
         setCardStatus(meta, 'ok');
       }
+    }
+
+    function formatSeconds(sec) {
+      const s = Math.max(0, Math.floor(sec));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
     }
 
     let currentAgentId = null;
@@ -596,7 +628,9 @@
               try {
                 const jsonStr = chunk.replace(/^data:\s*/, '');
                 const obj = JSON.parse(jsonStr);
-                if (obj && obj.type === 'tool') {
+                if (obj && obj.type === 'progress') {
+                  updateProgress(meta, obj.value, obj.eta_seconds);
+                } else if (obj && obj.type === 'tool') {
                   appendFrame(meta.body, obj.frame);
                   if (obj.frame && obj.frame.ok === false) setCardStatus(meta, 'error', obj.frame.error || '執行失敗');
                   else if (obj.frame && obj.frame.ok === true) setCardStatus(meta, 'ok');
@@ -605,7 +639,10 @@
                   const cand = (typeof f.progress === 'number' ? f.progress
                     : (typeof f.percent === 'number' ? f.percent
                     : (typeof f.value === 'number' ? f.value : null)));
-                  if (cand !== null) updateProgress(meta, cand);
+                  const eta = (typeof f.eta_seconds === 'number' ? f.eta_seconds
+                    : (typeof f.eta === 'number' ? f.eta
+                    : (typeof f.remaining_ms === 'number' ? f.remaining_ms / 1000 : null)));
+                  if (cand !== null) updateProgress(meta, cand, eta);
                 } else if (obj && obj.type === 'done') {
                   if (meta._state === 'running') setCardStatus(meta, 'ok');
                 }
@@ -752,6 +789,8 @@
                 const built = createToolCard(payload.name);
                 activeToolCard = built;
                 assistantMsg.appendChild(built.card);
+              } else if (payload.type === 'progress') {
+                if (activeToolCard) updateProgress(activeToolCard, payload.value, payload.eta_seconds);
               } else if (payload.type === 'tool') {
                 if (activeToolCard) {
                   appendFrame(activeToolCard.body, payload.frame);
@@ -763,7 +802,10 @@
                   const cand = (typeof f.progress === 'number' ? f.progress
                     : (typeof f.percent === 'number' ? f.percent
                     : (typeof f.value === 'number' ? f.value : null)));
-                  if (cand !== null) updateProgress(activeToolCard, cand);
+                  const eta = (typeof f.eta_seconds === 'number' ? f.eta_seconds
+                    : (typeof f.eta === 'number' ? f.eta
+                    : (typeof f.remaining_ms === 'number' ? f.remaining_ms / 1000 : null)));
+                  if (cand !== null) updateProgress(activeToolCard, cand, eta);
                 }
               } else if (payload.type === 'done') {
                 // 完成

@@ -251,6 +251,30 @@ async def stream_tool(
                     params={'tool': conn_name, 'arguments': {}},
                     auth=auth if isinstance(auth, dict) else None,
                 ):
+                    # 標準化進度事件：value (0..100), eta_seconds
+                    try:
+                        if isinstance(frame, dict):
+                            val = None
+                            if isinstance(frame.get('progress'), (int, float)):
+                                val = frame.get('progress')
+                            elif isinstance(frame.get('percent'), (int, float)):
+                                val = frame.get('percent')
+                            elif isinstance(frame.get('value'), (int, float)):
+                                val = frame.get('value')
+                            if val is not None:
+                                eta = None
+                                if isinstance(frame.get('eta_seconds'), (int, float)):
+                                    eta = frame.get('eta_seconds')
+                                elif isinstance(frame.get('eta'), (int, float)):
+                                    eta = frame.get('eta')
+                                elif isinstance(frame.get('remaining_ms'), (int, float)):
+                                    eta = frame.get('remaining_ms') / 1000.0
+                                prog_payload = { 'type': 'progress', 'name': tool_name, 'value': float(val) }
+                                if eta is not None:
+                                    prog_payload['eta_seconds'] = float(eta)
+                                yield f"data: {_json.dumps(prog_payload, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        pass
                     yield f"data: {_json.dumps(frame, ensure_ascii=False)}\n\n"
                 return
         # 回退：單段結果
@@ -408,6 +432,30 @@ async def chat_stream(
                                 params={'tool': tool_name.split(':',1)[1], 'arguments': tool_payload or {}},
                                 auth=auth if isinstance(auth, dict) else None,
                             ):
+                                # 標準化進度事件
+                                try:
+                                    if isinstance(frame, dict):
+                                        val = None
+                                        if isinstance(frame.get('progress'), (int, float)):
+                                            val = frame.get('progress')
+                                        elif isinstance(frame.get('percent'), (int, float)):
+                                            val = frame.get('percent')
+                                        elif isinstance(frame.get('value'), (int, float)):
+                                            val = frame.get('value')
+                                        if val is not None:
+                                            eta = None
+                                            if isinstance(frame.get('eta_seconds'), (int, float)):
+                                                eta = frame.get('eta_seconds')
+                                            elif isinstance(frame.get('eta'), (int, float)):
+                                                eta = frame.get('eta')
+                                            elif isinstance(frame.get('remaining_ms'), (int, float)):
+                                                eta = frame.get('remaining_ms') / 1000.0
+                                            prog_payload = { 'type': 'progress', 'name': tool_name, 'value': float(val) }
+                                            if eta is not None:
+                                                prog_payload['eta_seconds'] = float(eta)
+                                            yield f"data: {_json.dumps(prog_payload, ensure_ascii=False)}\n\n"
+                                except Exception:
+                                    pass
                                 yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(frame, ensure_ascii=False)} }}\n\n"
                         except Exception:
                             res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
