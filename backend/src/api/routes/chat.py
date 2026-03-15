@@ -6,6 +6,7 @@ from sqlalchemy.exc import ProgrammingError, OperationalError
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import json as _json
+import time
 
 from src.core.database import get_db
 from src.models import User, Agent, Conversation, Message
@@ -245,6 +246,24 @@ async def stream_tool(
             if conn and conn.get('base_url'):
                 base_url = str(conn.get('base_url') or '').strip()
                 auth = conn.get('auth') if isinstance(conn, dict) else None
+                # 讀取對映設定
+                progress_key = (conn.get('progress_field') or '').strip() if isinstance(conn, dict) else ''
+                eta_key = (conn.get('eta_field') or '').strip() if isinstance(conn, dict) else ''
+                def _get_by_path(obj: dict, path: str):
+                    try:
+                        if not path:
+                            return None
+                        cur = obj
+                        for part in path.split('.'):
+                            if isinstance(cur, dict) and part in cur:
+                                cur = cur[part]
+                            else:
+                                return None
+                        return cur
+                    except Exception:
+                        return None
+                last_prog_ts = 0.0
+                last_prog_val: float | None = None
                 async for frame in router._mcp.stream_rpc_call_ws(
                     base_url=base_url,
                     method='tools.invoke',
@@ -254,25 +273,38 @@ async def stream_tool(
                     # 標準化進度事件：value (0..100), eta_seconds
                     try:
                         if isinstance(frame, dict):
-                            val = None
-                            if isinstance(frame.get('progress'), (int, float)):
-                                val = frame.get('progress')
-                            elif isinstance(frame.get('percent'), (int, float)):
-                                val = frame.get('percent')
-                            elif isinstance(frame.get('value'), (int, float)):
-                                val = frame.get('value')
+                            # 先依 Agent 設定對映欄位
+                            val = _get_by_path(frame, progress_key) if progress_key else None
+                            if not isinstance(val, (int, float)):
+                                # 回退：常見欄位
+                                if isinstance(frame.get('progress'), (int, float)):
+                                    val = frame.get('progress')
+                                elif isinstance(frame.get('percent'), (int, float)):
+                                    val = frame.get('percent')
+                                elif isinstance(frame.get('value'), (int, float)):
+                                    val = frame.get('value')
                             if val is not None:
-                                eta = None
-                                if isinstance(frame.get('eta_seconds'), (int, float)):
-                                    eta = frame.get('eta_seconds')
-                                elif isinstance(frame.get('eta'), (int, float)):
-                                    eta = frame.get('eta')
-                                elif isinstance(frame.get('remaining_ms'), (int, float)):
-                                    eta = frame.get('remaining_ms') / 1000.0
-                                prog_payload = { 'type': 'progress', 'name': tool_name, 'value': float(val) }
-                                if eta is not None:
-                                    prog_payload['eta_seconds'] = float(eta)
-                                yield f"data: {_json.dumps(prog_payload, ensure_ascii=False)}\n\n"
+                                # ETA 對映或回退
+                                eta = _get_by_path(frame, eta_key) if eta_key else None
+                                if not isinstance(eta, (int, float)):
+                                    if isinstance(frame.get('eta_seconds'), (int, float)):
+                                        eta = frame.get('eta_seconds')
+                                    elif isinstance(frame.get('eta'), (int, float)):
+                                        eta = frame.get('eta')
+                                    elif isinstance(frame.get('remaining_ms'), (int, float)):
+                                        rem_ms = frame.get('remaining_ms')
+                                        eta = (rem_ms / 1000.0) if isinstance(rem_ms, (int, float)) else None
+                                # 節流：僅在 >=200ms 或進度變化>=1% 才推送
+                                now = time.monotonic()
+                                fval = float(val)
+                                should_emit = (now - last_prog_ts >= 0.2) or (last_prog_val is None) or (abs(fval - last_prog_val) >= 1.0)
+                                if should_emit:
+                                    last_prog_ts = now
+                                    last_prog_val = fval
+                                    prog_payload = { 'type': 'progress', 'name': tool_name, 'value': fval }
+                                    if isinstance(eta, (int, float)):
+                                        prog_payload['eta_seconds'] = float(eta)
+                                    yield f"data: {_json.dumps(prog_payload, ensure_ascii=False)}\n\n"
                     except Exception:
                         pass
                     yield f"data: {_json.dumps(frame, ensure_ascii=False)}\n\n"
@@ -348,6 +380,9 @@ async def chat_stream(
     try:
         cfg = agent.model_config or {}
         if isinstance(cfg, dict):
+            # 若自訂工具呼叫指引存在，帶入 Router
+            if isinstance(cfg.get('toolcall_guide'), str) and cfg.get('toolcall_guide').strip():
+                router.set_toolcall_guide(cfg.get('toolcall_guide'))
             agent_model_type = str(agent.model_type) if getattr(agent, 'model_type', None) is not None else ''
             if agent_model_type == 'local' and not bool(cfg.get('tier')):
                 overrides['tier'] = 'onprem'
@@ -379,13 +414,22 @@ async def chat_stream(
     except TypeError:
         router._llm.init_for_session(session_id=str(conversation.id), preferred_tier=overrides.get('tier'))
 
+    # 設定工具呼叫協定模板（若代理者有自訂）
+    try:
+        cfg = agent.model_config or {}
+        if isinstance(cfg, dict) and isinstance(cfg.get('toolcall_guide'), str) and cfg.get('toolcall_guide').strip():
+            router.set_toolcall_guide(cfg.get('toolcall_guide'))
+    except Exception:
+        pass
+
     agent_ctx = router._prepare_integrations(db=db, agent_id=str(agent.id))
     mcp_names = ",".join([str(c.get("name") or "").strip() for c in agent_ctx.get("mcp", []) if isinstance(c, dict) and c.get("enabled")])
     skills_names = ",".join(agent_ctx.get("skills", []))
     rag = agent_ctx.get('rag', {}) or {}
     rag_prefix = f"\n[RAG] sources={','.join(rag.get('sources', []) or [])} topK={int(rag.get('topK', 5) or 5)}" if rag.get('enabled') else ''
     prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
-    composed_user_message = f"{prefix}{message}"
+    guide = router._toolcall_guide()
+    composed_user_message = f"{prefix}{guide}\n{message}"
 
     async def _gen():
         buffer = ''
@@ -418,8 +462,9 @@ async def chat_stream(
 
             if detected_tool:
                 detected_tool = False
-                # 通知前端工具開始
-                yield f"data: {{\"type\":\"tool_start\",\"name\":{_json.dumps(tool_name)} }}\n\n"
+                # 通知前端工具開始（附上參數以支援前端重執行）
+                start_payload = {"type": "tool_start", "name": tool_name, "args": tool_payload or {}}
+                yield f"data: {_json.dumps(start_payload, ensure_ascii=False)}\n\n"
                 if tool_name.startswith('mcp:') and hasattr(router, '_mcp'):
                     conn = getattr(router, '_mcp_map', {}).get(tool_name.split(':',1)[1])
                     if conn and conn.get('base_url'):
