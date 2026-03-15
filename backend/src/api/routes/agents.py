@@ -69,10 +69,35 @@ async def get_agent_integrations(
             return list(value.values())
         return []
 
+    # 讀取 toolcall_guide（存於 model_config.toolcall_guide）
+    tc_guide = ''
+    provider = ''
+    skill_examples: dict = {}
+    try:
+        cfg = agent.model_config or {}
+        if isinstance(cfg, dict) and isinstance(cfg.get('toolcall_guide'), str):
+            tc_guide = cfg.get('toolcall_guide') or ''
+        if isinstance(cfg, dict):
+            # 優先直接 provider，其次 cloud.provider
+            pv = cfg.get('provider')
+            if not pv and isinstance(cfg.get('cloud'), dict):
+                pv = cfg.get('cloud', {}).get('provider')
+            if isinstance(pv, str):
+                provider = pv
+            if isinstance(cfg.get('skill_examples'), dict):
+                skill_examples = cfg.get('skill_examples') or {}
+    except Exception:
+        tc_guide = ''
+        provider = ''
+        skill_examples = {}
+
     return {
         'mcp_config': _default_mcp(agent.mcp_config or {}),
         'skills': agent.skills or [],
         'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
+        'toolcall_guide': tc_guide,
+        'model_provider': provider or '',
+        'skill_examples': skill_examples,
     }
 
 
@@ -134,6 +159,26 @@ async def update_agent_integrations(
     agent.mcp_config = mcp_cfg or []
     agent.skills = skills_clean
     agent.rag_config = rag_out
+    # 寫入 toolcall_guide 至 model_config
+    try:
+        guide = (payload or {}).get('toolcall_guide') if isinstance(payload, dict) else None
+        cfg = agent.model_config or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        if isinstance(guide, str):
+            cfg['toolcall_guide'] = guide
+        # 寫入 skills 的示例參數（限制於當前啟用/選取的 skills）
+        sk_ex = (payload or {}).get('skill_examples') if isinstance(payload, dict) else None
+        if isinstance(sk_ex, dict):
+            # 僅保留在 skills_clean 內的鍵；值可為字串(JSON)或物件
+            filtered = {}
+            for k, v in sk_ex.items():
+                if k in skills_clean and (isinstance(v, (str, dict))):
+                    filtered[k] = v
+            cfg['skill_examples'] = filtered
+        agent.model_config = cfg
+    except Exception:
+        pass
     db.commit()
     db.refresh(agent)
 
@@ -158,6 +203,7 @@ async def update_agent_integrations(
         'mcp_config': agent.mcp_config or [],
         'skills': agent.skills or [],
         'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
+        'toolcall_guide': (agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else '',
     }
 
 

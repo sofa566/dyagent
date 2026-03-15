@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from typing import Optional, List, Any, Tuple
+from datetime import datetime
 import uuid
 from collections import deque
 
@@ -37,6 +38,10 @@ class ChatRouter:
         self._recent_tool_calls: deque[Tuple[str, str]] = deque(maxlen=32)
         self._perm = PermissionService()
         self._mcp = MCPClient()
+        # 記錄工具開始時間以計算耗時
+        self._tool_start_times: dict[tuple[str, str], datetime] = {}
+        # 每回合可覆蓋的工具呼叫協定模板
+        self._custom_toolcall_guide: Optional[str] = None
 
     def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: Optional[str] = None, db: Optional[Session] = None, llm_overrides: Optional[dict] = None) -> str:
         """執行單輪回合並回傳助理文字。
@@ -86,7 +91,8 @@ class ChatRouter:
         mcp_names = ",".join([str(c.get("name") or "").strip() for c in agent_ctx.get("mcp", []) if isinstance(c, dict) and c.get("enabled")])
         skills_names = ",".join(agent_ctx.get("skills", []))
         prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
-        composed_user_message = f"{prefix}{user_message}"
+        guide = self._render_toolcall_guide(agent_ctx)
+        composed_user_message = f"{prefix}{guide}\n{user_message}"
 
         # 若啟用結構化輸出模式：強制 StructuredOutput 工具並於成功後立即結束（T017 預留）
         if self._structured_mode is not None:
@@ -171,6 +177,14 @@ class ChatRouter:
             if db is not None:
                 ag = db.query(Agent).filter(Agent.id == agent_id).first()
                 if ag is not None:
+                    # 讀取 skills 示例參數（來自 model_config.skill_examples）
+                    self._skill_examples = {}
+                    try:
+                        cfg = ag.model_config or {}
+                        if isinstance(cfg, dict) and isinstance(cfg.get("skill_examples"), dict):
+                            self._skill_examples = cfg.get("skill_examples") or {}
+                    except Exception:
+                        self._skill_examples = {}
                     mcp_raw = ag.mcp_config or []
                     if isinstance(mcp_raw, dict):
                         mcp_list = list(mcp_raw.values())
@@ -196,6 +210,142 @@ class ChatRouter:
             if isinstance(c, dict) and c.get("enabled") and c.get("name"):
                 self._mcp_map[str(c.get("name")).strip()] = c
         return agent_ctx
+
+    def _toolcall_guide(self) -> str:
+        try:
+            if not getattr(settings, "LLM_TOOLCALL_GUIDE", True):
+                return ""
+        except Exception:
+            pass
+        # 會話級覆蓋
+        if isinstance(self._custom_toolcall_guide, str) and self._custom_toolcall_guide.strip():
+            return "\n" + self._custom_toolcall_guide.strip() + "\n"
+        # 預設模板：簡短且機械可解析，避免模型誤觸
+        return (
+            "\n[Tool-Call Protocol]\n"
+            "- Only if a tool is REQUIRED, output EXACTLY this format and nothing else before it:\n"
+            "  [[CALL tool=<allowed-tool-name>]]\n{{EXAMPLE_ARGS}}\n"
+            "- <allowed-tool-name> must be one of: {{ALLOWED_TOOL_NAMES}}\n"
+            "- The JSON body are the arguments for the tool.\n"
+            "- Otherwise, answer normally without the CALL block.\n"
+            "\n[Allowed Tools]\n"
+            "Skills:\n{{SKILL_TOOLS_BLOCK}}\n"
+            "MCP:\n{{MCP_TOOLS_BLOCK}}\n"
+            "\n{{USAGE_HINTS}}\n"
+        )
+
+    def _render_toolcall_guide(self, agent_ctx: dict[str, Any]) -> str:
+        """將模板中的變數替換成當前代理者可用工具清單與示例參數。"""
+        raw = self._toolcall_guide() or ""
+        if not raw:
+            return ""
+        try:
+            skills = [s for s in (agent_ctx.get("skills", []) or []) if isinstance(s, str) and s.strip()]
+            mcps = []
+            for c in (agent_ctx.get("mcp", []) or []):
+                if isinstance(c, dict) and c.get("enabled") and c.get("name"):
+                    mcps.append(f"mcp:{str(c.get('name')).strip()}")
+            allowed = skills + mcps
+            allowed_names = ", ".join(allowed) if allowed else "<none>"
+            # 產生示例參數：優先使用 MCP 連線上的 example_args；否則使用預設
+            example_args_obj = {"arg": "value"}
+            # 嘗試找到首個帶 example_args 的 MCP
+            try:
+                for c in (agent_ctx.get("mcp", []) or []):
+                    if isinstance(c, dict) and c.get("enabled") and c.get("example_args"):
+                        eg = c.get("example_args")
+                        if isinstance(eg, dict):
+                            example_args_obj = eg
+                            break
+                        # 若為字串，嘗試解析 JSON
+                        if isinstance(eg, str):
+                            import json as _json
+                            try:
+                                parsed = _json.loads(eg)
+                                if isinstance(parsed, dict):
+                                    example_args_obj = parsed
+                                    break
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            import json as _json
+            example_args = _json.dumps(example_args_obj, ensure_ascii=False, indent=2)
+            # 建立所有工具的示例區塊（MCP 取 example_args；skills 取 _skill_examples 或預設 {}）
+            ex_block_lines = []
+            try:
+                # 建立名稱到 example 的映射
+                mcp_examples = {}
+                for c in (agent_ctx.get("mcp", []) or []):
+                    if isinstance(c, dict) and c.get("enabled") and c.get("name"):
+                        nm = f"mcp:{str(c.get('name')).strip()}"
+                        eg = c.get("example_args")
+                        val = {}
+                        if isinstance(eg, dict):
+                            val = eg
+                        elif isinstance(eg, str):
+                            try:
+                                parsed = _json.loads(eg)
+                                if isinstance(parsed, dict):
+                                    val = parsed
+                            except Exception:
+                                val = {}
+                        mcp_examples[nm] = val
+                for n in allowed:
+                    if n.startswith("mcp:"):
+                        val = mcp_examples.get(n, {})
+                    else:
+                        raw_ex = None
+                        try:
+                            raw_ex = (getattr(self, "_skill_examples", {}) or {}).get(n)
+                        except Exception:
+                            raw_ex = None
+                        if isinstance(raw_ex, dict):
+                            val = raw_ex
+                        elif isinstance(raw_ex, str):
+                            try:
+                                parsed = _json.loads(raw_ex)
+                                val = parsed if isinstance(parsed, dict) else {}
+                            except Exception:
+                                val = {}
+                        else:
+                            val = {}
+                    ex_block_lines.append(f"- {n}: " + _json.dumps(val, ensure_ascii=False))
+            except Exception:
+                pass
+            examples_block = "\n".join(ex_block_lines) if ex_block_lines else "- <none>"
+            # 進行替換
+            out = raw
+            out = out.replace("{{ALLOWED_TOOL_NAMES}}", allowed_names)
+            out = out.replace("{{SKILL_NAMES}}", ", ".join(skills) if skills else "<none>")
+            out = out.replace("{{MCP_NAMES}}", ", ".join(mcps) if mcps else "<none>")
+            out = out.replace("{{EXAMPLE_ARGS}}", example_args)
+            if "{{EXAMPLE_ARGS_BLOCK}}" in out:
+                out = out.replace("{{EXAMPLE_ARGS_BLOCK}}", examples_block)
+            # 區塊形式的工具清單
+            if "{{ALLOWED_TOOLS_BLOCK}}" in out:
+                block = "\n".join([f"- {n}" for n in allowed]) if allowed else "- <none>"
+                out = out.replace("{{ALLOWED_TOOLS_BLOCK}}", block)
+            # 分欄清單：Skills / MCP
+            skill_block = "\n".join([f"- {s}" for s in skills]) if skills else "- <none>"
+            mcp_block = "\n".join([f"- {m}" for m in mcps]) if mcps else "- <none>"
+            out = out.replace("{{SKILL_TOOLS_BLOCK}}", skill_block)
+            out = out.replace("{{MCP_TOOLS_BLOCK}}", mcp_block)
+            # 使用說明（繁中）
+            hints = (
+                "[使用說明]\n"
+                "- 僅在確定需要呼叫工具時再輸出 CALL 區塊；否則請以自然語言作答。\n"
+                "- MCP 工具名稱請使用 'mcp:<name>' 的精確字串。\n"
+                "- 參數務必為合法 JSON（鍵為字串、無註解、逗號位置正確）。\n"
+                "- 僅可使用上方允許清單中的工具名稱。\n"
+            )
+            out = out.replace("{{USAGE_HINTS}}", hints)
+            return out
+        except Exception:
+            return raw
+
+    def set_toolcall_guide(self, guide: Optional[str]) -> None:
+        self._custom_toolcall_guide = guide if isinstance(guide, str) else None
 
     async def call_tool_async(self, *, session_id: str, tool: str, payload: dict, db: Optional[Session] = None, agent_id: Optional[str] = None) -> dict:
         # 若提供 agent_id 與 db，先載入整合設定以建立白名單
@@ -370,6 +520,11 @@ class ChatRouter:
         self._log.info("event.tool_input", session_id=session_id, tool=tool, keys=list(payload.keys()))
         self._audit(action="event.tool_input", session_id=session_id, details={"tool": tool, "keys": list(payload.keys())})
         self._write_part(session_id=session_id, type_="tool_input", payload={"tool": tool, "keys": list(payload.keys())})
+        # 標記開始時間
+        try:
+            self._tool_start_times[(session_id, tool)] = datetime.utcnow()
+        except Exception:
+            pass
         # T040：檢測 doom loop
         if self._check_doom_loop(session_id=session_id, tool=tool, payload=payload):
             # 記錄並結束本輪
@@ -379,14 +534,30 @@ class ChatRouter:
             return
 
     def write_event_tool_result(self, *, session_id: str, tool: str, result: dict) -> None:
-        self._log.info("event.tool_result", session_id=session_id, tool=tool, keys=list(result.keys()))
-        self._audit(action="event.tool_result", session_id=session_id, details={"tool": tool, "keys": list(result.keys())})
-        self._write_part(session_id=session_id, type_="tool_result", payload={"tool": tool, "keys": list(result.keys())})
+        # 計算耗時
+        duration_ms = None
+        try:
+            t0 = self._tool_start_times.pop((session_id, tool), None)
+            if t0 is not None:
+                duration_ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+        except Exception:
+            duration_ms = None
+        self._log.info("event.tool_result", session_id=session_id, tool=tool, keys=list(result.keys()), duration_ms=duration_ms)
+        self._audit(action="event.tool_result", session_id=session_id, details={"tool": tool, "keys": list(result.keys()), "duration_ms": duration_ms})
+        payload = {"tool": tool, "result": result, "duration_ms": duration_ms}
+        self._write_part(session_id=session_id, type_="tool_result", payload=payload)
 
     def write_event_tool_error(self, *, session_id: str, tool: str, error: str) -> None:
-        self._log.error("event.tool_error", session_id=session_id, tool=tool, error=error)
-        self._audit(action="event.tool_error", session_id=session_id, details={"tool": tool, "error": error})
-        self._write_part(session_id=session_id, type_="tool_error", payload={"tool": tool, "error": error})
+        duration_ms = None
+        try:
+            t0 = self._tool_start_times.pop((session_id, tool), None)
+            if t0 is not None:
+                duration_ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+        except Exception:
+            duration_ms = None
+        self._log.error("event.tool_error", session_id=session_id, tool=tool, error=error, duration_ms=duration_ms)
+        self._audit(action="event.tool_error", session_id=session_id, details={"tool": tool, "error": error, "duration_ms": duration_ms})
+        self._write_part(session_id=session_id, type_="tool_error", payload={"tool": tool, "error": error, "duration_ms": duration_ms})
 
     def write_event_step_finish(self, *, session_id: str) -> None:
         self._log.info("event.step_finish", session_id=session_id)

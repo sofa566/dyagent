@@ -68,6 +68,24 @@
         <button id="apply-toolcall-template" class="btn" type="button">套用</button>
       </div>
       <textarea id="toolcall-guide" rows="8" placeholder="例如：\n[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format...\n  [[CALL tool=<allowed-tool-name>]]\n{\n  &quot;arg&quot;: &quot;value&quot;\n}\n- Otherwise, answer normally."></textarea>
+      <p class="muted" style="margin-top:6px;">
+        可用變數：
+        <code>{{ALLOWED_TOOL_NAMES}}</code>（逗號分隔，含 mcp:&lt;name&gt;）、
+        <code>{{SKILL_NAMES}}</code>、<code>{{MCP_NAMES}}</code>、
+        <code>{{ALLOWED_TOOLS_BLOCK}}</code>（每行一個）、
+        <code>{{SKILL_TOOLS_BLOCK}}</code>、<code>{{MCP_TOOLS_BLOCK}}</code>、
+        <code>{{EXAMPLE_ARGS}}</code>（預設基於首個有示例的 MCP 或通用值）、
+        <code>{{EXAMPLE_ARGS_BLOCK}}</code>（每個工具對應的示例 JSON 一行）。
+      </p>
+      <details id="toolcall-preview" class="card" style="margin-top:8px;">
+        <summary>即時渲染預覽</summary>
+        <div style="display:flex; gap:8px; align-items:center; margin:6px 0; flex-wrap:wrap;">
+          <button id="refresh-preview" class="btn" type="button">重新整理預覽</button>
+          <button id="copy-preview" class="btn" type="button">複製預覽</button>
+          <span class="muted">依據目前頁面狀態（Skills/MCP/示例參數）即時替換變數。</span>
+        </div>
+        <pre id="preview-output" class="code" style="white-space:pre-wrap; max-height:320px; overflow:auto;"></pre>
+      </details>
     </section>
 
     <div style="display:flex;gap:8px;">
@@ -102,16 +120,20 @@
     const ragOutput = document.getElementById('rag-output');
     const saveBtn = document.getElementById('save');
 
-    let state = { mcp_config: [], skills: [], rag_config: { enabled: false, sources: [], topK: 5 } };
+    let state = { mcp_config: [], skills: [], rag_config: { enabled: false, sources: [], topK: 5 }, skill_examples: {} };
     let toolcallGuideEl = document.getElementById('toolcall-guide');
     const toolcallTplSelect = document.getElementById('toolcall-template');
     const toolcallTplApply = document.getElementById('apply-toolcall-template');
+    const previewPanel = document.getElementById('toolcall-preview');
+    const previewOutput = document.getElementById('preview-output');
+    const refreshPreviewBtn = document.getElementById('refresh-preview');
+    const copyPreviewBtn = document.getElementById('copy-preview');
 
     const TOOLCALL_TEMPLATES = {
-      generic: `[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format and nothing else before it:\n  [[CALL tool=<allowed-tool-name>]]\n{\n  "arg": "value"\n}\n- <allowed-tool-name> must be one of: skills you listed, or mcp:<name> shown above.\n- The JSON body are the arguments for the tool.\n- Otherwise, answer normally without the CALL block.`,
-      openai: `You may call tools using OpenAI function-calls.\nWhen a tool is strictly required to complete the task, produce a JSON object with a top-level key \"tool_calls\" as the ONLY content in your response:\n{\n  "tool_calls": [\n    {\n      "type": "function",\n      "function": {\n        "name": "<allowed-tool-name>",\n        "arguments": { "arg": "value" }\n      }\n    }\n  ]\n}\n<allowed-tool-name> must be one of: skills you listed, or mcp:<name>. Otherwise answer normally.`,
-      anthropic: `If a tool is strictly required, produce an Anthropic-style tool_use block as your ONLY content:\n<tool_use name=\"<allowed-tool-name>\">\n{\n  "arg": "value"\n}\n</tool_use>\n<allowed-tool-name> must be one of: skills you listed, or mcp:<name>. Otherwise answer normally.`,
-      gemini: `When a tool is required, emit a JSON object as your ONLY content to request a function call:\n{\n  "functionCall": {\n    "name": "<allowed-tool-name>",\n    "args": { "arg": "value" }\n  }\n}\n<allowed-tool-name> must be one of: skills you listed, or mcp:<name>. Otherwise answer normally.`,
+      generic: `[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format and nothing else before it:\n  [[CALL tool=<allowed-tool-name>]]\n{{EXAMPLE_ARGS}}\n- <allowed-tool-name> must be one of: {{ALLOWED_TOOL_NAMES}}\n- The JSON body are the arguments for the tool.\n- Otherwise, answer normally without the CALL block.\n\n[Allowed Tools]\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n\n{{USAGE_HINTS}}`,
+      openai: `You may call tools using OpenAI function-calls.\nWhen a tool is strictly required to complete the task, produce a JSON object with a top-level key \"tool_calls\" as the ONLY content in your response:\n{\n  "tool_calls": [\n    {\n      "type": "function",\n      "function": {\n        "name": "<allowed-tool-name>",\n        "arguments": { "arg": "value" }\n      }\n    }\n  ]\n}\nAllowed tools:\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n`,
+      anthropic: `If a tool is strictly required, produce an Anthropic-style tool_use block as your ONLY content:\n<tool_use name=\"<allowed-tool-name>\">\n{\n  "arg": "value"\n}\n</tool_use>\nAllowed tools:\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n`,
+      gemini: `When a tool is required, emit a JSON object as your ONLY content to request a function call:\n{\n  "functionCall": {\n    "name": "<allowed-tool-name>",\n    "args": { "arg": "value" }\n  }\n}\nAllowed tools:\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n`,
       clear: ''
     };
 
@@ -121,11 +143,23 @@
         const row = document.createElement('div');
         row.style.marginBottom = '6px';
         row.innerHTML = `
-          <input data-k="name" data-i="${idx}" placeholder="名稱" value="${c.name || ''}" />
-          <input data-k="base_url" data-i="${idx}" placeholder="base_url" value="${c.base_url || ''}" style="width:320px;" />
-          <label><input type="checkbox" data-k="enabled" data-i="${idx}" ${c.enabled ? 'checked' : ''}/> 啟用</label>
-          <button class="btn" data-act="test" data-i="${idx}">測試</button>
-          <button class="btn" data-act="del" data-i="${idx}">移除</button>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            <input data-k="name" data-i="${idx}" placeholder="名稱" value="${c.name || ''}" />
+            <input data-k="base_url" data-i="${idx}" placeholder="base_url" value="${c.base_url || ''}" style="width:320px;" />
+            <label><input type="checkbox" data-k="enabled" data-i="${idx}" ${c.enabled ? 'checked' : ''}/> 啟用</label>
+            <button class="btn" data-act="test" data-i="${idx}">測試</button>
+            <button class="btn" data-act="del" data-i="${idx}">移除</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:4px;">
+            <label style="min-width:100px;">progress_field</label>
+            <input data-k="progress_field" data-i="${idx}" placeholder="例如 meta.progress" value="${c.progress_field || ''}" style="flex:1;" />
+            <label style="min-width:80px;">eta_field</label>
+            <input data-k="eta_field" data-i="${idx}" placeholder="例如 meta.eta" value="${c.eta_field || ''}" style="flex:1;" />
+          </div>
+          <div style="display:flex;gap:6px;align-items:flex-start;margin-top:4px;">
+            <label style="min-width:100px;">示例參數(JSON)</label>
+            <textarea data-k="example_args" data-i="${idx}" rows="2" placeholder='{"arg":"value"}' style="flex:1;">${typeof c.example_args === 'string' ? c.example_args : (c.example_args ? JSON.stringify(c.example_args) : '')}</textarea>
+          </div>
         `;
         mcpList.appendChild(row);
       });
@@ -136,9 +170,16 @@
       state.skills.forEach((s, idx) => {
         const row = document.createElement('div');
         row.style.marginBottom = '6px';
+        const ex = (state.skill_examples && typeof state.skill_examples[s] !== 'undefined') ? state.skill_examples[s] : '';
         row.innerHTML = `
-          <label><input type="checkbox" data-act="toggle-skill" data-i="${idx}" checked/> ${s}</label>
-          <button class="btn" data-act="remove-skill" data-i="${idx}">移除</button>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <label><input type="checkbox" data-act="toggle-skill" data-i="${idx}" checked/> ${s}</label>
+            <button class="btn" data-act="remove-skill" data-i="${idx}">移除</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:flex-start;margin-top:4px;">
+            <label style="min-width:100px;">示例參數(JSON)</label>
+            <textarea data-act="skill-example" data-skill="${s}" rows="2" placeholder='{"arg":"value"}' style="flex:1;">${typeof ex === 'string' ? ex : (ex ? JSON.stringify(ex) : '')}</textarea>
+          </div>
         `;
         skillsList.appendChild(row);
       });
@@ -150,7 +191,19 @@
         state.mcp_config = Array.isArray(res.mcp_config) ? res.mcp_config : [];
         state.skills = Array.isArray(res.skills) ? res.skills : [];
         state.rag_config = res.rag_config || { enabled: false, sources: [], topK: 5 };
+        state.skill_examples = (res.skill_examples && typeof res.skill_examples === 'object') ? res.skill_examples : {};
         if (typeof res.toolcall_guide === 'string') toolcallGuideEl.value = res.toolcall_guide;
+        // 若尚未自訂模板，根據 provider 建議一個預設範本
+        try {
+          if ((!toolcallGuideEl.value || !toolcallGuideEl.value.trim()) && typeof res.model_provider === 'string') {
+            const pv = (res.model_provider || '').toLowerCase();
+            let key = 'generic';
+            if (pv.includes('openai') || pv.includes('azure')) key = 'openai';
+            else if (pv.includes('anthropic')) key = 'anthropic';
+            else if (pv.includes('gemini') || pv.includes('google')) key = 'gemini';
+            toolcallTemplateSuggest(key);
+          }
+        } catch {}
         renderMcp();
         renderSkills();
         ragEnabled.checked = !!state.rag_config.enabled;
@@ -164,6 +217,7 @@
     addMcpBtn.addEventListener('click', () => {
       state.mcp_config.push({ name: '', base_url: '', enabled: false });
       renderMcp();
+      schedulePreview();
     });
 
     mcpList.addEventListener('input', (e) => {
@@ -172,8 +226,14 @@
       const i = parseInt(t.getAttribute('data-i'), 10);
       if (Number.isInteger(i) && k) {
         if (k === 'enabled') state.mcp_config[i][k] = t.checked;
-        else state.mcp_config[i][k] = t.value;
+        else if (k === 'example_args') {
+          // 暫不強制解析，直接保存字串；後端渲染時會嘗試解析
+          state.mcp_config[i][k] = t.value;
+        } else {
+          state.mcp_config[i][k] = t.value;
+        }
       }
+      schedulePreview();
     });
     mcpList.addEventListener('click', async (e) => {
       const t = e.target;
@@ -199,18 +259,32 @@
       if (!state.skills.includes(v)) state.skills.push(v);
       newSkillInput.value = '';
       renderSkills();
+      schedulePreview();
     });
     skillsList.addEventListener('click', (e) => {
       const t = e.target;
       const act = t.getAttribute('data-act');
       const i = parseInt(t.getAttribute('data-i'), 10);
       if (act === 'remove-skill') {
-        state.skills.splice(i, 1);
+        const removed = state.skills.splice(i, 1)[0];
+        if (removed && state.skill_examples) delete state.skill_examples[removed];
         renderSkills();
+        schedulePreview();
       } else if (act === 'toggle-skill') {
         // 目前 skills 僅記錄已啟用名單；取消等同移除
-        state.skills.splice(i, 1);
+        const removed = state.skills.splice(i, 1)[0];
+        if (removed && state.skill_examples) delete state.skill_examples[removed];
         renderSkills();
+        schedulePreview();
+      }
+    });
+    skillsList.addEventListener('input', (e) => {
+      const t = e.target;
+      if (t.getAttribute('data-act') === 'skill-example') {
+        const sk = t.getAttribute('data-skill');
+        if (!state.skill_examples) state.skill_examples = {};
+        state.skill_examples[sk] = t.value;
+        schedulePreview();
       }
     });
 
@@ -229,9 +303,100 @@
     toolcallTplApply.addEventListener('click', () => {
       const key = toolcallTplSelect.value;
       if (!key) return;
-      const tpl = TOOLCALL_TEMPLATES[key] || '';
-      toolcallGuideEl.value = tpl;
+      toolcallTemplateSuggest(key);
     });
+
+    function toolcallTemplateSuggest(key) {
+      const tpl = TOOLCALL_TEMPLATES[key] || '';
+      toolcallTplSelect.value = key;
+      toolcallGuideEl.value = tpl;
+      renderGuidePreview();
+    }
+
+    function renderGuidePreview() {
+      try {
+        const raw = (toolcallGuideEl.value || '').toString();
+        if (!raw.trim()) { previewOutput.textContent = '(無內容)'; return; }
+        const skills = Array.isArray(state.skills) ? state.skills.slice() : [];
+        const mcps = Array.isArray(state.mcp_config) ? state.mcp_config.filter(c => c && c.enabled && c.name).map(c => `mcp:${c.name}`) : [];
+        const allowed = [...skills, ...mcps];
+        const allowedNames = allowed.length ? allowed.join(', ') : '<none>';
+        // EXAMPLE_ARGS：優先首個帶示例的 MCP
+        let exampleArgsObj = { arg: 'value' };
+        try {
+          const firstWithEg = (Array.isArray(state.mcp_config) ? state.mcp_config : []).find(c => c && c.enabled && c.example_args);
+          if (firstWithEg) {
+            const eg = firstWithEg.example_args;
+            if (typeof eg === 'string' && eg.trim()) { exampleArgsObj = JSON.parse(eg); }
+            else if (typeof eg === 'object' && eg) { exampleArgsObj = eg; }
+          }
+        } catch {}
+        const exampleArgs = JSON.stringify(exampleArgsObj, null, 2);
+        // EXAMPLE_ARGS_BLOCK：逐工具一行
+        const mcpExamples = {};
+        (Array.isArray(state.mcp_config) ? state.mcp_config : []).forEach(c => {
+          if (c && c.enabled && c.name) {
+            const nm = `mcp:${c.name}`;
+            let val = {};
+            if (typeof c.example_args === 'string' && c.example_args.trim()) { try { val = JSON.parse(c.example_args); } catch {} }
+            else if (typeof c.example_args === 'object' && c.example_args) { val = c.example_args; }
+            mcpExamples[nm] = val;
+          }
+        });
+        const skillExamples = (state.skill_examples && typeof state.skill_examples === 'object') ? state.skill_examples : {};
+        const exBlockLines = allowed.map(n => {
+          let val = {};
+          if (n.startsWith('mcp:')) val = mcpExamples[n] || {};
+          else {
+            const raw = skillExamples[n];
+            if (typeof raw === 'string' && raw.trim()) { try { val = JSON.parse(raw); } catch {} }
+            else if (typeof raw === 'object' && raw) { val = raw; }
+          }
+          return `- ${n}: ${JSON.stringify(val)}`;
+        });
+        const exampleArgsBlock = exBlockLines.length ? exBlockLines.join('\n') : '- <none>';
+        // 變數替換
+        const skillBlock = skills.length ? skills.map(s => `- ${s}`).join('\n') : '- <none>';
+        const mcpBlock = mcps.length ? mcps.map(s => `- ${s}`).join('\n') : '- <none>';
+        let out = raw
+          .replaceAll('{{ALLOWED_TOOL_NAMES}}', allowedNames)
+          .replaceAll('{{SKILL_NAMES}}', skills.length ? skills.join(', ') : '<none>')
+          .replaceAll('{{MCP_NAMES}}', mcps.length ? mcps.join(', ') : '<none>')
+          .replaceAll('{{EXAMPLE_ARGS}}', exampleArgs)
+          .replaceAll('{{SKILL_TOOLS_BLOCK}}', skillBlock)
+          .replaceAll('{{MCP_TOOLS_BLOCK}}', mcpBlock)
+          .replaceAll('{{EXAMPLE_ARGS_BLOCK}}', exampleArgsBlock);
+        if (out.includes('{{ALLOWED_TOOLS_BLOCK}}')) {
+          const blk = allowed.length ? allowed.map(n => `- ${n}`).join('\n') : '- <none>';
+          out = out.replaceAll('{{ALLOWED_TOOLS_BLOCK}}', blk);
+        }
+        if (out.includes('{{USAGE_HINTS}}')) {
+          const hints = [
+            '[使用說明]',
+            '- 僅在確定需要呼叫工具時再輸出 CALL 區塊；否則請以自然語言作答。',
+            "- MCP 工具名稱請使用 'mcp:<name>' 的精確字串。",
+            '- 參數務必為合法 JSON（鍵為字串、無註解、逗號位置正確）。',
+            '- 僅可使用上方允許清單中的工具名稱。',
+          ].join('\n');
+          out = out.replaceAll('{{USAGE_HINTS}}', hints);
+        }
+        previewOutput.textContent = out;
+      } catch (e) {
+        previewOutput.textContent = '預覽產生失敗：' + (e && e.message ? e.message : '未知錯誤');
+      }
+    }
+
+    function schedulePreview() {
+      if (schedulePreview._t) clearTimeout(schedulePreview._t);
+      schedulePreview._t = setTimeout(renderGuidePreview, 250);
+    }
+
+    // 初始與事件綁定
+    refreshPreviewBtn.addEventListener('click', renderGuidePreview);
+    copyPreviewBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(previewOutput.textContent || ''); copyPreviewBtn.textContent = '已複製'; setTimeout(()=>copyPreviewBtn.textContent='複製預覽', 1200);} catch {}
+    });
+    toolcallGuideEl.addEventListener('input', schedulePreview);
 
     saveBtn.addEventListener('click', async () => {
       try {
