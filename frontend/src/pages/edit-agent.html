@@ -43,6 +43,7 @@
           <button type="submit" class="btn btn-primary">儲存</button>
           <a href="/pages/agent-list.html" class="btn btn-secondary">取消</a>
           <button type="button" id="delete-btn" class="btn btn-danger">刪除</button>
+          <a id="llm-config-adv" href="#" class="btn">LLM 設定(進階)</a>
         </div>
       </form>
     </div>
@@ -85,6 +86,9 @@
         document.getElementById('name').value = response.name;
         document.getElementById('description').value = response.description || '';
         document.getElementById('model_type').value = response.model_type;
+        // 設定進階 LLM 設定連結
+        const adv = document.getElementById('llm-config-adv');
+        if (adv) adv.href = `/pages/agent-llm-config.html?id=${agentId}`;
       } catch (error) {
         showError(error.message);
         setTimeout(() => {
