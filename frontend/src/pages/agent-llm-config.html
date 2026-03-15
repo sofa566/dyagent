@@ -66,6 +66,24 @@
           <option value="clear">清空</option>
         </select>
         <button id="apply-toolcall-template" class="btn" type="button">套用</button>
+        <label for="insert-var">插入變數：</label>
+        <select id="insert-var">
+          <option value="">— 選擇變數 —</option>
+          <option value="{{ALLOWED_TOOL_NAMES}}">{{ALLOWED_TOOL_NAMES}}</option>
+          <option value="{{SKILL_NAMES}}">{{SKILL_NAMES}}</option>
+          <option value="{{MCP_NAMES}}">{{MCP_NAMES}}</option>
+          <option value="{{ALLOWED_TOOLS_BLOCK}}">{{ALLOWED_TOOLS_BLOCK}}</option>
+          <option value="{{SKILL_TOOLS_BLOCK}}">{{SKILL_TOOLS_BLOCK}}</option>
+          <option value="{{MCP_TOOLS_BLOCK}}">{{MCP_TOOLS_BLOCK}}</option>
+          <option value="{{EXAMPLE_ARGS}}">{{EXAMPLE_ARGS}}</option>
+          <option value="{{EXAMPLE_ARGS_BLOCK}}">{{EXAMPLE_ARGS_BLOCK}}</option>
+          <option value="{{RAG_ENABLED}}">{{RAG_ENABLED}}</option>
+          <option value="{{RAG_SOURCES}}">{{RAG_SOURCES}}</option>
+          <option value="{{RAG_TOPK}}">{{RAG_TOPK}}</option>
+          <option value="{{RAG_HINTS}}">{{RAG_HINTS}}</option>
+          <option value="{{USAGE_HINTS}}">{{USAGE_HINTS}}</option>
+        </select>
+        <button id="btn-insert-var" class="btn" type="button">插入</button>
       </div>
       <textarea id="toolcall-guide" rows="8" placeholder="例如：\n[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format...\n  [[CALL tool=<allowed-tool-name>]]\n{\n  &quot;arg&quot;: &quot;value&quot;\n}\n- Otherwise, answer normally."></textarea>
       <p class="muted" style="margin-top:6px;">
@@ -75,7 +93,8 @@
         <code>{{ALLOWED_TOOLS_BLOCK}}</code>（每行一個）、
         <code>{{SKILL_TOOLS_BLOCK}}</code>、<code>{{MCP_TOOLS_BLOCK}}</code>、
         <code>{{EXAMPLE_ARGS}}</code>（預設基於首個有示例的 MCP 或通用值）、
-        <code>{{EXAMPLE_ARGS_BLOCK}}</code>（每個工具對應的示例 JSON 一行）。
+        <code>{{EXAMPLE_ARGS_BLOCK}}</code>（每個工具對應的示例 JSON 一行）、
+        <code>{{RAG_ENABLED}}</code>（true/false）、<code>{{RAG_SOURCES}}</code>、<code>{{RAG_TOPK}}</code>、<code>{{RAG_HINTS}}</code>。
       </p>
       <details id="toolcall-preview" class="card" style="margin-top:8px;">
         <summary>即時渲染預覽</summary>
@@ -128,6 +147,8 @@
     const previewOutput = document.getElementById('preview-output');
     const refreshPreviewBtn = document.getElementById('refresh-preview');
     const copyPreviewBtn = document.getElementById('copy-preview');
+    const insertVarSelect = document.getElementById('insert-var');
+    const insertVarBtn = document.getElementById('btn-insert-var');
 
     const TOOLCALL_TEMPLATES = {
       generic: `[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format and nothing else before it:\n  [[CALL tool=<allowed-tool-name>]]\n{{EXAMPLE_ARGS}}\n- <allowed-tool-name> must be one of: {{ALLOWED_TOOL_NAMES}}\n- The JSON body are the arguments for the tool.\n- Otherwise, answer normally without the CALL block.\n\n[Allowed Tools]\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n\n{{USAGE_HINTS}}`,
@@ -229,6 +250,7 @@
         else if (k === 'example_args') {
           // 暫不強制解析，直接保存字串；後端渲染時會嘗試解析
           state.mcp_config[i][k] = t.value;
+          try { if (t.value.trim()) JSON.parse(t.value); t.style.borderColor=''; } catch { t.style.borderColor='#c0392b'; }
         } else {
           state.mcp_config[i][k] = t.value;
         }
@@ -284,6 +306,7 @@
         const sk = t.getAttribute('data-skill');
         if (!state.skill_examples) state.skill_examples = {};
         state.skill_examples[sk] = t.value;
+        try { if (t.value.trim()) JSON.parse(t.value); t.style.borderColor=''; } catch { t.style.borderColor='#c0392b'; }
         schedulePreview();
       }
     });
@@ -304,6 +327,20 @@
       const key = toolcallTplSelect.value;
       if (!key) return;
       toolcallTemplateSuggest(key);
+    });
+    insertVarBtn.addEventListener('click', () => {
+      const v = insertVarSelect.value;
+      if (!v) return;
+      const el = toolcallGuideEl;
+      const start = el.selectionStart || 0;
+      const end = el.selectionEnd || 0;
+      const before = el.value.substring(0, start);
+      const after = el.value.substring(end);
+      el.value = before + v + after;
+      el.focus();
+      const pos = start + v.length;
+      el.setSelectionRange(pos, pos);
+      schedulePreview();
     });
 
     function toolcallTemplateSuggest(key) {
@@ -366,6 +403,20 @@
           .replaceAll('{{SKILL_TOOLS_BLOCK}}', skillBlock)
           .replaceAll('{{MCP_TOOLS_BLOCK}}', mcpBlock)
           .replaceAll('{{EXAMPLE_ARGS_BLOCK}}', exampleArgsBlock);
+        // RAG 變數
+        const ragEnabled = !!(state.rag_config && state.rag_config.enabled);
+        const ragSources = (state.rag_config && Array.isArray(state.rag_config.sources)) ? state.rag_config.sources.join(', ') : '';
+        const ragTopK = (state.rag_config && typeof state.rag_config.topK !== 'undefined') ? String(state.rag_config.topK) : '';
+        const ragHints = ragEnabled ? [
+          '[RAG 說明]',
+          '- 問題與知識檢索高度相關時，先檢索再作答，並於回覆中引用來源或摘要。',
+          '- 若查無結果，請明確說明並僅根據可得上下文作答（避免捏造）。',
+        ].join('\n') : '';
+        out = out
+          .replaceAll('{{RAG_ENABLED}}', ragEnabled ? 'true' : 'false')
+          .replaceAll('{{RAG_SOURCES}}', ragEnabled ? (ragSources || '<none>') : '<disabled>')
+          .replaceAll('{{RAG_TOPK}}', ragEnabled ? (ragTopK || '5') : '<disabled>')
+          .replaceAll('{{RAG_HINTS}}', ragHints);
         if (out.includes('{{ALLOWED_TOOLS_BLOCK}}')) {
           const blk = allowed.length ? allowed.map(n => `- ${n}`).join('\n') : '- <none>';
           out = out.replaceAll('{{ALLOWED_TOOLS_BLOCK}}', blk);
@@ -403,7 +454,12 @@
         const sources = (ragSources.value || '').split(',').map(s => s.trim()).filter(Boolean);
         const topK = parseInt(ragTopK.value, 10) || 5;
         const enabled = !!ragEnabled.checked;
-        const payload = { mcp_config: state.mcp_config, skills: state.skills, rag_config: { enabled, sources, topK }, toolcall_guide: (toolcallGuideEl.value || '').trim() };
+        // 儲存前驗證所有示例為合法 JSON（若非空）
+        const invalid = [];
+        (state.mcp_config||[]).forEach((c, idx)=>{ if (c && typeof c.example_args==='string' && c.example_args.trim()) { try{ JSON.parse(c.example_args);}catch{ invalid.push(`MCP[${c.name||idx}] 示例參數非合法 JSON`);} } });
+        Object.entries(state.skill_examples||{}).forEach(([k,v])=>{ if (typeof v==='string'&&v.trim()){ try{ JSON.parse(v);}catch{ invalid.push(`Skill[${k}] 示例參數非合法 JSON`);} } });
+        if (invalid.length){ showError(invalid.join('\n')); return; }
+        const payload = { mcp_config: state.mcp_config, skills: state.skills, rag_config: { enabled, sources, topK }, toolcall_guide: (toolcallGuideEl.value || '').trim(), skill_examples: state.skill_examples||{} };
         await api.put(`/agents/${agentId}/integrations`, payload);
         showSuccess('已儲存');
       } catch (e) {
