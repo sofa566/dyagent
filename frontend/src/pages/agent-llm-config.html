@@ -52,6 +52,24 @@
       <pre id="rag-output" class="code" style="white-space:pre-wrap;"></pre>
     </section>
 
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>工具呼叫協定（進階）</h3>
+      <p class="muted">可客製化模型在需要使用工具時應輸出的精確格式說明；非必要請保持預設。</p>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+        <label for="toolcall-template">快速套用範本：</label>
+        <select id="toolcall-template">
+          <option value="">— 選擇範本 —</option>
+          <option value="generic">通用（CALL 方言，嚴格）</option>
+          <option value="openai">OpenAI（tool_calls/functions）</option>
+          <option value="anthropic">Anthropic（tool_use）</option>
+          <option value="gemini">Gemini（functionCall）</option>
+          <option value="clear">清空</option>
+        </select>
+        <button id="apply-toolcall-template" class="btn" type="button">套用</button>
+      </div>
+      <textarea id="toolcall-guide" rows="8" placeholder="例如：\n[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format...\n  [[CALL tool=<allowed-tool-name>]]\n{\n  &quot;arg&quot;: &quot;value&quot;\n}\n- Otherwise, answer normally."></textarea>
+    </section>
+
     <div style="display:flex;gap:8px;">
       <button id="save" class="btn btn-primary" type="button">儲存</button>
       <a id="back" class="btn" href="/pages/agent-list.html">返回</a>
@@ -85,6 +103,17 @@
     const saveBtn = document.getElementById('save');
 
     let state = { mcp_config: [], skills: [], rag_config: { enabled: false, sources: [], topK: 5 } };
+    let toolcallGuideEl = document.getElementById('toolcall-guide');
+    const toolcallTplSelect = document.getElementById('toolcall-template');
+    const toolcallTplApply = document.getElementById('apply-toolcall-template');
+
+    const TOOLCALL_TEMPLATES = {
+      generic: `[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format and nothing else before it:\n  [[CALL tool=<allowed-tool-name>]]\n{\n  "arg": "value"\n}\n- <allowed-tool-name> must be one of: skills you listed, or mcp:<name> shown above.\n- The JSON body are the arguments for the tool.\n- Otherwise, answer normally without the CALL block.`,
+      openai: `You may call tools using OpenAI function-calls.\nWhen a tool is strictly required to complete the task, produce a JSON object with a top-level key \"tool_calls\" as the ONLY content in your response:\n{\n  "tool_calls": [\n    {\n      "type": "function",\n      "function": {\n        "name": "<allowed-tool-name>",\n        "arguments": { "arg": "value" }\n      }\n    }\n  ]\n}\n<allowed-tool-name> must be one of: skills you listed, or mcp:<name>. Otherwise answer normally.`,
+      anthropic: `If a tool is strictly required, produce an Anthropic-style tool_use block as your ONLY content:\n<tool_use name=\"<allowed-tool-name>\">\n{\n  "arg": "value"\n}\n</tool_use>\n<allowed-tool-name> must be one of: skills you listed, or mcp:<name>. Otherwise answer normally.`,
+      gemini: `When a tool is required, emit a JSON object as your ONLY content to request a function call:\n{\n  "functionCall": {\n    "name": "<allowed-tool-name>",\n    "args": { "arg": "value" }\n  }\n}\n<allowed-tool-name> must be one of: skills you listed, or mcp:<name>. Otherwise answer normally.`,
+      clear: ''
+    };
 
     function renderMcp() {
       mcpList.innerHTML = '';
@@ -121,6 +150,7 @@
         state.mcp_config = Array.isArray(res.mcp_config) ? res.mcp_config : [];
         state.skills = Array.isArray(res.skills) ? res.skills : [];
         state.rag_config = res.rag_config || { enabled: false, sources: [], topK: 5 };
+        if (typeof res.toolcall_guide === 'string') toolcallGuideEl.value = res.toolcall_guide;
         renderMcp();
         renderSkills();
         ragEnabled.checked = !!state.rag_config.enabled;
@@ -196,12 +226,19 @@
       }
     });
 
+    toolcallTplApply.addEventListener('click', () => {
+      const key = toolcallTplSelect.value;
+      if (!key) return;
+      const tpl = TOOLCALL_TEMPLATES[key] || '';
+      toolcallGuideEl.value = tpl;
+    });
+
     saveBtn.addEventListener('click', async () => {
       try {
         const sources = (ragSources.value || '').split(',').map(s => s.trim()).filter(Boolean);
         const topK = parseInt(ragTopK.value, 10) || 5;
         const enabled = !!ragEnabled.checked;
-        const payload = { mcp_config: state.mcp_config, skills: state.skills, rag_config: { enabled, sources, topK } };
+        const payload = { mcp_config: state.mcp_config, skills: state.skills, rag_config: { enabled, sources, topK }, toolcall_guide: (toolcallGuideEl.value || '').trim() };
         await api.put(`/agents/${agentId}/integrations`, payload);
         showSuccess('已儲存');
       } catch (e) {
