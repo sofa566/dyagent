@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>技能設定</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/skills.html">技能管理</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2 id="title">技能設定</h2>
+    <div id="error-message" class="error-message"></div>
+    <div class="card">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <label style="min-width:90px;">名稱</label>
+        <input id="name" placeholder="skill_name" />
+        <label><input type="checkbox" id="enabled" checked/> 啟用</label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+        <label style="min-width:90px;">類型</label>
+        <select id="type">
+          <option value="webhook" selected>webhook</option>
+          <option value="python">python</option>
+        </select>
+      </div>
+      <div style="margin-top:8px;">
+        <label>說明</label>
+        <textarea id="description" rows="2" placeholder="此技能的用途..."></textarea>
+      </div>
+      <div style="margin-top:8px;">
+        <label>輸入結構（JSON Schema，可選）</label>
+        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
+      </div>
+      <div id="panel-webhook" style="margin-top:8px;">
+        <div style="margin-top:8px;">
+          <label>Endpoint URL</label>
+          <input id="endpoint_url" placeholder="https://example.com/skill" style="width:420px;" />
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <label style="min-width:90px;">HTTP 方法</label>
+          <select id="http_method">
+            <option>POST</option>
+            <option>GET</option>
+            <option>PUT</option>
+            <option>DELETE</option>
+          </select>
+          <label style="min-width:90px;">逾時 (ms)</label>
+          <input id="timeout_ms" type="number" min="100" step="100" value="8000" style="width:120px;" />
+        </div>
+        <div style="margin-top:8px;">
+          <label>Headers（JSON）</label>
+          <textarea id="headers" rows="3" placeholder='{"Authorization":"Bearer ..."}'></textarea>
+        </div>
+      </div>
+      <div id="panel-python" style="margin-top:8px; display:none;">
+        <div style="margin-top:8px;">
+          <label>Python Handler（package.module:function）</label>
+          <input id="python_handler" placeholder="my_pkg.skills.weather:run" style="width:420px;" />
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h3 style="margin:0;">測試技能</h3>
+        <small class="muted">僅限已儲存的技能</small>
+      </div>
+      <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+        <button id="tab-form" class="btn">表單</button>
+        <button id="tab-json" class="btn btn-secondary">JSON</button>
+      </div>
+      <div id="test-form" style="margin-top:6px;"></div>
+      <div id="test-json" style="margin-top:6px; display:none;">
+        <textarea id="test_payload" rows="5" style="width:100%;min-width:280px;" placeholder='{"amount":100,"from":"USD","to":"TWD"}'></textarea>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+        <button id="btn-test" class="btn" type="button">執行測試</button>
+        <button id="btn-clear-test" class="btn" type="button">清空</button>
+      </div>
+      <div id="test-error" class="error-message" style="display:none;margin-top:6px;"></div>
+      <pre id="test-result" class="code" style="white-space:pre-wrap;margin-top:6px;"></pre>
+    </div>
+
+    <div class="card" style="margin-top:8px;">
+      <h3 style="margin:0;">最近測試</h3>
+      <table class="table" style="margin-top:6px;">
+        <thead><tr><th>時間</th><th>狀態</th><th>耗時(ms)</th><th>備註</th></tr></thead>
+        <tbody id="test-history"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button id="save" class="btn btn-primary" type="button">儲存</button>
+      <a class="btn" href="/pages/skills.html">返回</a>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+    if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
+    const u = new URL(window.location.href);
+    const id = u.searchParams.get('id');
+    const $ = (id)=>document.getElementById(id);
+    function syncTypeUI() {
+      const t = $('type').value;
+      $('panel-webhook').style.display = (t === 'webhook') ? 'block' : 'none';
+      $('panel-python').style.display = (t === 'python') ? 'block' : 'none';
+    }
+    $('type').addEventListener('change', syncTypeUI);
+    async function load(){
+      if (!id) return;
+      try{
+        const r = await api.get(`/skills/${id}`);
+        $('title').textContent = `技能設定：${r.name}`;
+        $('name').value = r.name||'';
+        $('enabled').checked = !!r.enabled;
+        $('description').value = r.description||'';
+        $('type').value = r.type || 'webhook';
+        $('endpoint_url').value = r.endpoint_url || '';
+        $('http_method').value = (r.http_method || 'POST').toUpperCase();
+        $('timeout_ms').value = r.timeout_ms || 8000;
+        $('headers').value = (r.headers && typeof r.headers === 'object') ? JSON.stringify(r.headers, null, 2) : '';
+        $('python_handler').value = r.python_handler || '';
+        $('input_schema').value = (r.input_schema && typeof r.input_schema === 'object') ? JSON.stringify(r.input_schema, null, 2) : '';
+        syncTypeUI();
+      }catch(e){ showError(e.message||'載入失敗'); }
+    }
+    async function save(){
+      try{
+        const body = {
+          name: $('name').value.trim(),
+          enabled: $('enabled').checked,
+          description: $('description').value.trim(),
+          type: $('type').value,
+          input_schema: (function(){ const raw=$('input_schema').value.trim(); if(!raw) return {}; try { return JSON.parse(raw);} catch(e){ showError('輸入結構需為合法 JSON'); throw e; } })(),
+        };
+        if (body.type === 'webhook') {
+          body.endpoint_url = $('endpoint_url').value.trim();
+          body.http_method = ($('http_method').value || 'POST').toUpperCase();
+          const tm = parseInt($('timeout_ms').value || '8000', 10); body.timeout_ms = isFinite(tm) && tm > 0 ? tm : 8000;
+          const hdr = $('headers').value.trim(); if (hdr) { try { body.headers = JSON.parse(hdr); } catch { showError('Headers 需為合法 JSON'); return; } }
+        } else if (body.type === 'python') {
+          body.python_handler = $('python_handler').value.trim();
+        }
+        if (id) await api.put(`/skills/${id}`, body); else await api.post('/skills', body);
+        showSuccess('已儲存'); setTimeout(()=> window.location.href = '/pages/skills.html', 600);
+      }catch(e){ showError(e.message||'儲存失敗'); }
+    }
+    document.getElementById('save').addEventListener('click', save);
+    // 測試技能
+    function clearFieldErrors(root){ root.querySelectorAll('.field-error').forEach(n=>n.remove()); root.querySelectorAll('input,select,textarea').forEach(el=> el.style.borderColor=''); }
+    function addFieldError(el,msg){ const d=document.createElement('div'); d.className='field-error'; d.style.color='var(--danger-color, #c0392b)'; d.style.fontSize='12px'; d.style.marginTop='2px'; d.textContent=String(msg); el.style.borderColor='var(--danger-color, #c0392b)'; el.insertAdjacentElement('afterend', d); }
+    function validateAgainstSchema(containerId, schema, payload){
+      const root=document.getElementById(containerId); clearFieldErrors(root);
+      const req = Array.isArray(schema.required)? schema.required: [];
+      const props = (schema && schema.properties) ? schema.properties: {};
+      let ok = true;
+      Object.entries(props).forEach(([k, spec])=>{
+        const el = root.querySelector(`[data-key="${k}"]`) || root.querySelector(`[data-type] [data-key="${k}"]`) || null;
+        const v = payload[k]; const t = (spec && spec.type) || 'string';
+        if (req.includes(k) && (v === undefined || v === null || v === '')){ ok=false; if (el) addFieldError(el, '必填'); return; }
+        if (v === undefined || v === null || v === '') return;
+        if (t==='number' || t==='integer'){
+          if (typeof v !== 'number' || Number.isNaN(v)) { ok=false; if (el) addFieldError(el, '需為數字'); }
+          if (spec && typeof spec.minimum==='number' && v < spec.minimum){ ok=false; if (el) addFieldError(el, `不可小於 ${spec.minimum}`); }
+          if (spec && typeof spec.maximum==='number' && v > spec.maximum){ ok=false; if (el) addFieldError(el, `不可大於 ${spec.maximum}`); }
+        } else if (t==='string'){
+          if (typeof v !== 'string'){ ok=false; if (el) addFieldError(el, '需為字串'); }
+          if (spec && typeof spec.minLength==='number' && v.length < spec.minLength){ ok=false; if (el) addFieldError(el, `長度不可小於 ${spec.minLength}`); }
+          if (spec && typeof spec.maxLength==='number' && v.length > spec.maxLength){ ok=false; if (el) addFieldError(el, `長度不可大於 ${spec.maxLength}`); }
+          if (spec && spec.pattern){ try { const re=new RegExp(spec.pattern); if (!re.test(v)) { ok=false; if (el) addFieldError(el, '格式不符合規則'); } } catch {}
+          }
+        }
+      });
+      return ok;
+    }
+    document.getElementById('btn-test').addEventListener('click', async ()=>{
+      const err = $('test-error'); const out = $('test-result'); err.style.display='none'; out.textContent='';
+      if (!id) { err.textContent='請先儲存技能後再測試'; err.style.display='block'; return; }
+      let payload={};
+      if (document.getElementById('test-json').style.display !== 'none') {
+        const raw=$('test_payload').value.trim(); if (raw) { try { payload = JSON.parse(raw);} catch(e){ err.textContent='測試輸入需為合法 JSON'; err.style.display='block'; return; } }
+      } else {
+        try { payload = collectFormPayload('test-form'); } catch(e){ err.textContent = e.message || '表單驗證失敗'; err.style.display='block'; return; }
+        // 基本前端驗證
+        try { const schRaw = $('input_schema').value.trim(); if (schRaw){ const schema = JSON.parse(schRaw); if (schema && schema.type==='object'){ if (!validateAgainstSchema('test-form', schema, payload)){ err.textContent='表單欄位有誤，請修正紅框標示'; err.style.display='block'; return; } } } } catch{}
+      }
+      try { const r = await api.post(`/skills/${id}/test`, payload); out.textContent = JSON.stringify(r, null, 2); 
+        if (r && r.ok === false && Array.isArray(r.errors)) {
+          // 從後端回傳的錯誤映射到欄位
+          const root = document.getElementById('test-form');
+          r.errors.forEach(e => {
+            const p = (e && e.path) ? String(e.path) : '';
+            const key = p.split('.')[0];
+            if (!key) return;
+            const el = root.querySelector(`[data-key="${key}"]`) || root.querySelector(`[data-type] [data-key="${key}"]`);
+            if (el) addFieldError(el, (e && e.message) ? String(e.message) : '不符合結構');
+          });
+          err.textContent = '表單欄位有誤，請依提示修正'; err.style.display='block';
+        }
+      }
+      catch(e){ err.textContent = e.message || '測試失敗'; err.style.display='block'; }
+    });
+    document.getElementById('btn-clear-test').addEventListener('click', ()=>{ $('test_payload').value=''; $('test-result').textContent=''; $('test-error').style.display='none'; });
+    // 分頁切換（含 JSON ↔ 表單同步）
+    (function(){
+      const tabF = $('tab-form'); const tabJ = $('tab-json'); const boxF = $('test-form'); const boxJ = $('test-json');
+      function activate(which){
+        if (which==='form'){ boxF.style.display='block'; boxJ.style.display='none'; tabF.classList.add('btn-secondary'); tabJ.classList.remove('btn-secondary'); }
+        else { boxF.style.display='none'; boxJ.style.display='block'; tabJ.classList.add('btn-secondary'); tabF.classList.remove('btn-secondary'); }
+      }
+      tabF.addEventListener('click', ()=> {
+        // 切到表單：若 JSON 有內容就用它當初始值重繪表單
+        try{
+          const schRaw = $('input_schema').value.trim();
+          const schema = schRaw? JSON.parse(schRaw): {};
+          const raw = $('test_payload').value.trim();
+          if (raw && schema && schema.type==='object'){
+            try { const init = JSON.parse(raw); renderFormFromSchema('test-form', schema, init); }
+            catch { renderFormFromSchema('test-form', schema); }
+          } else {
+            renderFormFromSchema('test-form', schema);
+          }
+        } catch { /* ignore */ }
+        activate('form');
+      });
+      tabJ.addEventListener('click', ()=> {
+        // 切到 JSON：若表單可見則把值序列化到 JSON 區
+        try{
+          if (boxF.style.display !== 'none'){
+            const body = collectFormPayload('test-form');
+            $('test_payload').value = JSON.stringify(body, null, 2);
+          }
+        } catch { /* ignore */ }
+        activate('json');
+      });
+      activate('form');
+    })();
+    // Schema 表單渲染（子集）；第三參數 initial 可用於 JSON→表單
+    function renderFormFromSchema(containerId, schema, initial){
+      const root = document.getElementById(containerId);
+      root.innerHTML = '';
+      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties){
+        root.innerHTML = '<div class="muted">此技能未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
+        document.getElementById('test-json').style.display='block';
+        return;
+      }
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      const init = (initial && typeof initial === 'object') ? initial : {};
+      Object.entries(schema.properties).forEach(([key, spec])=>{
+        const row = document.createElement('div'); row.style.marginTop = '6px';
+        const label = document.createElement('label');
+        const title = (spec && spec.title) ? spec.title : key;
+        label.textContent = title + (required.includes(key)? ' *' : '');
+        label.style.display='block'; label.style.fontWeight='600';
+        row.appendChild(label);
+        const desc = (spec && spec.description) ? String(spec.description) : '';
+        if (desc) { const small = document.createElement('div'); small.className='muted'; small.textContent = desc; small.style.marginBottom='4px'; row.appendChild(small); }
+        const t = (spec && spec.type) || 'string';
+        let inputEl = null;
+        if (spec && Array.isArray(spec.enum)){
+          const sel = document.createElement('select'); sel.dataset.key = key;
+          spec.enum.forEach(v=>{ const opt = document.createElement('option'); opt.value = String(v); opt.textContent = String(v); sel.appendChild(opt); });
+          if (spec.default != null) sel.value = String(spec.default);
+          if (Object.prototype.hasOwnProperty.call(init, key)) sel.value = String(init[key]);
+          inputEl = sel;
+        } else if (t === 'boolean'){
+          const cb = document.createElement('input'); cb.type='checkbox'; cb.dataset.key = key; cb.checked = !!spec.default; if (Object.prototype.hasOwnProperty.call(init, key)) cb.checked = !!init[key]; inputEl = cb;
+        } else if (t === 'number' || t === 'integer'){
+          const num = document.createElement('input'); num.type='number'; num.dataset.key = key;
+          if (typeof spec.minimum==='number') num.min = String(spec.minimum);
+          if (typeof spec.maximum==='number') num.max = String(spec.maximum);
+          if (typeof spec.multipleOf==='number') num.step = String(spec.multipleOf);
+          if (spec.default != null) num.value = String(spec.default);
+          if (typeof init[key] === 'number') num.value = String(init[key]);
+          inputEl = num;
+        } else if (t === 'array'){
+          const wrap = document.createElement('div'); wrap.dataset.key = key; wrap.dataset.type='array';
+          const list = document.createElement('div'); wrap.appendChild(list);
+          const btn = document.createElement('button'); btn.type='button'; btn.className='btn'; btn.textContent = '新增一列'; btn.style.marginTop='4px';
+          wrap.appendChild(btn);
+          function addItem(def){
+            const item = document.createElement('div'); item.style.border='1px dashed var(--border-color)'; item.style.padding='6px'; item.style.marginTop='4px';
+            const rm = document.createElement('button'); rm.type='button'; rm.className='btn'; rm.textContent='移除'; rm.style.float='right';
+            rm.addEventListener('click', ()=> item.remove()); item.appendChild(rm);
+            const specItem = spec.items || {};
+            if (specItem.type === 'object' && specItem.properties){
+              Object.entries(specItem.properties).forEach(([k2, s2])=>{
+                const r2 = document.createElement('div'); r2.style.marginTop='6px';
+                const lb2 = document.createElement('label'); lb2.textContent = (s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2);
+                const t2 = s2.type || 'string';
+                let el2;
+                if (Array.isArray(s2.enum)){
+                  el2 = document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); });
+                  if (s2.default!=null) el2.value=String(s2.default);
+                  if (def && def[k2] != null) el2.value=String(def[k2]);
+                } else if (t2==='boolean'){
+                  el2 = document.createElement('input'); el2.type='checkbox'; el2.checked = !!s2.default; if (def && def[k2] != null) el2.checked=!!def[k2];
+                } else if (t2==='number' || t2==='integer'){
+                  el2 = document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default); if (def && typeof def[k2]==='number') el2.value=String(def[k2]);
+                } else {
+                  el2 = document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default); if (def && def[k2] != null) el2.value=String(def[k2]);
+                }
+                el2.dataset.key = k2;
+                r2.appendChild(el2);
+                item.appendChild(r2);
+              });
+            } else {
+              const el = document.createElement('input'); el.type='text'; el.dataset.key='__scalar__'; if (def!=null) el.value=String(def); item.appendChild(el);
+            }
+            list.appendChild(item);
+          }
+          btn.addEventListener('click', ()=> addItem(undefined));
+          if (Array.isArray(spec.default)) spec.default.forEach(v=> addItem(v));
+          if (Array.isArray(init[key])) init[key].forEach(v=> addItem(v));
+          inputEl = wrap;
+        } else if (t === 'object' && spec.properties){
+          const sub = document.createElement('div'); sub.dataset.key = key; sub.dataset.type='object'; sub.style.border='1px dashed var(--border-color)'; sub.style.padding='6px';
+          const subInit = (init && typeof init[key] === 'object') ? init[key] : {};
+          Object.entries(spec.properties).forEach(([k2, s2])=>{
+            const r2 = document.createElement('div'); r2.style.marginTop='6px';
+            const lb2 = document.createElement('label'); lb2.textContent = (s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2);
+            const t2 = s2.type || 'string';
+            let el2;
+            if (Array.isArray(s2.enum)){
+              el2 = document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default); if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.value=String(subInit[k2]);
+            } else if (t2==='boolean'){
+              el2 = document.createElement('input'); el2.type='checkbox'; el2.checked = !!s2.default; if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.checked=!!subInit[k2];
+            } else if (t2==='number' || t2==='integer'){
+              el2 = document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default); if (typeof subInit[k2]==='number') el2.value=String(subInit[k2]);
+            } else {
+              el2 = document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default); if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.value=String(subInit[k2]);
+            }
+            el2.dataset.key = k2;
+            r2.appendChild(el2);
+            sub.appendChild(r2);
+          });
+          inputEl = sub;
+        } else {
+          const txt = document.createElement('input'); txt.type='text'; txt.dataset.key = key; if (spec && spec.default!=null) txt.value=String(spec.default); if (spec && spec.pattern) txt.pattern = String(spec.pattern); if (Object.prototype.hasOwnProperty.call(init,key)) txt.value = String(init[key]);
+          inputEl = txt;
+        }
+        if (inputEl) row.appendChild(inputEl);
+        root.appendChild(row);
+      });
+    }
+    function collectFormPayload(containerId){
+      const root = document.getElementById(containerId);
+      const payload = {};
+      const rows = Array.from(root.children);
+      for (const row of rows){
+        const arrayBlock = row.querySelector('[data-type="array"]');
+        const objectBlock = row.querySelector('[data-type="object"]');
+        if (arrayBlock){
+          const key = arrayBlock.dataset.key; const items = [];
+          arrayBlock.querySelectorAll(':scope > div > div').forEach(item=>{
+            const scalar = item.querySelector('input[data-key="__scalar__"]');
+            if (scalar) items.push(scalar.value);
+            else {
+              const obj = {}; item.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value || 0); else obj[k]=el.value; });
+              items.push(obj);
+            }
+          });
+          payload[key] = items;
+          continue;
+        }
+        if (objectBlock){
+          const key = objectBlock.dataset.key; const obj = {};
+          objectBlock.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value || 0); else obj[k]=el.value; });
+          payload[key] = obj;
+          continue;
+        }
+        const inp = row.querySelector('[data-key]'); if (!inp) continue; const key = inp.dataset.key;
+        if (inp.tagName==='SELECT') payload[key] = inp.value;
+        else if (inp.type==='checkbox') payload[key] = !!inp.checked;
+        else if (inp.type==='number') payload[key] = (inp.value.trim()===''? null : Number(inp.value));
+        else payload[key] = inp.value;
+      }
+      return payload;
+    }
+    function renderTestForm(){
+      try{ const raw = $('input_schema').value.trim(); const schema = raw? JSON.parse(raw): {}; renderFormFromSchema('test-form', schema); }
+      catch{ const c = document.getElementById('test-form'); c.innerHTML = '<div class="error-message">input_schema 不是合法 JSON，請修正或改用 JSON 分頁</div>'; }
+    }
+    $('input_schema').addEventListener('input', ()=>{ renderTestForm(); });
+    async function loadHistory(){
+      if (!id) return;
+      try{
+        const r = await api.get(`/skills/${id}/tests?limit=20`);
+        const rows = Array.isArray(r.items) ? r.items : [];
+        const tb = $('test-history');
+        tb.innerHTML = rows.map(x=>{
+          const d = x.details || {}; const ok = !!d.ok; const ms = (typeof d.duration_ms==='number')? d.duration_ms : '';
+          const note = d.type ? d.type : '';
+          return `<tr><td>${x.timestamp || ''}</td><td>${ok?'成功':'失敗'}</td><td>${ms}</td><td>${note}</td></tr>`;
+        }).join('');
+      }catch(e){ /* ignore */ }
+    }
+    setInterval(loadHistory, 8000);
+    loadHistory();
+    load();
+    renderTestForm();
+  </script>
+</body>
+</html>

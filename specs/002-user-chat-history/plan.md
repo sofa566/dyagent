@@ -67,7 +67,7 @@ specs/[###-feature]/
 backend/
 ├── src/
 │   ├── api/
-│   │   ├── routes/agents.py   # 提供 /agents/public、/agents/{id}/conversations、/agents/{id}/chat
+│   │   ├── routes/agents.py   # 提供 /agents/public、/agents/{id}/conversations、/agents/{id}/chat/stream
 │   │   └── routes/auth.py     # 登入/註冊
 │   ├── models/                # User, Agent, Conversation, Message
 │   └── services/              # ChatRouter/LLMClient 等（既有）

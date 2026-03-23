@@ -16,11 +16,18 @@ from collections import deque
 from src.services.llm_client import LLMClient
 from src.core.logging import get_logger
 from sqlalchemy.orm import Session
-from src.models import Log, Agent
+from src.models import Log, Agent, MCPConnection, SkillEntry
 from src.models.events import EventPart
 from src.core.config import settings
 from src.services.permission_service import PermissionService
 from src.services.mcp_client import MCPClient
+from src.services.react_synthesis import ReActSynthesis
+
+
+DEFAULT_LAST_METRICS = {
+    "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+    "cost": 0.0,
+}
 
 
 class ChatRouter:
@@ -72,25 +79,26 @@ class ChatRouter:
         except TypeError:
             self._llm.init_for_session(session_id=session_id, preferred_tier=tier)
 
+        # 確保後續工具呼叫可使用資料庫（避免 skill_backend_not_available）
+        self._set_db_if_present(db)
         agent_ctx = self._prepare_integrations(db=db, agent_id=agent_id)
 
-        # 若啟用 RAG，嘗試構建最小檢索上下文（目前無嵌入/檢索，先提供來源標籤提示）
-        rag_prefix = ""
-        refs_block = ""
+        # 嘗試自動判別是否需要呼叫工具（Skills 或 MCP）
         try:
-            rag = agent_ctx.get("rag", {})
-            if rag and rag.get("enabled"):
-                sources = rag.get("sources", []) or []
-                topk = rag.get("topK", 5) or 5
-                rag_prefix = f"\n[RAG] sources={','.join(sources)} topK={topk}"
-                refs_block = "\n\nReferences:\n- （目前未連接檢索服務，無可用引用）"
-        except Exception:
-            pass
+            auto_text = self._auto_select_and_call(session_id=session_id, user_message=user_message, agent_ctx=agent_ctx, tier=tier, db=db, agent_id=agent_id)
+            if isinstance(auto_text, str) and auto_text.strip():
+                # 正常結束事件
+                self.write_event_step_finish(session_id=session_id)
+                self.write_event_finish(session_id=session_id)
+                return auto_text
+        except Exception as _e:
+            self._log.warning("auto_tool.selection_failed", error=str(_e))
+
+        # 若啟用 RAG，嘗試構建最小檢索上下文（目前無嵌入/檢索，先提供來源標籤提示）
+        rag_prefix, refs_block = self._build_rag_hints(agent_ctx)
 
         # 為模型加入能力提示前綴，讓回覆能考量可用能力（即使目前為骨架）
-        mcp_names = ",".join([str(c.get("name") or "").strip() for c in agent_ctx.get("mcp", []) if isinstance(c, dict) and c.get("enabled")])
-        skills_names = ",".join(agent_ctx.get("skills", []))
-        prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
+        prefix = self._build_capability_prefix(agent_ctx, rag_prefix)
         guide = self._render_toolcall_guide(agent_ctx)
         composed_user_message = f"{prefix}{guide}\n{user_message}"
 
@@ -107,7 +115,7 @@ class ChatRouter:
                 result = self._call_structured_output(schema=schema or {}, user_message=user_message)
             self._last_structured = result
             # 記錄最小度量並結束回合
-            self._last_metrics = {"tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "cost": 0.0}
+            self._last_metrics = dict(DEFAULT_LAST_METRICS)
             self.write_event_step_finish(session_id=session_id)
             self.write_event_finish(session_id=session_id)
             return ""  # 結構化輸出成功即結束回合（不再產生一般文字）
@@ -145,18 +153,10 @@ class ChatRouter:
             self._log.warning("toolcall.parse_failed", error=str(e))
 
         # 簡易估算 tokens 與成本（後續以供應商資料覆蓋）
-        approx_tokens = max(1, len(output_text) // 4)
-        self._last_metrics = {
-            "tokens": {"input": 0, "output": approx_tokens, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-            "cost": 0.0,
-        }
+        self._last_metrics = self._estimate_metrics(output_text)
 
         # 若啟用「無可用路由即硬失敗」，且本輪為降級/骨架輸出，則回傳錯誤（不寫助理訊息）
-        try:
-            info = self._llm.last_route_info()
-            is_fallback = not info or (str(info.get("provider")) == "fallback")
-        except Exception:
-            is_fallback = False
+        is_fallback = self._is_fallback_route()
         if getattr(settings, "LLM_HARD_FAIL_ON_NO_ROUTE", False) and is_fallback:
             # 記錄工具錯誤並結束事件
             self.write_event_tool_error(session_id=session_id, tool="llm", error="no_route")
@@ -170,6 +170,90 @@ class ChatRouter:
         self.write_event_finish(session_id=session_id)
 
         return output_text
+
+    # 結構重構：以下 helper 僅抽取重複流程，不改變既有行為。
+    def _set_db_if_present(self, db: Optional[Session]) -> None:
+        try:
+            if db is not None:
+                self._db = db
+        except Exception:
+            pass
+
+    def _build_rag_hints(self, agent_ctx: dict[str, Any]) -> tuple[str, str]:
+        rag_prefix = ""
+        refs_block = ""
+        try:
+            rag = agent_ctx.get("rag", {})
+            if rag and rag.get("enabled"):
+                sources = rag.get("sources", []) or []
+                topk = rag.get("topK", 5) or 5
+                rag_prefix = f"\n[RAG] sources={','.join(sources)} topK={topk}"
+                refs_block = "\n\nReferences:\n- （目前未連接檢索服務，無可用引用）"
+        except Exception:
+            pass
+        return rag_prefix, refs_block
+
+    def _build_capability_prefix(self, agent_ctx: dict[str, Any], rag_prefix: str) -> str:
+        mcp_names = ",".join(
+            [str(c.get("name") or "").strip() for c in agent_ctx.get("mcp", []) if isinstance(c, dict) and c.get("enabled")]
+        )
+        skills_names = ",".join(agent_ctx.get("skills", []))
+        return f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
+
+    def _estimate_metrics(self, output_text: str) -> dict[str, Any]:
+        approx_tokens = max(1, len(output_text) // 4)
+        return {
+            "tokens": {"input": 0, "output": approx_tokens, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+            "cost": 0.0,
+        }
+
+    def _is_fallback_route(self) -> bool:
+        try:
+            info = self._llm.last_route_info()
+            return (not info) or bool(info.get("fallback")) or (str(info.get("provider") or "") in {"", "fallback"})
+        except Exception:
+            return False
+
+    def _auto_select_and_call(self, *, session_id: str, user_message: str, agent_ctx: dict[str, Any], tier: Optional[str], db: Optional[Session] = None, agent_id: Optional[str] = None) -> Optional[str]:
+        """使用 ReAct 合成層：規劃工具呼叫、執行、再輸出可讀答案。"""
+        try:
+            skills = [s for s in (agent_ctx.get("skills", []) or []) if isinstance(s, str) and s.strip()]
+            mcps = []
+            for c in (agent_ctx.get("mcp", []) or []):
+                if isinstance(c, dict) and c.get("enabled") and c.get("name"):
+                    mcps.append(f"mcp:{str(c.get('name')).strip()}")
+            allowed = skills + mcps
+            if not allowed:
+                return None
+
+            # Why: ReAct tool path 仍需共用 DB 寫盤與技能查詢能力。
+            self._set_db_if_present(db)
+
+            synthesis = ReActSynthesis(
+                llm_complete=lambda prompt, t: self._llm.complete(prompt=prompt, tier=t),
+                call_tool=lambda tool_name, payload: self.call_tool(
+                    session_id=session_id,
+                    tool=tool_name,
+                    payload=payload,
+                ),
+                max_steps=getattr(settings, "REACT_MAX_STEPS", 3),
+                max_observation_chars=getattr(settings, "REACT_MAX_OBSERVATION_CHARS", 4000),
+            )
+            out = synthesis.run(user_message=user_message, allowed_tools=allowed, tier=tier)
+            # 將 ReAct 追蹤寫入事件流，便於前端/除錯觀察規劃流程
+            try:
+                trace = synthesis.last_trace()
+                if trace:
+                    self._write_part(
+                        session_id=session_id,
+                        type_="react.trace",
+                        payload={"trace": trace[:20]},
+                    )
+            except Exception:
+                pass
+            return out
+        except Exception:
+            return None
 
     def _prepare_integrations(self, *, db: Optional[Session], agent_id: str) -> dict[str, Any]:
         agent_ctx: dict[str, Any] = {"skills": [], "mcp": [], "rag": {"enabled": False, "sources": [], "topK": 5}}
@@ -185,15 +269,92 @@ class ChatRouter:
                             self._skill_examples = cfg.get("skill_examples") or {}
                     except Exception:
                         self._skill_examples = {}
-                    mcp_raw = ag.mcp_config or []
-                    if isinstance(mcp_raw, dict):
-                        mcp_list = list(mcp_raw.values())
-                    elif isinstance(mcp_raw, list):
-                        mcp_list = mcp_raw
-                    else:
-                        mcp_list = []
-                    agent_ctx["mcp"] = [c for c in mcp_list if isinstance(c, dict) and c.get("enabled")]
-                    agent_ctx["skills"] = [s for s in (ag.skills or []) if isinstance(s, str) and s.strip()]
+                    # 1) 以 id 參照的 MCP：從全域表解析
+                    mcp_list: list[dict] = []
+                    try:
+                        ids = []
+                        if isinstance(getattr(ag, 'model_config', None), dict):
+                            ids = list((ag.model_config or {}).get('mcp_ids') or [])
+                        if ids:
+                            rows = db.query(MCPConnection).filter(MCPConnection.id.in_(ids)).all()
+                            for r in rows:
+                                if not bool(r.enabled):
+                                    continue
+                                mcp_list.append({
+                                    'name': r.name,
+                                    'enabled': True,
+                                    'transport': r.transport,
+                                    'base_url': r.base_url,
+                                    'auth': r.auth,
+                                    'progress_field': r.progress_field,
+                                    'eta_field': r.eta_field,
+                                    'command': r.command,
+                                    'args': r.args,
+                                    'env': r.env,
+                                    'input_schema': getattr(r, 'input_schema', {}) or {},
+                                })
+                    except Exception:
+                        pass
+                    # 2) 舊版/自訂 MCP：僅在未使用 mcp_ids（無 registry 參照）時才採用 inline
+                    try:
+                        using_ids = bool((getattr(ag, 'model_config', {}) or {}).get('mcp_ids'))
+                    except Exception:
+                        using_ids = False
+                    if not using_ids:
+                        try:
+                            mcp_raw = ag.mcp_config or []
+                            if isinstance(mcp_raw, dict):
+                                mcp_inline = list(mcp_raw.values())
+                            elif isinstance(mcp_raw, list):
+                                mcp_inline = mcp_raw
+                            else:
+                                mcp_inline = []
+                            # 以 name 作為 key 合併（inline 覆蓋 registry）
+                            merged: dict[str, dict] = {}
+                            for c in mcp_list:
+                                if isinstance(c, dict) and c.get('name'):
+                                    merged[str(c.get('name'))] = dict(c)
+                            for c in mcp_inline:
+                                if isinstance(c, dict) and c.get('name'):
+                                    merged[str(c.get('name'))] = dict(c)
+                            mcp_list = [v for v in merged.values() if v.get('enabled')]
+                        except Exception:
+                            pass
+                    agent_ctx["mcp"] = [c for c in (mcp_list or []) if isinstance(c, dict) and c.get("enabled")]
+
+                    # Skills：合併 id 參照與字串名單
+                    skills_names: list[str] = []
+                    try:
+                        if isinstance(getattr(ag, 'model_config', None), dict):
+                            sids = list((ag.model_config or {}).get('skill_ids') or [])
+                            if sids:
+                                rows = db.query(SkillEntry).filter(SkillEntry.id.in_(sids)).all()
+                                # 準備 schema 映射
+                                self._skill_schemas = {}
+                                for r in rows:
+                                    if bool(r.enabled) and isinstance(r.name, str) and r.name.strip():
+                                        skills_names.append(r.name.strip())
+                                        try:
+                                            if isinstance(getattr(r, 'input_schema', None), dict):
+                                                self._skill_schemas[r.name.strip()] = r.input_schema
+                                        except Exception:
+                                            pass
+                    except Exception:
+                        pass
+                    # 僅在未使用 skill_ids 時，才納入 agent.skills（歷史相容）
+                    try:
+                        using_skill_ids = bool((getattr(ag, 'model_config', {}) or {}).get('skill_ids'))
+                    except Exception:
+                        using_skill_ids = False
+                    if not using_skill_ids:
+                        try:
+                            for s in (ag.skills or []):
+                                if isinstance(s, str) and s.strip():
+                                    skills_names.append(s.strip())
+                        except Exception:
+                            pass
+                    # 去重
+                    agent_ctx["skills"] = list(dict.fromkeys(skills_names).keys())
                     rc = ag.rag_config or {}
                     agent_ctx["rag"] = {
                         "enabled": bool(rc.get("enabled", False)),
@@ -231,6 +392,13 @@ class ChatRouter:
             "\n[Allowed Tools]\n"
             "Skills:\n{{SKILL_TOOLS_BLOCK}}\n"
             "MCP:\n{{MCP_TOOLS_BLOCK}}\n"
+            "\n[Schemas]\n"
+            "- Input JSON schema hints for skills (if any):\n{{SCHEMA_BLOCK}}\n"
+            "\n[RAG Context]\n"
+            "- Enabled: {{RAG_ENABLED}}\n"
+            "- Sources: {{RAG_SOURCES}}\n"
+            "- topK: {{RAG_TOPK}}\n"
+            "{{RAG_HINTS}}\n"
             "\n{{USAGE_HINTS}}\n"
         )
 
@@ -247,73 +415,24 @@ class ChatRouter:
                     mcps.append(f"mcp:{str(c.get('name')).strip()}")
             allowed = skills + mcps
             allowed_names = ", ".join(allowed) if allowed else "<none>"
-            # 產生示例參數：優先使用 MCP 連線上的 example_args；否則使用預設
-            example_args_obj = {"arg": "value"}
-            # 嘗試找到首個帶 example_args 的 MCP
-            try:
-                for c in (agent_ctx.get("mcp", []) or []):
-                    if isinstance(c, dict) and c.get("enabled") and c.get("example_args"):
-                        eg = c.get("example_args")
-                        if isinstance(eg, dict):
-                            example_args_obj = eg
-                            break
-                        # 若為字串，嘗試解析 JSON
-                        if isinstance(eg, str):
-                            import json as _json
-                            try:
-                                parsed = _json.loads(eg)
-                                if isinstance(parsed, dict):
-                                    example_args_obj = parsed
-                                    break
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+            # 簡化：不再依賴 example_args，固定以 {} 作為示例
             import json as _json
-            example_args = _json.dumps(example_args_obj, ensure_ascii=False, indent=2)
-            # 建立所有工具的示例區塊（MCP 取 example_args；skills 取 _skill_examples 或預設 {}）
-            ex_block_lines = []
+            example_args = _json.dumps({}, ensure_ascii=False, indent=2)
+            examples_block = "\n".join([f"- {n}: {{}}" for n in allowed]) if allowed else "- <none>"
+            # Schema block：僅針對 skills，若有 input_schema 則輸出其 JSON；否則 {}
+            schema_lines = []
             try:
-                # 建立名稱到 example 的映射
-                mcp_examples = {}
-                for c in (agent_ctx.get("mcp", []) or []):
-                    if isinstance(c, dict) and c.get("enabled") and c.get("name"):
-                        nm = f"mcp:{str(c.get('name')).strip()}"
-                        eg = c.get("example_args")
-                        val = {}
-                        if isinstance(eg, dict):
-                            val = eg
-                        elif isinstance(eg, str):
-                            try:
-                                parsed = _json.loads(eg)
-                                if isinstance(parsed, dict):
-                                    val = parsed
-                            except Exception:
-                                val = {}
-                        mcp_examples[nm] = val
-                for n in allowed:
-                    if n.startswith("mcp:"):
-                        val = mcp_examples.get(n, {})
+                m: dict[str, dict] = getattr(self, "_skill_schemas", {}) if hasattr(self, "_skill_schemas") else {}
+                for s in skills:
+                    sch = m.get(s) if isinstance(m, dict) else None
+                    import json as _json
+                    if isinstance(sch, dict) and sch:
+                        schema_lines.append(f"- {s}: " + _json.dumps(sch, ensure_ascii=False))
                     else:
-                        raw_ex = None
-                        try:
-                            raw_ex = (getattr(self, "_skill_examples", {}) or {}).get(n)
-                        except Exception:
-                            raw_ex = None
-                        if isinstance(raw_ex, dict):
-                            val = raw_ex
-                        elif isinstance(raw_ex, str):
-                            try:
-                                parsed = _json.loads(raw_ex)
-                                val = parsed if isinstance(parsed, dict) else {}
-                            except Exception:
-                                val = {}
-                        else:
-                            val = {}
-                    ex_block_lines.append(f"- {n}: " + _json.dumps(val, ensure_ascii=False))
+                        schema_lines.append(f"- {s}: {{}}")
             except Exception:
                 pass
-            examples_block = "\n".join(ex_block_lines) if ex_block_lines else "- <none>"
+            schema_block = "\n".join(schema_lines) if schema_lines else "- <none>"
             # 進行替換
             out = raw
             out = out.replace("{{ALLOWED_TOOL_NAMES}}", allowed_names)
@@ -331,6 +450,27 @@ class ChatRouter:
             mcp_block = "\n".join([f"- {m}" for m in mcps]) if mcps else "- <none>"
             out = out.replace("{{SKILL_TOOLS_BLOCK}}", skill_block)
             out = out.replace("{{MCP_TOOLS_BLOCK}}", mcp_block)
+            out = out.replace("{{SCHEMA_BLOCK}}", schema_block)
+            # RAG 變數
+            try:
+                rc = agent_ctx.get("rag", {}) or {}
+                rag_enabled = bool(rc.get("enabled", False))
+                rag_sources = ", ".join(rc.get("sources", []) or []) if rag_enabled else "<disabled>"
+                rag_topk = str(int(rc.get("topK", 5) or 5)) if rag_enabled else "<disabled>"
+                rag_hints = (
+                    "[RAG 說明]\n"
+                    "- 問題與知識檢索高度相關時，先檢索再作答，並於回覆中引用來源或摘要。\n"
+                    "- 若查無結果，請明確說明並僅根據可得上下文作答（避免捏造）。\n"
+                ) if rag_enabled else ""
+                out = out.replace("{{RAG_ENABLED}}", "true" if rag_enabled else "false")
+                out = out.replace("{{RAG_SOURCES}}", rag_sources if rag_sources else "<none>")
+                out = out.replace("{{RAG_TOPK}}", rag_topk)
+                out = out.replace("{{RAG_HINTS}}", rag_hints)
+            except Exception:
+                out = out.replace("{{RAG_ENABLED}}", "false")
+                out = out.replace("{{RAG_SOURCES}}", "<none>")
+                out = out.replace("{{RAG_TOPK}}", "<n/a>")
+                out = out.replace("{{RAG_HINTS}}", "")
             # 使用說明（繁中）
             hints = (
                 "[使用說明]\n"
@@ -348,28 +488,52 @@ class ChatRouter:
         self._custom_toolcall_guide = guide if isinstance(guide, str) else None
 
     async def call_tool_async(self, *, session_id: str, tool: str, payload: dict, db: Optional[Session] = None, agent_id: Optional[str] = None) -> dict:
-        # 若提供 agent_id 與 db，先載入整合設定以建立白名單
-        if agent_id and db is not None:
-            self._prepare_integrations(db=db, agent_id=agent_id)
-        # 名稱/白名單與 doom-loop 同步邏輯
-        name = (tool or "").strip()
-        if not name:
-            self.write_event_tool_error(session_id=session_id, tool="<empty>", error="invalid_tool")
-            return {"ok": False, "error": "invalid_tool"}
-        if name not in getattr(self, "_allowed_tools", set()):
-            self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
-            return {"ok": False, "error": "tool_not_allowed"}
-        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
-        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
-            return {"ok": False, "error": "doom_loop_denied"}
+        """非同步工具呼叫入口。
 
-        # 僅在 MCP 工具時優先走 WS JSON-RPC 串流
+        Why: 將 SSE 串流與同步工具邏輯橋接在同一入口，避免路由層分散處理白名單與審計。
+        """
+        name, early = self._validate_async_tool_call_request(
+            session_id=session_id,
+            tool=tool,
+            payload=payload,
+            db=db,
+            agent_id=agent_id,
+        )
+        if early is not None:
+            return early
+
+        # 僅在 MCP 工具時優先走 WS JSON-RPC 串流（stdio 模式則直接走同步）
         if name.startswith("mcp:"):
             conn_name = name.split(":", 1)[1]
             conn = getattr(self, "_mcp_map", {}).get(conn_name)
             if not conn:
                 self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_connection_not_found")
                 return {"ok": False, "error": "mcp_connection_not_found"}
+            transport = str(conn.get("transport") or "remote").strip() or "remote"
+            if transport == "stdio":
+                # stdio：走持久會話串流（含 initialize），避免單次 invoke 缺少握手造成 timeout
+                try:
+                    cmd = str(conn.get("command") or "").strip()
+                    args = conn.get("args") if isinstance(conn.get("args"), list) else []
+                    env = conn.get("env") if isinstance(conn.get("env"), dict) else {}
+                    async for frame in self._mcp.stream_rpc_call_stdio(
+                        command=cmd,
+                        args=args,
+                        env=env,
+                        method="tools.invoke",
+                        params={"tool": conn_name, "arguments": payload or {}},
+                    ):
+                        if isinstance(frame, dict) and frame.get("ok") is True:
+                            self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
+                            return {"ok": True, "result": frame.get("result", frame)}
+                        if isinstance(frame, dict) and frame.get("ok") is False:
+                            err = str(frame.get("error") or "tool_failed")
+                            self.write_event_tool_error(session_id=session_id, tool=name, error=err)
+                            return {"ok": False, "error": err}
+                except Exception as e:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                    return {"ok": False, "error": str(e)}
+                return {"ok": False, "error": "mcp_stdio_no_terminal_frame"}
             base_url = str(conn.get("base_url") or "").strip()
             auth = conn.get("auth") if isinstance(conn, dict) else None
             if not base_url:
@@ -394,6 +558,35 @@ class ChatRouter:
         # 其他情況沿用同步路徑
         return self.call_tool(session_id=session_id, tool=name, payload=payload)
 
+    def _validate_async_tool_call_request(
+        self,
+        *,
+        session_id: str,
+        tool: str,
+        payload: dict,
+        db: Optional[Session],
+        agent_id: Optional[str],
+    ) -> tuple[str, Optional[dict]]:
+        """統一非同步工具請求前置檢查。
+
+        Why: 保持 call_tool_async 主流程聚焦於執行路徑，降低重複邏輯維護成本。
+        """
+        if agent_id and db is not None:
+            self._prepare_integrations(db=db, agent_id=agent_id)
+        self._set_db_if_present(db)
+
+        name = (tool or "").strip()
+        if not name:
+            self.write_event_tool_error(session_id=session_id, tool="<empty>", error="invalid_tool")
+            return name, {"ok": False, "error": "invalid_tool"}
+        if name not in getattr(self, "_allowed_tools", set()):
+            self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
+            return name, {"ok": False, "error": "tool_not_allowed"}
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+            return name, {"ok": False, "error": "doom_loop_denied"}
+        return name, None
+
     def _maybe_handle_tool_call(self, *, session_id: str, text: str) -> str | None:
         marker = "[[CALL tool="
         idx = text.find(marker)
@@ -416,30 +609,49 @@ class ChatRouter:
                 payload = _json.loads(after[j_start : j_end + 1])
             # 呼叫工具
             result = self.call_tool(session_id=session_id, tool=tool_name, payload=payload)
-            # 以簡易格式附加工具結果
-            if result.get("ok"):
-                return f"{text}\n\n[Tool Result] {tool_name}: success"
-            return f"{text}\n\n[Tool Result] {tool_name}: failed ({result.get('error')})"
+            if not result.get("ok"):
+                return f"抱歉，我嘗試使用工具「{tool_name}」但失敗：{result.get('error')}"
+
+            # 工具成功後，要求模型根據工具結果輸出最終回覆（避免把 CALL 區塊原樣回給使用者）
+            try:
+                import json as _json
+                tool_res = result.get("result", {})
+                tool_res_s = _json.dumps(tool_res, ensure_ascii=False)
+                # 取 CALL 之前可能的自然語言上下文（若有）
+                preface = (text[:idx] or "").strip()
+                prompt = (
+                    "你是繁體中文助理。請根據以下工具結果，直接回覆使用者可讀答案。\n"
+                    "規則：\n"
+                    "1) 不可輸出 [[CALL ...]] 區塊\n"
+                    "2) 不可提及內部協定或工具執行細節\n"
+                    "3) 若資料不足要明確說明\n\n"
+                    f"工具名稱：{tool_name}\n"
+                    f"工具輸入：{_json.dumps(payload or {}, ensure_ascii=False)}\n"
+                    f"工具輸出：{tool_res_s[:6000]}\n"
+                    f"原始上下文：{preface[:1000]}\n\n"
+                    "請直接給最終回答："
+                )
+                final = self._llm.complete(prompt=prompt)
+                ans = (final or "").strip()
+                if ans:
+                    return ans
+            except Exception:
+                pass
+
+            # 後備：至少回傳工具結果摘要（不回 CALL 區塊）
+            try:
+                import json as _json
+                return f"已取得工具結果：{_json.dumps(result.get('result', {}), ensure_ascii=False)[:1200]}"
+            except Exception:
+                return "已取得工具結果。"
         except Exception:
             return None
 
     # 公用：以白名單強制的工具呼叫（未來供工具規劃/LLM function call 整合）
     def call_tool(self, *, session_id: str, tool: str, payload: dict) -> dict:
-        # 正規化名稱
-        name = (tool or "").strip()
-        if not name:
-            self.write_event_tool_error(session_id=session_id, tool="<empty>", error="invalid_tool")
-            return {"ok": False, "error": "invalid_tool"}
-
-        # 白名單檢查
-        if name not in self._allowed_tools:
-            self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
-            return {"ok": False, "error": "tool_not_allowed"}
-
-        # Doom loop 檢測與事件記錄
-        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
-        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
-            return {"ok": False, "error": "doom_loop_denied"}
+        name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
+        if early is not None:
+            return early
 
         # MCP 工具：命名慣例 mcp:<conn-name>
         if name.startswith("mcp:"):
@@ -448,27 +660,184 @@ class ChatRouter:
             if not conn:
                 self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_connection_not_found")
                 return {"ok": False, "error": "mcp_connection_not_found"}
-            base_url = str(conn.get("base_url") or "").strip()
-            if not base_url:
-                self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
-                return {"ok": False, "error": "mcp_invalid_base_url"}
-            # 佔位呼叫
-            try:
-                res = self._mcp.invoke(base_url=base_url, name=conn_name, arguments=payload or {})
-                self.write_event_tool_result(session_id=session_id, tool=name, result=res)
-                return {"ok": True, "result": res}
-            except Exception as e:
-                self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
-                return {"ok": False, "error": str(e)}
+            transport = str(conn.get("transport") or "remote").strip() or "remote"
+            if transport == "stdio":
+                try:
+                    cmd = str(conn.get("command") or "").strip()
+                    args = conn.get("args") if isinstance(conn.get("args"), list) else []
+                    env = conn.get("env") if isinstance(conn.get("env"), dict) else {}
+                    res = self._mcp.invoke_stdio(
+                        command=cmd,
+                        args=args,
+                        env=env,
+                        method="tools.invoke",
+                        params={"tool": conn_name, "arguments": payload or {}},
+                    )
+                    if res.get("ok"):
+                        self.write_event_tool_result(session_id=session_id, tool=name, result=res)
+                        return {"ok": True, "result": res.get("result", res)}
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(res.get("error")))
+                    return {"ok": False, "error": str(res.get("error"))}
+                except Exception as e:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                    return {"ok": False, "error": str(e)}
+            else:
+                base_url = str(conn.get("base_url") or "").strip()
+                if not base_url:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
+                    return {"ok": False, "error": "mcp_invalid_base_url"}
+                try:
+                    res = self._mcp.invoke(base_url=base_url, name=conn_name, arguments=payload or {})
+                    self.write_event_tool_result(session_id=session_id, tool=name, result=res)
+                    return {"ok": True, "result": res}
+                except Exception as e:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                    return {"ok": False, "error": str(e)}
 
-        # 其他工具（如本地 Skills）：暫以佔位回傳
+        # 其他工具（Skills）：支援 webhook 與 python handler
         try:
-            local_res = {"tool": name, "data": payload or {}, "ok": True}
-            self.write_event_tool_result(session_id=session_id, tool=name, result=local_res)
-            return {"ok": True, "result": local_res}
+            db = getattr(self, "_db", None)
+            if db is None:
+                self.write_event_tool_error(session_id=session_id, tool=name, error="skill_backend_not_available")
+                return {"ok": False, "error": "skill_backend_not_available"}
+            row = db.query(SkillEntry).filter(SkillEntry.name == name).first()
+            if not row or not bool(row.enabled):
+                self.write_event_tool_error(session_id=session_id, tool=name, error="skill_not_found_or_disabled")
+                return {"ok": False, "error": "skill_not_found_or_disabled"}
+
+            # 可選：依 input_schema 驗證 payload
+            try:
+                schema = getattr(row, 'input_schema', None)
+                if isinstance(schema, dict) and schema:
+                    valid = True
+                    err_msg = ''
+                    try:
+                        # 優先 fastjsonschema
+                        try:
+                            import fastjsonschema  # type: ignore
+                            validator = fastjsonschema.compile(schema)
+                            validator(payload or {})
+                        except ImportError:
+                            import jsonschema  # type: ignore
+                            jsonschema.validate(instance=payload or {}, schema=schema)
+                    except Exception as ve:
+                        valid = False
+                        err_msg = str(ve)
+                    if not valid:
+                        self.write_event_tool_error(session_id=session_id, tool=name, error="schema_validation_failed")
+                        return {"ok": False, "error": f"schema_validation_failed: {err_msg[:180]}"}
+            except Exception:
+                pass
+
+            if str(getattr(row, 'type', 'webhook')) == 'python':
+                # 本地 Python handler：package.module:function
+                handler = str(getattr(row, 'python_handler', '') or '').strip()
+                if not handler or ':' not in handler:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error="invalid_python_handler")
+                    return {"ok": False, "error": "invalid_python_handler"}
+                mod_name, func_name = handler.split(':', 1)
+                try:
+                    import importlib
+                    mod = importlib.import_module(mod_name)
+                    func = getattr(mod, func_name)
+                    res = func(payload or {})
+                    if not isinstance(res, dict):
+                        res = {"ok": True, "result": res}
+                    self.write_event_tool_result(session_id=session_id, tool=name, result=res)
+                    return {"ok": True, "result": res}
+                except Exception as e:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                    return {"ok": False, "error": str(e)}
+            else:
+                # webhook
+                url = str(getattr(row, 'endpoint_url', '') or '').strip()
+                method = str(getattr(row, 'http_method', 'POST') or 'POST').upper()
+                headers = getattr(row, 'headers', {}) or {}
+                try:
+                    timeout_ms = int(getattr(row, 'timeout_ms', 8000) or 8000)
+                except Exception:
+                    timeout_ms = 8000
+                if not url:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error="invalid_webhook_url")
+                    return {"ok": False, "error": "invalid_webhook_url"}
+                # schema 驗證（webhook）
+                try:
+                    schema = getattr(row, 'input_schema', None)
+                    if isinstance(schema, dict) and schema:
+                        try:
+                            import fastjsonschema  # type: ignore
+                            validator = fastjsonschema.compile(schema)
+                            validator(payload or {})
+                        except ImportError:
+                            import jsonschema  # type: ignore
+                            jsonschema.validate(instance=payload or {}, schema=schema)
+                        except Exception as ve:
+                            self.write_event_tool_error(session_id=session_id, tool=name, error="schema_validation_failed")
+                            # 盡量回傳結構化錯誤路徑
+                            def _ext(e: Exception):
+                                p = getattr(e, 'path', None); m = str(e)
+                                if p is not None:
+                                    if isinstance(p, (list, tuple)):
+                                        return [{'path': '.'.join(map(str, p)), 'message': m}]
+                                    return [{'path': str(p), 'message': m}]
+                                path = getattr(e, 'path', None)
+                                try:
+                                    parts = [str(x) for x in list(path)]
+                                    return [{'path': '.'.join(parts), 'message': m}]
+                                except Exception:
+                                    return [{'path': '', 'message': m}]
+                            return {"ok": False, "error": "schema_validation_failed", "errors": _ext(ve)}
+                except Exception:
+                    pass
+                try:
+                    import httpx
+                    with httpx.Client(timeout=timeout_ms / 1000.0) as client:
+                        if method == 'GET':
+                            resp = client.get(url, params=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                        elif method == 'PUT':
+                            resp = client.put(url, json=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                        elif method == 'DELETE':
+                            resp = client.delete(url, json=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                        else:
+                            resp = client.post(url, json=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                    if resp.status_code >= 400:
+                        err = f"http_{resp.status_code}: {(resp.text or '')[:200]}"
+                        self.write_event_tool_error(session_id=session_id, tool=name, error=err)
+                        return {"ok": False, "error": err}
+                    # 嘗試 JSON 解析；否則以 text 包裝
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = {"text": resp.text}
+                    result = {"ok": True, "result": data}
+                    self.write_event_tool_result(session_id=session_id, tool=name, result=result)
+                    return result
+                except Exception as e:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                    return {"ok": False, "error": str(e)}
         except Exception as e:
             self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
             return {"ok": False, "error": str(e)}
+
+    def _validate_sync_tool_call_request(self, *, session_id: str, tool: str, payload: dict) -> tuple[str, Optional[dict]]:
+        """統一同步工具請求前置檢查。
+
+        Why: 與非同步路徑保持相同防護步驟，避免兩條路徑行為漂移。
+        """
+        name = (tool or "").strip()
+        if not name:
+            self.write_event_tool_error(session_id=session_id, tool="<empty>", error="invalid_tool")
+            return name, {"ok": False, "error": "invalid_tool"}
+
+        if name not in self._allowed_tools:
+            self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
+            return name, {"ok": False, "error": "tool_not_allowed"}
+
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+            return name, {"ok": False, "error": "doom_loop_denied"}
+
+        return name, None
 
     # 取得最近一次回合的度量（tokens/cost 等）
     def last_metrics(self) -> dict | None:
@@ -635,25 +1004,31 @@ class ChatRouter:
         # 觸發授權詢問（規格：ask('doom_loop', patterns=[tool])）
         self._log.warning("doom_loop.detected", session_id=session_id, tool=tool, repeats=same)
         try:
-            # 本服務為同步，暫以 best-effort 呼叫；實務上建議外層 loop runner 以 async 模式處理
             import asyncio
 
-            async def _ask():
-                await self._perm.ask(session_id=session_id, permission="doom_loop", patterns=[tool])
+            async def _safe_ask():
+                try:
+                    await self._perm.ask(session_id=session_id, permission="doom_loop", patterns=[tool])
+                except NotImplementedError:
+                    # 權限互動尚未實作：忽略，採用允許繼續策略
+                    pass
+                except Exception as e:
+                    # 後台任務錯誤不影響當前流程
+                    self._log.warning("doom_loop.ask_task_error", session_id=session_id, tool=tool, error=str(e))
 
-            asyncio.run(_ask())
-            # 若無例外，視為允許繼續（具體決策交由 ask UI/規則）
-            return False
-        except NotImplementedError:
-            # 權限互動尚未實作：為安全起見，直接停止本輪
-            return True
-        except RuntimeError:
-            # 若 asyncio 事件迴圈衝突，記錄並採保守停止策略
-            self._log.warning("doom_loop.ask_failed_runtime", session_id=session_id, tool=tool)
-            return True
+            try:
+                # 若目前已有事件迴圈，改以背景任務執行，不阻塞、不生成未 await 警告
+                loop = asyncio.get_running_loop()
+                loop.create_task(_safe_ask())
+                return False
+            except RuntimeError:
+                # 無事件迴圈：同步執行一次
+                asyncio.run(_safe_ask())
+                return False
         except Exception as e:
-            self._log.error("doom_loop.ask_failed", error=str(e))
-            return True
+            # 任意例外視為無法詢問，為避免誤殺，採取允許繼續策略
+            self._log.warning("doom_loop.ask_failed", session_id=session_id, tool=tool, error=str(e))
+            return False
 
     def _normalize_tool_input(self, payload: dict) -> str:
         try:

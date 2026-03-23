@@ -45,6 +45,31 @@
           return;
         }
 
+        const integrationsEntries = await Promise.all(
+          response.agents.map(async (agent) => {
+            try {
+              const res = await api.get(`/agents/${agent.id}/integrations`);
+              const skills = Array.isArray(res.skills) ? res.skills.map((x) => String(x || '').trim()).filter(Boolean) : [];
+              const mcpFromSchemas = (res.mcp_schemas && typeof res.mcp_schemas === 'object')
+                ? Object.keys(res.mcp_schemas)
+                    .filter((k) => k.startsWith('mcp:'))
+                    .map((k) => k.replace(/^mcp:/, '').trim())
+                    .filter(Boolean)
+                : [];
+              const mcpFromInline = Array.isArray(res.mcp_config)
+                ? res.mcp_config
+                    .map((c) => (c && c.name ? String(c.name).trim() : ''))
+                    .filter(Boolean)
+                : [];
+              const mcpNames = Array.from(new Set([...mcpFromSchemas, ...mcpFromInline]));
+              return [agent.id, { skills, mcpNames }];
+            } catch {
+              return [agent.id, { skills: [], mcpNames: [] }];
+            }
+          })
+        );
+        const integrationsByAgent = Object.fromEntries(integrationsEntries);
+
         container.innerHTML = `
           <table>
             <thead>
@@ -52,6 +77,8 @@
                 <th>名稱</th>
                 <th>描述</th>
                 <th>模型類型</th>
+                <th>MCPs</th>
+                <th>Skills</th>
                 <th>建立時間</th>
                 <th>操作</th>
               </tr>
@@ -62,12 +89,14 @@
                   <td>${agent.name}</td>
                   <td>${agent.description || '-'}</td>
                   <td>${agent.model_type}</td>
+                  <td>${(integrationsByAgent[agent.id]?.mcpNames || []).join(', ') || '-'}</td>
+                  <td>${(integrationsByAgent[agent.id]?.skills || []).join(', ') || '-'}</td>
                   <td>${new Date(agent.created_at).toLocaleDateString()}</td>
                   <td>
                     <a href="/pages/chat.html?agent=${agent.id}" class="btn btn-primary">聊天</a>
                     <a href="/pages/edit-agent.html?id=${agent.id}" class="btn btn-secondary">編輯</a>
                     <a href="/pages/agent-llm.html?id=${agent.id}" class="btn">LLM 設定</a>
-                    <a href="/pages/agent-llm-config.html?id=${agent.id}" class="btn">LLM 設定(進階)</a>
+                    <a href="/pages/agent-llm-config.html?id=${agent.id}" class="btn">工具設定</a>
                   </td>
                 </tr>
               `).join('')}

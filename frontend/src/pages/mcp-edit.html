@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP 設定</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .tabs { display:flex; gap:6px; border-bottom:1px solid var(--border-color); margin-top:8px; }
+    .tab { background:none; border:none; padding:8px 12px; cursor:pointer; color:var(--text-secondary); border-bottom:2px solid transparent; }
+    .tab.active { color:var(--text-primary); border-bottom-color: var(--primary-color); font-weight:600; }
+    .muted { color: var(--text-secondary); font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a id="users-admin-link" href="/pages/users.html">使用者管理</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a id="mcps-admin-link" href="/pages/mcps.html">MCP 管理</a>
+      <a id="skills-admin-link" href="/pages/skills.html">技能管理</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2 id="title">MCP 設定</h2>
+    <div id="error-message" class="error-message"></div>
+    <div class="card">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <label style="min-width:90px;">名稱</label>
+        <input id="name" placeholder="weather" />
+        <label><input type="checkbox" id="enabled" checked/> 啟用</label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+        <label style="min-width:90px;">傳輸</label>
+        <select id="transport" title="選擇連線方式（切換上方分頁亦會同步）">
+          <option value="remote">remote (HTTP/WS)</option>
+          <option value="stdio">stdio（本機）</option>
+        </select>
+        <span class="muted">或使用下方分頁切換</span>
+      </div>
+
+      <div class="tabs">
+        <button class="tab" id="tab-remote" data-tab="remote">Remote</button>
+        <button class="tab" id="tab-local" data-tab="local">Local</button>
+      </div>
+
+      <div id="panel-remote" style="padding-top:8px;">
+        <div style="margin-top:8px;">
+          <label>Base URL（remote 模式）</label>
+          <input id="base_url" placeholder="https://mcp.example.com" style="width:420px;" />
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="min-width:90px;">progress_field</label>
+          <input id="progress_field" placeholder="meta.progress" />
+          <label style="min-width:90px;">eta_field</label>
+          <input id="eta_field" placeholder="meta.eta_seconds" />
+        </div>
+        <div style="margin-top:8px;">
+          <label>Auth（JSON）</label>
+          <textarea id="auth_json" rows="3" placeholder='{"token":"..."}'></textarea>
+        </div>
+      </div>
+
+      <div id="panel-local" style="padding-top:8px; display:none;">
+        <div style="margin-top:8px;">
+          <label>本機啟動：command / args / env</label>
+          <input id="command" placeholder="python" />
+          <textarea id="args" rows="2" placeholder='["-m","mcp_weather_server"]'></textarea>
+          <textarea id="env" rows="2" placeholder='{"KEY":"VALUE"}'></textarea>
+        </div>
+      </div>
+
+      <div style="margin-top:8px;">
+        <label>輸入結構（JSON Schema，可選）</label>
+        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
+        <div style="margin-top:6px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button id="discover-schema" class="btn" type="button">自動載入 schema</button>
+          <small id="discover-meta" class="muted"></small>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button id="save" class="btn btn-primary" type="button">儲存</button>
+      <button id="test" class="btn" type="button">測試連線</button>
+      <a class="btn" href="/pages/mcps.html">返回</a>
+    </div>
+
+    <div class="card" style="margin-top:8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h3 style="margin:0;">表單測試</h3>
+        <small class="muted">依 input_schema 產生表單；執行時僅檢查結構並顯示 JSON，不會傳送至遠端 MCP</small>
+      </div>
+      <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+        <button id="mcp-tab-form" class="btn btn-secondary">表單</button>
+        <button id="mcp-tab-json" class="btn">JSON</button>
+      </div>
+      <div id="mcp-test-form" style="margin-top:6px;"></div>
+      <div id="mcp-test-json" style="margin-top:6px; display:none;">
+        <textarea id="mcp_test_payload" rows="5" style="width:100%;min-width:280px;" placeholder='{"q":"Taipei"}'></textarea>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+        <button id="btn-mcp-validate" class="btn" type="button">執行測試（本地驗證）</button>
+      </div>
+      <div id="mcp-test-error" class="error-message" style="display:none;margin-top:6px;"></div>
+      <pre id="mcp-test-result" class="code" style="white-space:pre-wrap;margin-top:6px;"></pre>
+    </div>
+
+    <div class="card" style="margin-top:8px;">
+      <h3 style="margin:0;">最近測試</h3>
+      <table class="table" style="margin-top:6px;">
+        <thead><tr><th>時間</th><th>狀態</th><th>耗時(ms)</th><th>傳輸</th><th>錯誤</th></tr></thead>
+        <tbody id="hist"></tbody>
+      </table>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+    if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
+    const u = new URL(window.location.href);
+    const id = u.searchParams.get('id');
+    const els = (id)=>document.getElementById(id);
+    function setActive(mode){
+      const remote = mode === 'remote';
+      els('panel-remote').style.display = remote ? 'block' : 'none';
+      els('panel-local').style.display = remote ? 'none' : 'block';
+      document.getElementById('tab-remote').classList.toggle('active', remote);
+      document.getElementById('tab-local').classList.toggle('active', !remote);
+      els('transport').value = remote ? 'remote' : 'stdio';
+      // 更新標題提示
+      try{
+        const base = 'MCP 設定';
+        const cur = remote ? 'Remote' : 'Local';
+        const n = (els('name').value||'').trim();
+        document.title = (n? `${base} - ${n} (${cur}) - dyagent` : `${base} (${cur}) - dyagent`);
+      }catch{}
+    }
+    document.getElementById('tab-remote').addEventListener('click', ()=> setActive('remote'));
+    document.getElementById('tab-local').addEventListener('click', ()=> setActive('local'));
+    els('transport').addEventListener('change', (e)=> setActive(e.target.value === 'remote' ? 'remote' : 'local'));
+    // 預設依據下拉值決定當前分頁（新建時預設 remote）
+    setActive((els('transport').value === 'remote') ? 'remote' : 'local');
+    async function load(){
+      if (!id) return;
+      try{
+        const r = await api.get(`/mcps/${id}`);
+        els('title').textContent = `MCP 設定：${r.name}`;
+        els('name').value = r.name||'';
+        els('enabled').checked = !!r.enabled;
+        els('transport').value = r.transport||'remote';
+        els('base_url').value = r.base_url||'';
+        els('progress_field').value = r.progress_field||'';
+        els('eta_field').value = r.eta_field||'';
+        els('auth_json').value = r.auth? JSON.stringify(r.auth, null, 2): '';
+        els('command').value = r.command||'';
+        els('args').value = (Array.isArray(r.args)? JSON.stringify(r.args, null, 2): '');
+        els('env').value = r.env? JSON.stringify(r.env, null, 2): '';
+        els('input_schema').value = (r.input_schema && typeof r.input_schema === 'object') ? JSON.stringify(r.input_schema, null, 2) : '';
+        setActive((r.transport||'remote') === 'remote' ? 'remote' : 'local');
+        try { renderMcpForm('mcp-test-form', r.input_schema && typeof r.input_schema === 'object' ? r.input_schema : {}); } catch {}
+      }catch(e){ showError(e.message||'載入失敗'); }
+    }
+    async function save(){
+      try{
+        const body = {
+          name: els('name').value.trim(),
+          enabled: els('enabled').checked,
+          transport: els('transport').value,
+          base_url: els('base_url').value.trim(),
+          progress_field: els('progress_field').value.trim(),
+          eta_field: els('eta_field').value.trim(),
+        };
+        const aj = els('auth_json').value.trim(); if (aj) body.auth = JSON.parse(aj);
+        const cmd = els('command').value.trim(); if (cmd) body.command = cmd;
+        const av = els('args').value.trim(); if (av) body.args = JSON.parse(av);
+        const ev = els('env').value.trim(); if (ev) body.env = JSON.parse(ev);
+        const sc = els('input_schema').value.trim(); if (sc) { try { body.input_schema = JSON.parse(sc); } catch(e){ showError('input_schema 需為合法 JSON'); return; } }
+        if (id) await api.put(`/mcps/${id}`, body); else await api.post('/mcps', body);
+        showSuccess('已儲存'); setTimeout(()=> window.location.href = '/pages/mcps.html', 600);
+      }catch(e){ showError(e.message||'儲存失敗'); }
+    }
+    document.getElementById('save').addEventListener('click', save);
+    document.getElementById('discover-schema').addEventListener('click', async ()=>{
+      try{
+        const payload = {
+          name: els('name').value.trim(),
+          transport: els('transport').value,
+          base_url: els('base_url').value.trim(),
+          command: els('command').value.trim(),
+        };
+        const aj = els('auth_json').value.trim(); if (aj) { try { payload.auth = JSON.parse(aj); } catch { showError('Auth 需為合法 JSON'); return; } }
+        const av = els('args').value.trim(); if (av) { try { payload.args = JSON.parse(av); } catch { showError('args 需為合法 JSON 陣列'); return; } }
+        const ev = els('env').value.trim(); if (ev) { try { payload.env = JSON.parse(ev); } catch { showError('env 需為合法 JSON 物件'); return; } }
+        const r = await api.post('/mcps/discover-schema-preview', payload);
+        if (!r || !r.ok) {
+          const toolNames = Array.isArray(r && r.tools) ? r.tools.map(t=>t && t.name).filter(Boolean).join(', ') : '';
+          document.getElementById('discover-meta').textContent = toolNames ? `找到工具：${toolNames}` : '';
+          showError((r && r.error) || '找不到可用 schema');
+          return;
+        }
+        const schema = (r && r.input_schema && typeof r.input_schema === 'object') ? r.input_schema : {};
+        els('input_schema').value = JSON.stringify(schema, null, 2);
+        const tn = (r && r.tool_name) ? `工具：${r.tool_name}` : '';
+        const tools = Array.isArray(r && r.tools) ? r.tools.map(t=>t && t.name).filter(Boolean).join(', ') : '';
+        document.getElementById('discover-meta').textContent = [tn, tools ? `共 ${r.tools.length} 個：${tools}` : ''].filter(Boolean).join('；');
+        try { renderMcpForm('mcp-test-form', schema); } catch {}
+        showSuccess('已載入 schema，記得儲存');
+      }catch(e){ showError(e.message||'自動載入 schema 失敗'); }
+    });
+    document.getElementById('test').addEventListener('click', async ()=>{
+      try{
+        if (!id) { showError('請先儲存後再測試'); return; }
+        const r = await api.post(`/mcps/${id}/test`, {});
+        if (r && r.ok) { showSuccess('連線正常'); }
+        else { showError((r && r.error) || '測試失敗'); }
+      }catch(e){ showError(e.message||'測試失敗'); }
+    });
+    async function loadHist(){
+      if (!id) return;
+      try{
+        const r = await api.get(`/mcps/${id}/tests?limit=20`);
+        const rows = Array.isArray(r.items)? r.items: [];
+        const tb = document.getElementById('hist');
+        tb.innerHTML = rows.map(x=>{
+          const d = x.details||{}; const ok = !!d.ok; const ms = (typeof d.duration_ms==='number')? d.duration_ms: '';
+          return `<tr><td>${x.timestamp||''}</td><td>${ok?'成功':'失敗'}</td><td>${ms}</td><td>${d.transport||''}</td><td>${d.error||''}</td></tr>`;
+        }).join('');
+      }catch(e){ /* ignore */ }
+    }
+    setInterval(loadHist, 8000);
+    loadHist();
+    load();
+
+    // 表單/JSON 分頁（MCP 測試）
+    (function(){
+      const tabF = document.getElementById('mcp-tab-form');
+      const tabJ = document.getElementById('mcp-tab-json');
+      const boxF = document.getElementById('mcp-test-form');
+      const boxJ = document.getElementById('mcp-test-json');
+      function activate(which){
+        if (which==='form'){
+          // JSON -> 表單 同步
+          try{
+            const raw = els('input_schema').value.trim();
+            const schema = raw? JSON.parse(raw): {};
+            const j = document.getElementById('mcp_test_payload').value.trim();
+            if (j && schema && schema.type==='object')
+              renderMcpForm('mcp-test-form', schema, JSON.parse(j));
+            else renderMcpForm('mcp-test-form', schema);
+          }catch{ renderMcpForm('mcp-test-form', {}); }
+          boxF.style.display='block'; boxJ.style.display='none'; tabF.classList.add('btn-secondary'); tabJ.classList.remove('btn-secondary');
+        } else {
+          // 表單 -> JSON 同步
+          try{
+            const body = collectMcpForm('mcp-test-form');
+            document.getElementById('mcp_test_payload').value = JSON.stringify(body, null, 2);
+          }catch{}
+          boxF.style.display='none'; boxJ.style.display='block'; tabJ.classList.add('btn-secondary'); tabF.classList.remove('btn-secondary');
+        }
+      }
+      tabF.addEventListener('click', ()=> activate('form'));
+      tabJ.addEventListener('click', ()=> activate('json'));
+      activate('form');
+    })();
+
+    function renderMcpForm(containerId, schema, initial){
+      const root = document.getElementById(containerId);
+      root.innerHTML = '';
+      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties){
+        root.innerHTML = '<div class="muted">此 MCP 未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
+        document.getElementById('mcp-test-json').style.display='block';
+        document.getElementById('mcp-tab-json').classList.add('btn-secondary');
+        document.getElementById('mcp-tab-form').classList.remove('btn-secondary');
+        return;
+      }
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      const init = (initial && typeof initial==='object') ? initial : {};
+      Object.entries(schema.properties).forEach(([key, spec])=>{
+        const row = document.createElement('div'); row.style.marginTop='6px';
+        const lb = document.createElement('label'); const title=(spec&&spec.title)? spec.title:key; lb.textContent = title + (required.includes(key)? ' *': ''); lb.style.display='block'; lb.style.fontWeight='600'; row.appendChild(lb);
+        const desc=(spec&&spec.description)? String(spec.description):''; if(desc){ const sm=document.createElement('div'); sm.className='muted'; sm.textContent=desc; sm.style.marginBottom='4px'; row.appendChild(sm); }
+        const fmt = spec && spec.format; const t=(spec&&spec.type)||'string'; let inputEl=null;
+        if (spec && Array.isArray(spec.enum)){
+          const sel=document.createElement('select'); sel.dataset.key=key; (spec.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o); }); if (spec.default!=null) sel.value=String(spec.default); if (Object.prototype.hasOwnProperty.call(init,key)) sel.value=String(init[key]); inputEl=sel;
+        } else if (t==='boolean'){
+          const cb=document.createElement('input'); cb.type='checkbox'; cb.dataset.key=key; cb.checked=!!spec.default; if (Object.prototype.hasOwnProperty.call(init,key)) cb.checked=!!init[key]; inputEl=cb;
+        } else if (t==='number' || t==='integer'){
+          const num=document.createElement('input'); num.type='number'; num.dataset.key=key; if (typeof spec.minimum==='number') num.min=String(spec.minimum); if (typeof spec.maximum==='number') num.max=String(spec.maximum); if (spec.default!=null) num.value=String(spec.default); if (typeof init[key]==='number') num.value=String(init[key]); inputEl=num;
+        } else if (t==='object' && spec.properties){
+          const sub=document.createElement('div'); sub.dataset.key=key; sub.dataset.type='object'; sub.style.border='1px dashed var(--border-color)'; sub.style.padding='6px';
+          const subInit=(init&&typeof init[key]==='object')? init[key]:{};
+          Object.entries(spec.properties).forEach(([k2,s2])=>{ const r2=document.createElement('div'); r2.style.marginTop='6px'; const lb2=document.createElement('label'); lb2.textContent=(s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2); let el2; const t2=s2.type||'string'; if (Array.isArray(s2.enum)){ el2=document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default); if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.value=String(subInit[k2]); } else if (t2==='boolean'){ el2=document.createElement('input'); el2.type='checkbox'; el2.checked=!!s2.default; if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.checked=!!subInit[k2]; } else if (t2==='number' || t2==='integer'){ el2=document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default); if (typeof subInit[k2]==='number') el2.value=String(subInit[k2]); } else { el2=document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default); if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.value=String(subInit[k2]); } el2.dataset.key=k2; r2.appendChild(el2); sub.appendChild(r2); });
+          inputEl=sub;
+        } else if (t==='array'){
+          const wrap=document.createElement('div'); wrap.dataset.key=key; wrap.dataset.type='array'; const list=document.createElement('div'); wrap.appendChild(list); const btn=document.createElement('button'); btn.type='button'; btn.className='btn'; btn.textContent='新增一列'; btn.style.marginTop='4px'; wrap.appendChild(btn);
+          function addItem(def){ const item=document.createElement('div'); item.style.border='1px dashed var(--border-color)'; item.style.padding='6px'; item.style.marginTop='4px'; const rm=document.createElement('button'); rm.type='button'; rm.className='btn'; rm.textContent='移除'; rm.style.float='right'; rm.addEventListener('click', ()=> item.remove()); item.appendChild(rm); const it=spec.items||{}; if (it.type==='object' && it.properties){ Object.entries(it.properties).forEach(([k2,s2])=>{ const r2=document.createElement('div'); r2.style.marginTop='6px'; const lb2=document.createElement('label'); lb2.textContent=(s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2); let el2; const t2=s2.type||'string'; if (Array.isArray(s2.enum)){ el2=document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default); if (def && def[k2]!=null) el2.value=String(def[k2]); } else if (t2==='boolean'){ el2=document.createElement('input'); el2.type='checkbox'; el2.checked=!!s2.default; if (def && def[k2]!=null) el2.checked=!!def[k2]; } else if (t2==='number' || t2==='integer'){ el2=document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default); if (def && typeof def[k2]==='number') el2.value=String(def[k2]); } else { el2=document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default); if (def && def[k2]!=null) el2.value=String(def[k2]); } el2.dataset.key=k2; r2.appendChild(el2); item.appendChild(r2); }); } else { const el=document.createElement('input'); el.type='text'; el.dataset.key='__scalar__'; if (def!=null) el.value=String(def); item.appendChild(el);} list.appendChild(item); }
+          btn.addEventListener('click', ()=> addItem(undefined)); if (Array.isArray(spec.default)) spec.default.forEach(v=> addItem(v)); if (Array.isArray(init[key])) init[key].forEach(v=> addItem(v)); inputEl=wrap;
+        } else {
+          const txt=document.createElement('input'); txt.type=(fmt==='email'?'email': (fmt==='uri'||fmt==='url')?'url': (fmt==='date'?'date': (fmt==='date-time'?'datetime-local':'text'))); txt.dataset.key=key; if (spec && spec.default!=null) txt.value=String(spec.default); if (spec && spec.pattern) txt.pattern=String(spec.pattern); if (Object.prototype.hasOwnProperty.call(init,key)) txt.value=String(init[key]); inputEl=txt;
+        }
+        if (inputEl) row.appendChild(inputEl);
+        root.appendChild(row);
+      });
+    }
+    function collectMcpForm(containerId){
+      const root=document.getElementById(containerId); const payload={}; const rows=Array.from(root.children);
+      for (const row of rows){
+        const arrayBlock=row.querySelector('[data-type="array"]'); const objectBlock=row.querySelector('[data-type="object"]');
+        if (arrayBlock){ const key=arrayBlock.dataset.key; const items=[]; arrayBlock.querySelectorAll(':scope > div > div').forEach(item=>{ const scalar=item.querySelector('input[data-key="__scalar__"]'); if (scalar) items.push(scalar.value); else { const obj={}; item.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value||0); else obj[k]=el.value; }); items.push(obj);} }); payload[key]=items; continue; }
+        if (objectBlock){ const key=objectBlock.dataset.key; const obj={}; objectBlock.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value||0); else obj[k]=el.value; }); payload[key]=obj; continue; }
+        const inp=row.querySelector('[data-key]'); if (!inp) continue; const key=inp.dataset.key; if (inp.tagName==='SELECT') payload[key]=inp.value; else if (inp.type==='checkbox') payload[key]=!!inp.checked; else if (inp.type==='number') payload[key]=(inp.value.trim()===''? null : Number(inp.value)); else payload[key]=inp.value;
+      }
+      return payload;
+    }
+    document.getElementById('btn-mcp-validate').addEventListener('click', ()=>{
+      const err = document.getElementById('mcp-test-error'); const out = document.getElementById('mcp-test-result'); err.style.display='none'; out.textContent='';
+      try{
+        let payload={};
+        if (document.getElementById('mcp-test-json').style.display !== 'none'){
+          const raw = (document.getElementById('mcp_test_payload').value||'').trim(); if (raw) payload = JSON.parse(raw);
+        } else {
+          payload = collectMcpForm('mcp-test-form');
+        }
+        // 簡單顯示結果 JSON
+        out.textContent = JSON.stringify({ ok:true, payload }, null, 2);
+      }catch(e){ err.textContent = e && e.message ? String(e.message) : '測試失敗'; err.style.display='block'; }
+    });
+    els('input_schema').addEventListener('input', ()=>{
+      try{
+        const raw = els('input_schema').value.trim();
+        const schema = raw ? JSON.parse(raw) : {};
+        renderMcpForm('mcp-test-form', schema);
+      }catch{
+        document.getElementById('mcp-test-form').innerHTML = '<div class="error-message">input_schema 不是合法 JSON，請修正或改用 JSON 分頁。</div>';
+      }
+    });
+  </script>
+</body>
+</html>

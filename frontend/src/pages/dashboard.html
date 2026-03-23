@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>儀表板 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
+    .stat { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; background: #fff; }
+    .stat .label { color: var(--text-secondary); font-size: 0.85rem; }
+    .stat .value { font-size: 1.4rem; font-weight: 700; }
+    .section-title { margin: 10px 0 6px; }
+    .service-ok { color: #15803d; font-weight: 600; }
+    .service-down { color: #b91c1c; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+  </style>
 </head>
 <body>
   <div id="app">
@@ -20,31 +30,175 @@
       </div>
     </nav>
     <main class="container">
-      <h2>儀表板</h2>
+      <h2>系統監控儀表板</h2>
       <div id="user-info" class="card">
         <p>歡迎使用 dyagent</p>
       </div>
+
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <strong>即時狀態</strong>
+          <div class="mono" id="updated-at">更新中...</div>
+        </div>
+        <div id="services" class="stats-grid"></div>
+      </div>
+
+      <div class="card">
+        <h3 class="section-title">系統資源</h3>
+        <div id="resources" class="stats-grid"></div>
+      </div>
+
+      <div class="card">
+        <h3 class="section-title">代理者 / 使用者 / 流量</h3>
+        <div id="core-stats" class="stats-grid"></div>
+      </div>
+
+      <div class="card">
+        <h3 class="section-title">LLM / ReAct 使用狀態（近 24 小時）</h3>
+        <div id="llm-stats" class="stats-grid"></div>
+      </div>
+
       <div class="actions">
-        <a href="/pages/create-agent.html" class="btn btn-primary">創建新代理者</a>
         <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
-        <a href="/pages/chat.html" class="btn btn-secondary">開始聊天</a>
+        <a href="/pages/chat.html" class="btn btn-primary">前往聊天</a>
+        <button id="refresh-btn" class="btn btn-secondary" type="button">立即刷新</button>
       </div>
     </main>
   </div>
   <script type="module">
-    import { auth } from '/main.js';
+    import { api, auth } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
 
     const user = auth.getUser();
-    if (user) {
+    if (!user || user.role !== 'admin') {
+      window.location.href = '/pages/chat.html';
+    }
+
+    if (user && user.role === 'admin') {
       document.getElementById('user-info').innerHTML = `
         <p>歡迎，<strong>${user.username}</strong>！</p>
-        <span class="badge badge-${user.role === 'admin' ? 'admin' : user.role === 'agent_admin' ? 'agent-admin' : 'user'}">${user.role}</span>
+        <span class="badge badge-admin">admin</span>
       `;
     }
+
+    function mkStat(label, value) {
+      return `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+    }
+
+    function toMB(v) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+      return (v / (1024 * 1024)).toFixed(0) + ' MB';
+    }
+
+    function renderOverview(data) {
+      const services = data.services || {};
+      const resources = data.resources || {};
+      const agents = data.agents || {};
+      const users = data.users || {};
+      const traffic = data.traffic || {};
+      const llm = data.llm || {};
+
+      document.getElementById('updated-at').textContent =
+        data.updated_at ? new Date(data.updated_at).toLocaleString() : '更新時間未知';
+
+      document.getElementById('services').innerHTML = [
+        mkStat('Database', `<span class="${services.database === 'ok' ? 'service-ok' : 'service-down'}">${services.database || 'unknown'}</span>`),
+        mkStat('Redis', `<span class="${services.redis === 'ok' ? 'service-ok' : 'service-down'}">${services.redis || 'unknown'}</span>`),
+        mkStat('Qdrant', `<span class="${services.qdrant === 'ok' ? 'service-ok' : 'service-down'}">${services.qdrant || 'unknown'}</span>`),
+      ].join('');
+
+      const cpu = resources.cpu || {};
+      const memory = resources.memory || {};
+      const disk = resources.disk || {};
+      document.getElementById('resources').innerHTML = [
+        mkStat('CPU Load (1m)', `${cpu.load_percent_1m ?? '-'}%`),
+        mkStat('CPU Cores', cpu.cores ?? '-'),
+        mkStat('Memory Used', `${memory.used_percent ?? '-'}%`),
+        mkStat('Memory Used', toMB(memory.used_bytes)),
+        mkStat('Disk Used', `${disk.used_percent ?? '-'}%`),
+        mkStat('Disk Free', toMB(disk.free_bytes)),
+      ].join('');
+
+      document.getElementById('core-stats').innerHTML = [
+        mkStat('Agents 總數', agents.total ?? 0),
+        mkStat('Agents 活躍(24h)', agents.active_24h ?? 0),
+        mkStat('Cloud / Local', `${agents.cloud ?? 0} / ${agents.local ?? 0}`),
+        mkStat('Users 總數', users.total ?? 0),
+        mkStat('線上使用者(15m)', users.online_15m ?? 0),
+        mkStat('Conversations(24h)', traffic.conversations_24h ?? 0),
+        mkStat('Messages(24h)', traffic.messages_24h ?? 0),
+      ].join('');
+
+      document.getElementById('llm-stats').innerHTML = [
+        mkStat('輸出字元(24h)', llm.output_chars_24h ?? 0),
+        mkStat('輸出 tokens 估算', llm.output_tokens_approx_24h ?? 0),
+        mkStat('成本估算 USD', llm.cost_estimate_usd_24h ?? 0),
+        mkStat('ReAct 執行次數', llm.react_runs_24h ?? 0),
+        mkStat('ReAct 步驟數', llm.react_steps_24h ?? 0),
+        mkStat('工具成功 / 失敗', `${llm.tool_success_24h ?? 0} / ${llm.tool_error_24h ?? 0}`),
+      ].join('');
+    }
+
+    async function loadOverview() {
+      const data = await api.get('/admin/dashboard/overview');
+      renderOverview(data);
+    }
+
+    async function refreshWithGuard() {
+      try {
+        await loadOverview();
+      } catch (e) {
+        document.getElementById('updated-at').textContent = `載入失敗：${(e && e.message) || 'unknown'}`;
+      }
+    }
+
+    async function connectRealtimeStream() {
+      const token = localStorage.getItem('auth_token') || '';
+      const resp = await fetch('/api/admin/dashboard/stream', {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error(`SSE 連線失敗：HTTP ${resp.status}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('SSE 已中斷');
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const chunk = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (!chunk.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(chunk.replace(/^data:\s*/, ''));
+            if (payload && payload.type === 'overview' && payload.payload) {
+              renderOverview(payload.payload);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    async function runRealtimeOrFallback() {
+      try {
+        await connectRealtimeStream();
+      } catch (e) {
+        document.getElementById('updated-at').textContent = `即時串流中斷，改用輪詢：${(e && e.message) || 'unknown'}`;
+        refreshWithGuard();
+        setInterval(refreshWithGuard, 15000);
+      }
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', refreshWithGuard);
+    runRealtimeOrFallback();
 
     // 登出事件由 /main.js 統一掛載，並提供確認視窗
   </script>

@@ -1,0 +1,13 @@
+[Unit]
+Description=dyagent backend watchdog
+After=dyagent-backend.service
+Wants=dyagent-backend.service
+
+[Service]
+Type=simple
+ExecStart=/hd18/23_Rasa/dyagent/watchdog-backend.sh 10 3
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

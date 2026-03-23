@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>編輯使用者 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/users.html">使用者管理</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>編輯使用者</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div class="card">
+      <form id="user-form">
+        <div class="form-group">
+          <label>使用者名稱</label>
+          <input id="username" type="text" disabled>
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input id="email" type="text" disabled>
+        </div>
+        <div class="form-group">
+          <label>角色</label>
+          <select id="role">
+            <option value="user">user</option>
+            <option value="agent_admin">agent_admin</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">儲存</button>
+          <a href="/pages/users.html" class="btn btn-secondary">返回</a>
+        </div>
+      </form>
+    </div>
+  </main>
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+    const me = auth.getUser();
+    if (!me || me.role !== 'admin') {
+      showError('僅限管理者使用');
+      setTimeout(()=> window.location.href='/pages/chat.html', 1500);
+    }
+
+    const url = new URL(window.location.href);
+    const userId = url.searchParams.get('id');
+    if (!userId) {
+      showError('缺少使用者 id');
+      setTimeout(()=> window.location.href='/pages/users.html', 1500);
+    }
+
+    async function loadUser() {
+      try {
+        const res = await api.get('/users');
+        const list = Array.isArray(res.users) ? res.users : [];
+        const u = list.find(x => x.id === userId);
+        if (!u) { showError('找不到使用者'); return; }
+        document.getElementById('username').value = u.username || '';
+        document.getElementById('email').value = u.email || '';
+        document.getElementById('role').value = u.role || 'user';
+      } catch (e) {
+        showError(e.message || '載入使用者失敗');
+      }
+    }
+
+    document.getElementById('user-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const role = document.getElementById('role').value;
+        await api.put(`/users/${userId}/role?role=${encodeURIComponent(role)}`);
+        showSuccess('角色已更新');
+      } catch (e) {
+        showError(e.message || '更新失敗');
+      }
+    });
+
+    loadUser();
+  </script>
+</body>
+</html>

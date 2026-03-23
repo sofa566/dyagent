@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP 管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>MCP 管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+      <button id="btn-new" class="btn btn-primary" type="button">新增連線</button>
+      <label for="mcpservers-json">匯入 mcpServers：</label>
+      <textarea id="mcpservers-json" rows="3" style="min-width:320px;" placeholder='{"mcpServers": {"weather": {"command": "python", "args": ["-m","mcp_weather_server"], "disabled": false}}}'></textarea>
+      <button id="btn-import" class="btn" type="button">匯入</button>
+    </div>
+    <table class="table">
+      <thead>
+        <tr><th>名稱</th><th>狀態</th><th>健康</th><th>傳輸</th><th>Base URL</th><th>操作</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script type="module">
+    import { api, auth, showError } from '/main.js';
+    if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      document.getElementById('error-message').textContent = '僅限管理者存取';
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+    const rows = document.getElementById('rows');
+    async function load() {
+      try {
+        const res = await api.get('/mcps');
+        const list = Array.isArray(res.mcps) ? res.mcps : [];
+        rows.innerHTML = list.map(m => {
+          return `<tr>
+            <td>${m.name}</td>
+            <td>${m.enabled ? '啟用' : '停用'}</td>
+            <td id="health-${m.id}"><span class="muted">—</span></td>
+            <td>${m.transport}</td>
+            <td>${m.base_url || ''}</td>
+            <td>
+              <a class="btn" href="/pages/mcp-edit.html?id=${m.id}">編輯</a>
+              <button class="btn" data-del="${m.id}">刪除</button>
+            </td>
+          </tr>`;
+        }).join('');
+        // 並行測試健康狀態
+        for (const m of list) {
+          (async () => {
+            try {
+              const r = await api.post(`/mcps/${m.id}/test`, {});
+              const el = document.getElementById(`health-${m.id}`);
+              if (!el) return;
+              if (r && r.ok) {
+                const ts = new Date().toISOString().replace('T',' ').replace('Z','');
+                el.innerHTML = `<span style="color:var(--success-color)">健康</span><br/><small class="muted">${ts}</small>`;
+              } else {
+                el.innerHTML = `<span style="color:var(--danger-color)">失敗</span>`;
+              }
+            } catch {
+              const el = document.getElementById(`health-${m.id}`);
+              if (el) el.innerHTML = `<span style="color:var(--danger-color)">失敗</span>`;
+            }
+          })();
+        }
+      } catch (e) { showError(e.message || '載入失敗'); }
+    }
+    rows.addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-del');
+      if (id) {
+        const ok = window.confirm('確定刪除此 MCP 連線？');
+        if (!ok) return;
+        try { await api.delete(`/mcps/${id}`); load(); } catch (e) { showError(e.message || '刪除失敗'); }
+      }
+    });
+    document.getElementById('btn-new').addEventListener('click', ()=>{ window.location.href = '/pages/mcp-edit.html'; });
+    document.getElementById('btn-import').addEventListener('click', async ()=>{
+      const raw = document.getElementById('mcpservers-json').value.trim();
+      if (!raw) return;
+      try{
+        const obj = JSON.parse(raw);
+        const r = await api.post('/mcps/import-mcpservers', obj);
+        if (r && r.ok) { load(); }
+      }catch(e){ showError(e.message||'匯入失敗'); }
+    });
+    load();
+  </script>
+</body>
+</html>

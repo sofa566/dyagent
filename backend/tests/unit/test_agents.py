@@ -92,6 +92,21 @@ class TestAgentsUpdate:
         data = response.json()
         assert data['name'] == 'Updated Agent'
 
+    def test_update_agent_admin_with_json_body(self, client, admin_user, admin_token, agent):
+        response = client.put(
+            f'/api/agents/{agent.id}',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={
+                'name': 'Body Updated Agent',
+                'description': 'Body updated description',
+                'model_type': 'local',
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data['name'] == 'Body Updated Agent'
+        assert data['model_type'] == 'local'
+
     def test_update_agent_nonexistent(self, client, admin_user, admin_token):
         response = client.put(
             '/api/agents/nonexistent-id',

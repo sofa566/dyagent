@@ -315,10 +315,14 @@ class LLMClient:
             model = (self._session_overrides.get("model") or settings.ONPREM_MODEL)
             # 若偵測為 Ollama 或常見 11434 端口，且未帶前綴，替換成 'ollama/<model>' 以提示 litellm provider
             prefixed_model = model
-            if ((self._session_overrides.get("onprem_provider") or settings.ONPREM_PROVIDER or "").lower() == "ollama") and "/" not in model:
-                prefixed_model = f"ollama/{model}"
-            if "11434" in (base or "") and "/" not in model:
-                prefixed_model = f"ollama/{model}"
+            onprem_provider = (self._session_overrides.get("onprem_provider") or settings.ONPREM_PROVIDER or "").lower()
+            is_ollama_route = (onprem_provider == "ollama") or ("11434" in (base or ""))
+            # Ollama 一律要求 model 帶 `ollama/` 前綴。
+            # 例如：
+            # - gemma3:4b -> ollama/gemma3:4b
+            # - TwinkleAI/gemma-3-4B-T1-it:latest -> ollama/TwinkleAI/gemma-3-4B-T1-it:latest
+            if is_ollama_route and not str(model).startswith("ollama/"):
+                prefixed_model = f"ollama/{str(model).lstrip('/')}"
             self._log.info("lc.onprem.stream.use", base=os.environ.get("OPENAI_API_BASE", ""), model=prefixed_model)
             with temp_env({
                 "OPENAI_API_BASE": base or "",
@@ -436,6 +440,22 @@ class LLMClient:
                 val = self._secrets.get(str(ref))
                 if val:
                     return val
+        # 回退：使用系統層級環境設定
+        p = (provider or "").lower()
+        if p == "openai":
+            return settings.OPENAI_API_KEY or None
+        if p == "anthropic":
+            return settings.ANTHROPIC_API_KEY or None
+        if p in {"google", "gemini", "google-gemini"}:
+            return settings.GEMINI_API_KEY or None
+        if p in {"xai", "grok"}:
+            return settings.XAI_API_KEY or None
+        if p in {"azure", "azure-openai"}:
+            return settings.AZURE_OPENAI_API_KEY or None
+        if p == "openrouter":
+            return settings.OPENROUTER_API_KEY or None
+        if p == "onprem":
+            return settings.LITELLM_ONPREM_API_KEY or None
         return None
 
     def last_route_info(self) -> dict:

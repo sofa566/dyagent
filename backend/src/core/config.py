@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     MCP_WHITELIST: str = ""
     # MCP WebSocket JSON-RPC 端點（相對路徑），如服務支援 ws(s)
     MCP_WS_PATH: str = "/ws"
+    # 是否在提示中注入工具呼叫協定指引
+    LLM_TOOLCALL_GUIDE: bool = True
+    # ReAct 合成層設定
+    REACT_MAX_STEPS: int = 3
+    REACT_MAX_OBSERVATION_CHARS: int = 4000
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
@@ -80,7 +85,7 @@ class Settings(BaseSettings):
     K8S_NAMESPACE: str = ''
 
     # Pydantic v2 設定（取代舊式 class Config）
-    model_config = SettingsConfigDict(env_file='.env', case_sensitive=True)
+    model_config = SettingsConfigDict(env_file='.env', case_sensitive=True, extra='allow')
 
 
 @lru_cache()
@@ -113,3 +118,7 @@ def validate_llm_settings() -> None:
         log.warning("llm.config.invalid_timeout: value=%s expect=>0 int", timeout)
     if settings.DOOM_LOOP_THRESHOLD <= 0:
         log.warning("config.invalid_doom_loop_threshold: value=%s expect=>0 int", settings.DOOM_LOOP_THRESHOLD)
+    if settings.REACT_MAX_STEPS <= 0:
+        log.warning("config.invalid_react_max_steps: value=%s expect=>0 int", settings.REACT_MAX_STEPS)
+    if settings.REACT_MAX_OBSERVATION_CHARS < 500:
+        log.warning("config.invalid_react_max_observation_chars: value=%s expect=>=500 int", settings.REACT_MAX_OBSERVATION_CHARS)

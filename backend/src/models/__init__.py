@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean
 from sqlalchemy.types import CHAR, TypeDecorator
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
@@ -150,3 +150,53 @@ class Log(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     # 反向關聯由 User.logs 的 backref 提供
+
+
+# 全域 MCP 連線註冊表（由管理者維護）
+class MCPConnection(Base):
+    __tablename__ = 'mcp'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(Text, default='')
+    enabled = Column(Boolean, default=True)
+    # 傳輸模式：remote（HTTP/WS，預設）或 stdio（後續可擴充）
+    transport = Column(Enum('remote', 'stdio', name='mcp_transport'), nullable=False, default='remote')
+    # 遠端直連欄位
+    base_url = Column(String(500), nullable=True)
+    auth = Column(JSON, default=dict)            # { token?, api_key?, headers? }
+    progress_field = Column(String(200), nullable=True)
+    eta_field = Column(String(200), nullable=True)
+    # 本機啟動（預留，未實作）
+    command = Column(String(300), nullable=True)
+    args = Column(JSON, default=list)
+    env = Column(JSON, default=dict)
+    # 輸入結構（JSON Schema，可選，用於表單渲染與驗證）
+    input_schema = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# 全域 Skill 註冊表（由管理者維護）
+class SkillEntry(Base):
+    __tablename__ = 'skills'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(Text, default='')
+    enabled = Column(Boolean, default=True)
+    # 執行類型：webhook 或 python（預設 webhook）
+    type = Column(Enum('webhook', 'python', name='skill_type'), nullable=False, default='webhook')
+    # webhook 參數
+    endpoint_url = Column(Text, nullable=True)
+    http_method = Column(String(8), nullable=False, default='POST')
+    headers = Column(JSON, default=dict)
+    timeout_ms = Column(Integer, nullable=False, default=8000)
+    # python handler：package.module:function
+    python_handler = Column(String(255), nullable=True)
+    # 輸入結構（JSON Schema）
+    input_schema = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -6,7 +6,7 @@
   <title>聊天 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
   <style>
-    .chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; min-height: calc(100vh - 220px); }
+    .chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; min-height: calc(100vh - 220px); height: calc(100vh - 220px); }
     .sidebar { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius); padding: 0.75rem; overflow-y: auto; }
     .sidebar h3 { margin-bottom: 0.5rem; font-size: 1rem; }
     .conv-list { list-style: none; margin: 0; padding: 0; }
@@ -16,14 +16,15 @@
     .conv-title { font-weight: 600; font-size: 0.95rem; }
     .conv-meta { color: var(--text-secondary); font-size: 0.8rem; }
 
-    .chat-container { display: flex; flex-direction: column; height: 100%; }
+    .chat-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }
     .chat-messages {
       flex: 1;
       overflow-y: auto;
       padding: 1rem;
       background: var(--bg-color);
       border-radius: var(--radius);
-      margin-bottom: 1rem;
+      min-height: 0;
+      margin-bottom: 0.5rem;
     }
     .message {
       margin-bottom: 1rem;
@@ -43,6 +44,12 @@
     .chat-input {
       display: flex;
       gap: 0.5rem;
+      position: sticky;
+      bottom: 0;
+      background: var(--card-bg);
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border-color);
+      z-index: 4;
     }
     .chat-input input {
       flex: 1;
@@ -50,6 +57,34 @@
     .agent-selector {
       margin-bottom: 1rem;
     }
+    .conv-actions { position: relative; }
+    .conv-menu-trigger { padding: 2px 8px; line-height: 1; }
+    .conv-menu {
+      position: absolute;
+      top: 28px;
+      right: 0;
+      background: #fff;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      min-width: 120px;
+      padding: 4px;
+      display: none;
+      z-index: 8;
+    }
+    .conv-menu.open { display: block; }
+    .conv-menu button {
+      width: 100%;
+      text-align: left;
+      border: none;
+      background: transparent;
+      padding: 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text-primary);
+    }
+    .conv-menu button:hover { background: #f1f5f9; }
+    .conv-menu .danger { color: #b91c1c; }
     /* JSON syntax highlight */
     .json { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .json .json-key { color: #6b7280; }        /* slate-500 */
@@ -67,6 +102,15 @@
     .tool-progress { margin-top: 6px; background: #f1f5f9; border: 1px solid #e5e7eb; height: 8px; border-radius: 999px; overflow: hidden; display: none; }
     .tool-progress__bar { height: 100%; width: 0%; background: #60a5fa; transition: width 0.2s ease, background-color 0.2s ease; }
     .tool-progress__meta { display: none; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+    .react-trace { margin-top: 8px; padding: 8px; border: 1px dashed var(--border-color); border-radius: 8px; background: #f8fafc; }
+    .react-trace__title { font-weight: 600; margin-bottom: 4px; }
+    .react-trace__list { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 0.92rem; }
+    .react-trace__list li { margin: 2px 0; }
+    @media (max-width: 900px) {
+      .chat-layout { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 220px); }
+      .chat-container { min-height: calc(100vh - 340px); }
+      .message { max-width: 92%; }
+    }
   </style>
 </head>
 <body>
@@ -103,23 +147,29 @@
         <div id="chat-messages" class="chat-messages">
           <p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
         </div>
-        <form id="chat-form" class="chat-input">
-          <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
-          <button type="submit" class="btn btn-primary" disabled>發送</button>
-          <button id="stream-send" type="button" class="btn" disabled>串流發送</button>
-        </form>
         <details id="tools-panel" class="tools" style="margin-top:0.75rem;">
           <summary>可用工具</summary>
           <div id="tools-list" class="tools-list" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;"></div>
           <div class="tool-runner" style="display:flex;flex-direction:column;gap:6px;">
             <input id="tool-name" type="text" placeholder="例如 mcp:資料查詢 或 skillX" />
             <input id="tool-conv" type="text" placeholder="會話 ID（預設取最新）" />
-            <textarea id="tool-payload" rows="3" placeholder='JSON 參數，例如 {"q":"你好"}'></textarea>
-          <button id="run-tool" class="btn">執行工具</button>
-          <button id="stream-tool" class="btn">串流執行（SSE）</button>
-          <div id="tool-output" class="tool-output"></div>
-        </div>
-      </details>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button id="tool-tab-form" class="btn">表單</button>
+              <button id="tool-tab-json" class="btn btn-secondary">JSON</button>
+            </div>
+            <div id="tool-form" style="display:block;"></div>
+            <div id="tool-json" style="display:none;">
+              <textarea id="tool-payload" rows="3" placeholder='JSON 參數，例如 {"q":"你好"}'></textarea>
+            </div>
+            <button id="run-tool" class="btn">執行工具</button>
+            <button id="stream-tool" class="btn">串流執行（SSE）</button>
+            <div id="tool-output" class="tool-output"></div>
+          </div>
+        </details>
+        <form id="chat-form" class="chat-input">
+          <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
+          <button type="submit" class="btn btn-primary" disabled>發送</button>
+        </form>
       </section>
     </div>
   </main>
@@ -138,7 +188,6 @@
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
-    const streamSendBtn = document.getElementById('stream-send');
     const toolsList = document.getElementById('tools-list');
     const runToolBtn = document.getElementById('run-tool');
     const streamToolBtn = document.getElementById('stream-tool');
@@ -147,6 +196,191 @@
     const toolPayloadInput = document.getElementById('tool-payload');
     const toolOutput = document.getElementById('tool-output');
     let toolHistory = [];
+    let skillSchemas = {}; // skill name -> schema
+    let mcpSchemas = {};   // 'mcp:<name>' -> schema
+    // 追蹤目前串流中的工具卡片（需預先宣告，避免在 module 嚴格模式下 ReferenceError）
+    let activeToolCard = null;
+
+    // 簡易 tabs 切換（工具表單）
+    (function(){
+      const tF = document.getElementById('tool-tab-form');
+      const tJ = document.getElementById('tool-tab-json');
+      const bF = document.getElementById('tool-form');
+      const bJ = document.getElementById('tool-json');
+      function activate(which){
+        if (which==='form'){
+          bF.style.display='block'; bJ.style.display='none'; tF.classList.add('btn-secondary'); tJ.classList.remove('btn-secondary');
+        } else {
+          // 切到 JSON 分頁時，若表單有內容則自動帶入 JSON
+          try {
+            const tool = (document.getElementById('tool-name').value || '').trim();
+            const hasForm = (document.getElementById('tool-form').style.display !== 'none');
+            if (hasForm && tool) {
+              const body = collectFormPayload('tool-form');
+              const ta = document.getElementById('tool-payload');
+              ta.value = JSON.stringify(body, null, 2);
+            } else {
+              // 若沒有 schema/表單，提供合理預設
+              const ta = document.getElementById('tool-payload');
+              if (!ta.value.trim()) {
+                if (tool.startsWith('mcp:')) ta.value = '{"q": "查詢"}';
+                else ta.value = '{}';
+              }
+            }
+          } catch {}
+          bF.style.display='none'; bJ.style.display='block'; tJ.classList.add('btn-secondary'); tF.classList.remove('btn-secondary');
+        }
+      }
+      tF.addEventListener('click', ()=> {
+        // 切到表單時，若 JSON 有內容則嘗試以 JSON 值重繪表單
+        try{
+          const tool = (document.getElementById('tool-name').value || '').trim();
+          const schema = tool.startsWith('mcp:') ? (mcpSchemas[tool] || null) : (skillSchemas[tool] || null);
+          if (schema){
+            const raw = (document.getElementById('tool-payload').value || '').trim();
+            if (raw){ const parsed = JSON.parse(raw); renderFormFromSchema('tool-form', schema, parsed); }
+          }
+        }catch{}
+        activate('form');
+      });
+      tJ.addEventListener('click', ()=> activate('json'));
+      activate('form');
+    })();
+
+    // Schema 渲染與收集（子集，同 skill-edit）
+    function renderFormFromSchema(containerId, schema, initial){
+      const root = document.getElementById(containerId);
+      root.innerHTML = '';
+      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties){
+        root.innerHTML = '<div class="muted">此技能未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
+        document.getElementById('tool-json').style.display='block';
+        document.getElementById('tool-form').style.display='none';
+        // 切成 JSON 分頁視圖（選中 JSON 應為灰底）
+        const tF = document.getElementById('tool-tab-form'); const tJ = document.getElementById('tool-tab-json');
+        tJ.classList.add('btn-secondary'); tF.classList.remove('btn-secondary');
+        return;
+      }
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      Object.entries(schema.properties).forEach(([key, spec])=>{
+        const row = document.createElement('div'); row.style.marginTop='6px';
+        const lb = document.createElement('label'); const title = (spec && spec.title) ? spec.title : key; lb.textContent = title + (required.includes(key)? ' *': ''); lb.style.display='block'; lb.style.fontWeight='600'; row.appendChild(lb);
+        const desc = (spec && spec.description) ? String(spec.description) : ''; if (desc){ const sm=document.createElement('div'); sm.className='muted'; sm.textContent=desc; sm.style.marginBottom='4px'; row.appendChild(sm); }
+        // oneOf/anyOf（簡版）：若存在，產生選擇器後依選項渲染子 schema
+        const variants = (spec && (spec.oneOf || spec.anyOf)) ? (spec.oneOf || spec.anyOf) : null;
+        let t = (spec && spec.type) || 'string'; let inputEl=null;
+        if (Array.isArray(variants) && variants.length){
+          const sel = document.createElement('select'); sel.dataset.key = key; sel.style.marginBottom='4px';
+          variants.forEach((v, i)=>{ const opt=document.createElement('option'); opt.value=String(i); opt.textContent = (v && v.title) ? v.title : `選項${i+1}`; sel.appendChild(opt); });
+          row.appendChild(sel);
+          const holder = document.createElement('div'); row.appendChild(holder);
+          function renderVariant(idx){ holder.innerHTML=''; const v = variants[idx] || {}; const merged = Object.assign({}, spec, v); delete merged.oneOf; delete merged.anyOf; const fakeSchema = { type: 'object', properties: { [key]: merged }, required: required.includes(key)? [key]: [] };
+            // 遞迴用本函式渲染僅此 key 的子表單
+            const sub = document.createElement('div'); holder.appendChild(sub);
+            const tmpId = containerId + '-' + key + '-variant'; sub.id = tmpId;
+            renderFormFromSchema(tmpId, fakeSchema);
+          }
+          sel.addEventListener('change', ()=> renderVariant(parseInt(sel.value,10)||0));
+          renderVariant(0);
+          root.appendChild(row);
+          return; // 交由子渲染
+        }
+        // format 對應輸入型別
+        const fmt = spec && spec.format;
+        if (spec && Array.isArray(spec.enum)){
+          const sel=document.createElement('select'); sel.dataset.key=key; (spec.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o); }); if (spec.default!=null) sel.value=String(spec.default); inputEl=sel;
+        } else if (t==='boolean'){
+          const cb=document.createElement('input'); cb.type='checkbox'; cb.dataset.key=key; cb.checked=!!spec.default; inputEl=cb;
+        } else if (t==='number' || t==='integer'){
+          const num=document.createElement('input'); num.type='number'; num.dataset.key=key; if (typeof spec.minimum==='number') num.min=String(spec.minimum); if (typeof spec.maximum==='number') num.max=String(spec.maximum); if (spec.default!=null) num.value=String(spec.default); inputEl=num;
+        } else if (t==='object' && spec.properties){
+          const sub=document.createElement('div'); sub.dataset.key=key; sub.dataset.type='object'; sub.style.border='1px dashed var(--border-color)'; sub.style.padding='6px';
+          Object.entries(spec.properties).forEach(([k2,s2])=>{ const r2=document.createElement('div'); r2.style.marginTop='6px'; const lb2=document.createElement('label'); lb2.textContent=(s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2); let el2; const t2=s2.type||'string'; if (Array.isArray(s2.enum)){ el2=document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default);} else if (t2==='boolean'){ el2=document.createElement('input'); el2.type='checkbox'; el2.checked=!!s2.default; } else if (t2==='number' || t2==='integer'){ el2=document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default);} else { el2=document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default);} el2.dataset.key=k2; r2.appendChild(el2); sub.appendChild(r2); }); inputEl=sub;
+        } else if (t==='array'){
+          const wrap=document.createElement('div'); wrap.dataset.key=key; wrap.dataset.type='array'; const list=document.createElement('div'); wrap.appendChild(list); const btn=document.createElement('button'); btn.type='button'; btn.className='btn'; btn.textContent='新增一列'; btn.style.marginTop='4px'; wrap.appendChild(btn);
+          function addItem(def){ const item=document.createElement('div'); item.style.border='1px dashed var(--border-color)'; item.style.padding='6px'; item.style.marginTop='4px'; const rm=document.createElement('button'); rm.type='button'; rm.className='btn'; rm.textContent='移除'; rm.style.float='right'; rm.addEventListener('click', ()=> item.remove()); item.appendChild(rm); const it=spec.items||{}; if (it.type==='object' && it.properties){ Object.entries(it.properties).forEach(([k2,s2])=>{ const r2=document.createElement('div'); r2.style.marginTop='6px'; const lb2=document.createElement('label'); lb2.textContent=(s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2); let el2; const t2=s2.type||'string'; if (Array.isArray(s2.enum)){ el2=document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default);} else if (t2==='boolean'){ el2=document.createElement('input'); el2.type='checkbox'; el2.checked=!!s2.default; } else if (t2==='number' || t2==='integer'){ el2=document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default);} else { el2=document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default);} el2.dataset.key=k2; r2.appendChild(el2); item.appendChild(r2); }); } else { const el=document.createElement('input'); el.type='text'; el.dataset.key='__scalar__'; if (def!=null) el.value=String(def); item.appendChild(el);} list.appendChild(item); }
+          btn.addEventListener('click', ()=> addItem(undefined)); if (Array.isArray(spec.default)) spec.default.forEach(v=> addItem(v)); inputEl=wrap;
+        } else {
+          const txt=document.createElement('input'); txt.type=(fmt==='email'?'email': (fmt==='uri'||fmt==='url')?'url': (fmt==='date'?'date': (fmt==='date-time'?'datetime-local':'text'))); txt.dataset.key=key; if (spec && spec.default!=null) txt.value=String(spec.default); if (spec && spec.pattern) txt.pattern=String(spec.pattern); inputEl=txt;
+        }
+        if (inputEl) row.appendChild(inputEl);
+        root.appendChild(row);
+      });
+      // 若提供 initial，嘗試將 JSON 值灌入表單（包含建立陣列列與巢狀物件）
+      try{ if (initial && typeof initial === 'object') fillFormWithInitial(containerId, initial, schema); }catch{}
+    }
+    function fillFormWithInitial(containerId, data, schema){
+      const root=document.getElementById(containerId);
+      const props = (schema && schema.properties) ? schema.properties : {};
+      Object.keys(props).forEach((key)=>{
+        const spec = props[key] || {};
+        const val = data[key];
+        if (val === undefined) return;
+        // array
+        if (spec.type === 'array'){
+          const wrap = root.querySelector(`[data-type="array"][data-key="${key}"]`);
+          if (!wrap || !Array.isArray(val)) return;
+          const list = wrap.querySelector(':scope > div');
+          const btn = wrap.querySelector('button.btn');
+          const current = list ? list.querySelectorAll(':scope > div').length : 0;
+          for (let i=current; i<val.length; i++){ btn && btn.click && btn.click(); }
+          const items = list ? Array.from(list.querySelectorAll(':scope > div')) : [];
+          items.forEach((it, i)=>{
+            const cur = val[i];
+            if (cur == null) return;
+            // 物件元素
+            const objInputs = it.querySelectorAll('[data-key]');
+            if (objInputs && objInputs.length){
+              objInputs.forEach(el=>{
+                const k2 = el.getAttribute('data-key');
+                if (!k2) return;
+                const v2 = cur[k2];
+                if (el.tagName==='SELECT') el.value = (v2!=null? String(v2): el.value);
+                else if (el.type==='checkbox') el.checked = !!v2;
+                else if (el.type==='number') el.value = (typeof v2==='number'? String(v2): el.value);
+                else el.value = (v2!=null? String(v2): el.value);
+              });
+            } else {
+              // 純量元素（__scalar__）
+              const scalar = it.querySelector('[data-key="__scalar__"]');
+              if (scalar) scalar.value = String(cur);
+            }
+          });
+          return;
+        }
+        // object
+        if (spec.type === 'object' && spec.properties){
+          const sub = root.querySelector(`[data-type="object"][data-key="${key}"]`);
+          if (!sub || typeof val !== 'object') return;
+          Object.keys(spec.properties).forEach(k2=>{
+            const el = sub.querySelector(`[data-key="${k2}"]`);
+            if (!el) return;
+            const v2 = val[k2];
+            if (el.tagName==='SELECT') el.value = (v2!=null? String(v2): el.value);
+            else if (el.type==='checkbox') el.checked = !!v2;
+            else if (el.type==='number') el.value = (typeof v2==='number'? String(v2): el.value);
+            else el.value = (v2!=null? String(v2): el.value);
+          });
+          return;
+        }
+        // 標量（string/number/boolean/enum）
+        const el = root.querySelector(`[data-key="${key}"]`);
+        if (!el) return;
+        if (el.tagName==='SELECT') el.value = String(val);
+        else if (el.type==='checkbox') el.checked = !!val;
+        else if (el.type==='number') el.value = (typeof val==='number'? String(val): el.value);
+        else el.value = String(val);
+      });
+    }
+    function collectFormPayload(containerId){
+      const root=document.getElementById(containerId); const payload={}; const rows=Array.from(root.children);
+      for (const row of rows){
+        const arrayBlock=row.querySelector('[data-type="array"]'); const objectBlock=row.querySelector('[data-type="object"]');
+        if (arrayBlock){ const key=arrayBlock.dataset.key; const items=[]; arrayBlock.querySelectorAll(':scope > div > div').forEach(item=>{ const scalar=item.querySelector('input[data-key="__scalar__"]'); if (scalar) items.push(scalar.value); else { const obj={}; item.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value||0); else obj[k]=el.value; }); items.push(obj);} }); payload[key]=items; continue; }
+        if (objectBlock){ const key=objectBlock.dataset.key; const obj={}; objectBlock.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value||0); else obj[k]=el.value; }); payload[key]=obj; continue; }
+        const inp=row.querySelector('[data-key]'); if (!inp) continue; const key=inp.dataset.key; if (inp.tagName==='SELECT') payload[key]=inp.value; else if (inp.type==='checkbox') payload[key]=!!inp.checked; else if (inp.type==='number') payload[key]=(inp.value.trim()===''? null : Number(inp.value)); else payload[key]=inp.value;
+      }
+      return payload;
+    }
 
     // 輔助：建立工具卡片（標題、狀態、內容、操作）
     function createToolCard(name) {
@@ -289,6 +523,12 @@
                   appendFrame(meta.body, payload.frame);
                   if (payload.frame && payload.frame.ok === false) setCardStatus(meta, 'error', payload.frame.error || '執行失敗');
                   else if (payload.frame && payload.frame.ok === true) setCardStatus(meta, 'ok');
+                } else if (payload.type === 'heartbeat') {
+                  // 保持連線活性提示
+                  if (meta && meta.progMeta && meta._state === 'running') {
+                    const pct = typeof meta._progress === 'number' ? meta._progress : 0;
+                    meta.progMeta.textContent = pct + '% · 仍在處理…';
+                  }
                 } else if (payload.type === 'done') {
                   if (meta._state === 'running') setCardStatus(meta, 'ok');
                 }
@@ -416,22 +656,83 @@
       return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
     }
 
+    function createReactTraceCard() {
+      const wrap = document.createElement('div');
+      wrap.className = 'react-trace';
+      const title = document.createElement('div');
+      title.className = 'react-trace__title';
+      title.textContent = 'ReAct 執行狀態';
+      const list = document.createElement('ol');
+      list.className = 'react-trace__list';
+      wrap.appendChild(title);
+      wrap.appendChild(list);
+      return { wrap, list };
+    }
+
+    function appendReactTrace(traceMeta, payload) {
+      if (!traceMeta || !traceMeta.list || !payload) return;
+      const li = document.createElement('li');
+      const phase = (payload.phase || '').toString();
+      const msg = (payload.message || '').toString() || phase || '執行中';
+      const step = (typeof payload.step === 'number') ? `#${payload.step} ` : '';
+      li.textContent = `${step}${msg}`;
+      if (phase === 'act_result' && payload.ok === false) {
+        li.style.color = 'var(--error-color)';
+      }
+      traceMeta.list.appendChild(li);
+    }
+
     let currentAgentId = null;
     let currentConversationId = null;
     let currentConversations = [];
 
     async function loadAgents() {
       try {
-        // 一般使用者沒有 read_agent 權限，改呼叫 public 清單
-        const response = await api.get('/agents/public');
+        // 先嘗試 public 清單（所有登入者可見）
+        let response = await api.get('/agents/public');
+        let agents = Array.isArray(response.agents) ? response.agents : [];
+        // 若為 admin 且 public 為空，回退 /agents（需要 read_agent）
+        try {
+          const me = JSON.parse(localStorage.getItem('user') || 'null');
+          if (me && me.role === 'admin' && agents.length === 0) {
+            const resp2 = await api.get('/agents');
+            agents = Array.isArray(resp2.agents) ? resp2.agents : agents;
+          }
+        } catch {}
         agentSelect.innerHTML = '<option value="">請選擇代理者</option>';
-        
-        response.agents.forEach(agent => {
-          const option = document.createElement('option');
-          option.value = agent.id;
-          option.textContent = agent.name;
-          agentSelect.appendChild(option);
-        });
+        if (agents.length === 0) {
+          // 顯示提示：無代理者可選
+          const hint = document.createElement('div');
+          hint.className = 'conv-meta';
+          hint.style.margin = '8px 0';
+          hint.textContent = '目前沒有可選擇的代理者，請聯絡管理者建立。';
+          const nav = document.querySelector('.nav-menu');
+          const me = JSON.parse(localStorage.getItem('user') || 'null');
+          if (me && me.role === 'admin') {
+            const link = document.createElement('a');
+            link.href = '/pages/create-agent.html';
+            link.className = 'btn';
+            link.style.marginLeft = '8px';
+            link.textContent = '建立代理者';
+            hint.appendChild(link);
+            // 管理者：自動導向建立代理者精靈，降低空白狀態的迷惑
+            setTimeout(() => {
+              // 避免重複導向：若下拉已有資料（期間有新代理者建立）則不跳轉
+              if (![...agentSelect.options].some(o => o.value)) {
+                window.location.href = '/pages/create-agent.html';
+              }
+            }, 1200);
+          }
+          // 將提示插到 agentSelect 之後
+          agentSelect.parentElement.appendChild(hint);
+        } else {
+          agents.forEach(agent => {
+            const option = document.createElement('option');
+            option.value = agent.id;
+            option.textContent = agent.name;
+            agentSelect.appendChild(option);
+          });
+        }
 
         const urlParams = new URLSearchParams(window.location.search);
         const agentParam = urlParams.get('agent');
@@ -451,7 +752,7 @@
       messageInput.disabled = false;
       submitBtn.disabled = false;
       localStorage.setItem('last_agent_id', agentId);
-      
+
       try {
         // 側欄載入中狀態
         convEmpty.style.display = 'none';
@@ -476,6 +777,9 @@
           const items = [];
           skills.forEach(s => items.push({ name: s, type: 'skill' }));
           mcps.filter(c => c && c.enabled).forEach(c => items.push({ name: `mcp:${c.name}`, type: 'mcp' }));
+          // 直接使用 integrations 回傳的 schema（無需 /skills 權限）
+          skillSchemas = (integ && typeof integ.skill_schemas === 'object') ? integ.skill_schemas : {};
+          mcpSchemas = (integ && typeof integ.mcp_schemas === 'object') ? integ.mcp_schemas : {};
           if (items.length) {
             toolsList.innerHTML = '';
             items.forEach(x => {
@@ -486,8 +790,22 @@
               el.title = '點擊帶入工具名稱';
               el.addEventListener('click', () => {
                 toolNameInput.value = x.name;
-                // 簡易模板：mcp 預設 {"q":"查詢"}；skill 預設 {}
-                toolPayloadInput.value = x.type === 'mcp' ? '{"q": "查詢"}' : '{}';
+                // 若為 skill 且有 schema，切換到表單並渲染；否則切 JSON 並給預設模板
+                if (!x.name.startsWith('mcp:') && skillSchemas[x.name]) {
+                  document.getElementById('tool-form').style.display='block'; document.getElementById('tool-json').style.display='none';
+                  document.getElementById('tool-tab-form').classList.add('btn-secondary'); document.getElementById('tool-tab-json').classList.remove('btn-secondary');
+                  let init=null; try{ const raw=toolPayloadInput.value.trim(); if (raw) init=JSON.parse(raw);}catch{}
+                  renderFormFromSchema('tool-form', skillSchemas[x.name], init);
+                } else if (x.name.startsWith('mcp:') && mcpSchemas[x.name]) {
+                  document.getElementById('tool-form').style.display='block'; document.getElementById('tool-json').style.display='none';
+                  document.getElementById('tool-tab-form').classList.add('btn-secondary'); document.getElementById('tool-tab-json').classList.remove('btn-secondary');
+                  let init=null; try{ const raw=toolPayloadInput.value.trim(); if (raw) init=JSON.parse(raw);}catch{}
+                  renderFormFromSchema('tool-form', mcpSchemas[x.name], init);
+                } else {
+                  document.getElementById('tool-form').style.display='none'; document.getElementById('tool-json').style.display='block';
+                  document.getElementById('tool-tab-json').classList.add('btn-secondary'); document.getElementById('tool-tab-form').classList.remove('btn-secondary');
+                  toolPayloadInput.value = x.type === 'mcp' ? '{"q": "查詢"}' : '{}';
+                }
               });
               toolsList.appendChild(el);
             });
@@ -495,8 +813,6 @@
             toolsList.innerHTML = '<div class="muted">（此代理者未啟用任何工具）</div>';
           }
           toolConvInput.value = currentConversationId || '';
-          // 啟用串流發送按鈕
-          streamSendBtn.disabled = false;
         } catch {}
         // 後台暖機 LLM 路由（不影響 UI；忽略錯誤）
         try { await api.post(`/agents/${agentId}/llm-test`, {}); } catch {}
@@ -510,6 +826,10 @@
       const firstUser = (conv.messages || []).find(m => m.role === 'user');
       const text = firstUser ? (firstUser.content || '') : '';
       return text.length > 20 ? text.slice(0, 20) + '…' : (text || '新對話');
+    }
+
+    function closeAllConversationMenus() {
+      document.querySelectorAll('.conv-menu.open').forEach((el) => el.classList.remove('open'));
     }
 
     function renderSidebar(conversations) {
@@ -528,19 +848,37 @@
         li.innerHTML = `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
             <div class="conv-title" style="flex:1;">${title}</div>
-            <button class="btn" data-action="rename" title="重新命名" style="padding:2px 6px;">✎</button>
+            <div class="conv-actions">
+              <button class="btn conv-menu-trigger" data-action="menu" title="操作選單">⋯</button>
+              <div class="conv-menu" data-menu>
+                <button type="button" data-action="rename">更名</button>
+                <button type="button" class="danger" data-action="delete">刪除</button>
+              </div>
+            </div>
           </div>
           <div class="conv-meta">${meta}</div>
         `;
-        li.addEventListener('click', () => {
+        li.addEventListener('click', (ev) => {
+          if (ev.target && ev.target.closest && ev.target.closest('.conv-actions')) return;
           currentConversationId = c.id;
           renderMessagesById(c.id);
           Array.from(convList.children).forEach(el => el.classList.remove('active'));
           li.classList.add('active');
+          closeAllConversationMenus();
         });
-        // 重新命名事件（阻止冒泡，避免同時觸發切換）
+
+        const menuBtn = li.querySelector('[data-action="menu"]');
+        const menuBox = li.querySelector('[data-menu]');
+        menuBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const willOpen = !menuBox.classList.contains('open');
+          closeAllConversationMenus();
+          if (willOpen) menuBox.classList.add('open');
+        });
+
         li.querySelector('[data-action="rename"]').addEventListener('click', async (ev) => {
           ev.stopPropagation();
+          closeAllConversationMenus();
           const newTitle = window.prompt('輸入新的會話標題（最多 200 字）', snippetTitle(c));
           if (!newTitle || !newTitle.trim()) return;
           try {
@@ -553,9 +891,37 @@
             showError(e.message || '重新命名失敗');
           }
         });
+
+        li.querySelector('[data-action="delete"]').addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          closeAllConversationMenus();
+          const ok = window.confirm('確定要刪除此聊天紀錄嗎？此操作無法復原。');
+          if (!ok) return;
+          try {
+            const res = await api.delete(`/conversations/${c.id}`);
+            if (res && res.ok) {
+              currentConversations = (currentConversations || []).filter((x) => x.id !== c.id);
+              if (currentConversationId === c.id) {
+                currentConversationId = (currentConversations[0] && currentConversations[0].id) || null;
+              }
+              renderSidebar(currentConversations);
+              if (currentConversationId) {
+                renderMessagesById(currentConversationId);
+              } else {
+                chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">可以開始對話了</p>';
+              }
+            }
+          } catch (e) {
+            showError((e && e.message) || '刪除失敗');
+          }
+        });
         convList.appendChild(li);
       });
     }
+
+    document.addEventListener('click', () => {
+      closeAllConversationMenus();
+    });
 
     function renderMessagesById(convId) {
       const conv = (currentConversations || []).find(c => c.id === convId);
@@ -609,7 +975,7 @@
       // 先整體轉義，確保安全
       let html = escapeHTML(jsonText);
       // 字串（含可能的鍵），先標記，再將作為鍵的字串（後接冒號）改為 key 樣式
-      html = html.replace(/("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*")(?\s*:)?/g, (match, group1, isKey) => {
+      html = html.replace(/("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*")(\s*:)?/g, (match, group1, isKey) => {
         if (isKey) {
           return '<span class="json-key">' + group1 + '</span>:';
         }
@@ -642,8 +1008,38 @@
         if (!convId) convId = currentConversationId || '';
         if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
         let body = {};
-        if (toolPayloadInput.value.trim()) {
-          try { body = JSON.parse(toolPayloadInput.value); } catch { toolOutput.textContent = 'JSON 參數格式錯誤'; return; }
+        if (document.getElementById('tool-json').style.display !== 'none') {
+          if (toolPayloadInput.value.trim()) { try { body = JSON.parse(toolPayloadInput.value); } catch { toolOutput.textContent = 'JSON 參數格式錯誤'; return; } }
+        } else {
+          try { body = collectFormPayload('tool-form'); } catch(e){ toolOutput.textContent = e && e.message ? e.message : '表單驗證失敗'; return; }
+          // 基本前端驗證（若有 schema）
+          try {
+            const tool = (toolNameInput.value || '').trim();
+            const schema = tool.startsWith('mcp:') ? (mcpSchemas[tool] || null) : (skillSchemas[tool] || null);
+            if (schema && schema.type === 'object'){
+              // 簡化驗證：僅檢查 required/type/界線/長度/正則
+              const root = document.getElementById('tool-form'); root.querySelectorAll('.field-error').forEach(n=>n.remove()); root.querySelectorAll('input,select,textarea').forEach(el=> el.style.borderColor='');
+              const req = Array.isArray(schema.required)? schema.required: []; const props = schema.properties||{}; let bad=false;
+              Object.entries(props).forEach(([k, spec])=>{
+                const el = root.querySelector(`[data-key="${k}"]`) || root.querySelector(`[data-type] [data-key="${k}"]`);
+                const v = body[k]; const t=(spec && spec.type)||'string';
+                function addErr(msg){ if (!el) return; const d=document.createElement('div'); d.className='field-error'; d.style.color='var(--danger-color,#c0392b)'; d.style.fontSize='12px'; d.style.marginTop='2px'; d.textContent=String(msg); el.style.borderColor='var(--danger-color,#c0392b)'; el.insertAdjacentElement('afterend', d); bad=true; }
+                if (req.includes(k) && (v===undefined||v===null||v==='')) addErr('必填');
+                if (v===undefined||v===null||v==='') return;
+                if (t==='number' || t==='integer'){
+                  if (typeof v !== 'number' || Number.isNaN(v)) addErr('需為數字');
+                  if (spec && typeof spec.minimum==='number' && v < spec.minimum) addErr(`不可小於 ${spec.minimum}`);
+                  if (spec && typeof spec.maximum==='number' && v > spec.maximum) addErr(`不可大於 ${spec.maximum}`);
+                } else if (t==='string'){
+                  if (typeof v !== 'string') addErr('需為字串');
+                  if (spec && typeof spec.minLength==='number' && v.length < spec.minLength) addErr(`長度不可小於 ${spec.minLength}`);
+                  if (spec && typeof spec.maxLength==='number' && v.length > spec.maxLength) addErr(`長度不可大於 ${spec.maxLength}`);
+                  if (spec && spec.pattern){ try { const re=new RegExp(spec.pattern); if (!re.test(v)) addErr('格式不符合規則'); } catch {} }
+                }
+              });
+              if (bad) { toolOutput.textContent = '表單欄位有誤，請修正紅框標示'; return; }
+            }
+          } catch {}
         }
         const holder = document.createElement('div');
         const meta = createToolCard(tool);
@@ -654,7 +1050,19 @@
         toolOutput.prepend(holder);
         const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, body);
         appendFrame(meta.body, res);
-        if (res && res.ok) setCardStatus(meta, 'ok'); else setCardStatus(meta, 'error', (res && res.error) || '執行失敗');
+        if (res && res.ok) setCardStatus(meta, 'ok'); else {
+          setCardStatus(meta, 'error', (res && res.error) || '執行失敗');
+          // 若有欄位級錯誤，標示於表單
+          if (Array.isArray(res && res.errors) && document.getElementById('tool-form').style.display !== 'none'){
+            const root = document.getElementById('tool-form');
+            root.querySelectorAll('.field-error').forEach(n=>n.remove()); root.querySelectorAll('input,select,textarea').forEach(el=> el.style.borderColor='');
+            res.errors.forEach(e=>{
+              const p = (e && e.path) ? String(e.path) : ''; const key = p.split('.')[0]; if (!key) return;
+              const el = root.querySelector(`[data-key="${key}"]`) || root.querySelector(`[data-type] [data-key="${key}"]`);
+              if (el) { const d=document.createElement('div'); d.className='field-error'; d.style.color='var(--danger-color,#c0392b)'; d.style.fontSize='12px'; d.style.marginTop='2px'; d.textContent= (e && e.message) ? String(e.message) : '不符合結構'; el.style.borderColor='var(--danger-color,#c0392b)'; el.insertAdjacentElement('afterend', d); }
+            });
+          }
+        }
         toolHistory.unshift({ t: new Date().toISOString(), tool, convId, body, res });
       } catch (e) {
         const holder = document.createElement('div');
@@ -707,8 +1115,13 @@
                 const obj = JSON.parse(jsonStr);
                 if (obj && obj.type === 'progress') {
                   updateProgress(meta, obj.value, obj.eta_seconds);
+                } else if (obj && obj.type === 'heartbeat') {
+                  if (meta && meta.progMeta && meta._state === 'running') {
+                    const pct = typeof meta._progress === 'number' ? meta._progress : 0;
+                    meta.progMeta.textContent = pct + '% · 仍在處理…';
+                  }
                 } else if (obj && obj.type === 'tool') {
-                  appendFrameToCurrent(meta, obj.frame);
+                  appendFrame(meta.body, obj.frame);
                   if (obj.frame && obj.frame.ok === false) setCardStatus(meta, 'error', obj.frame.error || '執行失敗');
                   else if (obj.frame && obj.frame.ok === true) setCardStatus(meta, 'ok');
                   // 嘗試讀取進度欄位（progress/percent/value）
@@ -732,7 +1145,7 @@
         const meta = createToolCard((toolNameInput.value || '').trim() || 'tool');
         holder.appendChild(meta.card);
         toolOutput.prepend(holder);
-        appendFrameToCurrent(meta, { ok: false, error: e.message || '串流執行錯誤' });
+        appendFrame(meta.body, { ok: false, error: e.message || '串流執行錯誤' });
         setCardStatus(meta, 'error', e.message || '串流執行錯誤');
       }
     });
@@ -767,82 +1180,37 @@
 
     chatForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const message = messageInput.value.trim();
-      if (!message || !currentAgentId) return;
-
-      const userMsg = document.createElement('div');
-      userMsg.className = 'message user';
-      userMsg.innerHTML = `<p>${message}</p>`;
-      chatMessages.appendChild(userMsg);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-
-      messageInput.value = '';
-      messageInput.disabled = true;
-      submitBtn.disabled = true;
-
-      try {
-        // 後端 /api/agents/{id}/chat 依測試約定使用查詢參數 message
-        const qs = new URLSearchParams({ message });
-        // 傳送中狀態
-        const oldPlaceholder = messageInput.placeholder;
-        messageInput.placeholder = '傳送中…';
-        const response = await api.request(`/agents/${currentAgentId}/chat?${qs.toString()}`, {
-          method: 'POST',
-        });
-
-        const assistantMsg = document.createElement('div');
-        assistantMsg.className = 'message assistant';
-        // 嘗試將 References 區塊分離呈現
-        const text = String(response.response || '');
-        const refIdx = text.indexOf('\n\nReferences:');
-        if (refIdx >= 0) {
-          const main = text.slice(0, refIdx);
-          const refs = text.slice(refIdx + 2); // 去除前置換行
-          assistantMsg.innerHTML = `<p>${main}</p><pre style="white-space:pre-wrap;margin-top:6px;background:var(--card-bg);border:1px solid var(--border-color);padding:6px;">${refs}</pre>`;
-        } else {
-          assistantMsg.innerHTML = `<p>${text}</p>`;
-        }
-        chatMessages.appendChild(assistantMsg);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-
-        currentConversationId = response.conversation_id;
-        // 重新讀取清單以反映 last_interacted_at 變更
-        try {
-          const refreshed = await api.get(`/agents/${currentAgentId}/conversations`);
-          currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
-          renderSidebar(currentConversations);
-        } catch {}
-      } catch (error) {
-        showError(error.message);
-        // 顯示錯誤於訊息區
-        const errMsg = document.createElement('div');
-        errMsg.className = 'message assistant';
-        errMsg.innerHTML = `<p style="color: var(--error-color);">發送失敗：${error.message}</p>`;
-        chatMessages.appendChild(errMsg);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-      } finally {
-        messageInput.disabled = false;
-        submitBtn.disabled = false;
-        messageInput.placeholder = '輸入訊息...';
-        messageInput.focus();
-      }
-    });
-
-    streamSendBtn.addEventListener('click', async () => {
       const msg = (messageInput.value || '').trim();
       if (!msg || !currentAgentId) return;
+      const STREAM_TIMEOUT_MS = 120000;
+      messageInput.disabled = true;
+      submitBtn.disabled = true;
+      const userMsg = document.createElement('div');
+      userMsg.className = 'message user';
+      userMsg.innerHTML = `<p>${msg}</p>`;
+      chatMessages.appendChild(userMsg);
       // 建立助理訊息區塊
       const assistantMsg = document.createElement('div');
       assistantMsg.className = 'message assistant';
       const p = document.createElement('p');
       assistantMsg.appendChild(p);
+      const reactTrace = createReactTraceCard();
+      assistantMsg.appendChild(reactTrace.wrap);
       chatMessages.appendChild(assistantMsg);
       // 串流聊天
       try {
         const token = localStorage.getItem('auth_token');
         const url = `/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: msg });
-        const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort('timeout'), STREAM_TIMEOUT_MS);
+        let resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+        if (!resp.ok && resp.status === 503) {
+          // 後端重啟或模型路由短暫不可用時，做一次短暫重試
+          await new Promise((r) => setTimeout(r, 1200));
+          resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+        }
         if (!resp.ok || !resp.body) {
+          clearTimeout(timer);
           p.textContent = `串流失敗：HTTP ${resp.status}`;
           return;
         }
@@ -862,6 +1230,12 @@
               const payload = JSON.parse(chunk.replace(/^data:\s*/, ''));
               if (payload.type === 'text' && typeof payload.delta === 'string') {
                 p.textContent += payload.delta;
+                // 避免把內部工具協議 [[CALL ...]] 顯示給使用者
+                p.textContent = p.textContent.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '').trimStart();
+                p.textContent = p.textContent.replace(/```json\s*\{[\s\S]*?\}\s*```/gi, '').trimStart();
+                p.textContent = p.textContent.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '').trimStart();
+              } else if (payload.type === 'react') {
+                appendReactTrace(reactTrace, payload);
               } else if (payload.type === 'tool_start') {
                 const built = createToolCard(payload.name);
                 built._toolName = payload.name;
@@ -871,6 +1245,11 @@
                 assistantMsg.appendChild(built.card);
               } else if (payload.type === 'progress') {
                 if (activeToolCard) updateProgress(activeToolCard, payload.value, payload.eta_seconds);
+              } else if (payload.type === 'heartbeat') {
+                if (activeToolCard && activeToolCard.progMeta && activeToolCard._state === 'running') {
+                  const pct = typeof activeToolCard._progress === 'number' ? activeToolCard._progress : 0;
+                  activeToolCard.progMeta.textContent = pct + '% · 仍在處理…';
+                }
               } else if (payload.type === 'tool') {
                 if (activeToolCard) {
                   appendFrame(activeToolCard.body, payload.frame);
@@ -891,13 +1270,30 @@
                 // 完成
                 if (activeToolCard && activeToolCard._state === 'running') setCardStatus(activeToolCard, 'ok');
                 if (activeToolCard && (!activeToolCard._convId) && payload.conversation_id) activeToolCard._convId = payload.conversation_id;
+                // 串流完成後，刷新側欄會話清單以更新最後互動時間與新會話
+                try {
+                  const refreshed = await api.get(`/agents/${currentAgentId}/conversations`);
+                  currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+                  renderSidebar(currentConversations);
+                } catch {}
               }
             } catch {}
           }
         }
+        clearTimeout(timer);
         messageInput.value = '';
       } catch (e) {
-        p.textContent += `\n[錯誤] ${(e && e.message) || '串流錯誤'}`;
+        const isTimeout = !!(e && (e.name === 'AbortError' || String(e.message || '').includes('timeout')));
+        if (isTimeout) {
+          p.textContent += '\n系統忙碌中，請稍後再試。';
+        } else {
+          p.textContent += `\n[錯誤] ${(e && e.message) || '串流錯誤'}`;
+        }
+      } finally {
+        messageInput.disabled = false;
+        submitBtn.disabled = false;
+        messageInput.value = '';
+        messageInput.focus();
       }
     });
 

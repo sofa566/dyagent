@@ -1,4 +1,13 @@
-const API_BASE = '/api';
+// 動態偵測 API_BASE：
+// - 可用 localStorage.API_BASE 或 ?api_base= 覆蓋（例如 http://127.0.0.1:8000/api）
+// - 在 Vite 開發模式 (port === 5173) 預設指向 http(s)://<當前主機>:8000/api（不限定 localhost）
+// - 其他情況走同源 '/api'
+const __url = new URL(window.location.href);
+const __override = __url.searchParams.get('api_base') || localStorage.getItem('API_BASE');
+const __devDefault = `${window.location.protocol}//${window.location.hostname}:8000/api`;
+const API_BASE = (__override
+  || (window.location.port === '5173' ? __devDefault : '/api'));
+try { console.info('[dyagent] API_BASE =', API_BASE); } catch {}
 
 const api = {
   async request(endpoint, options = {}) {
@@ -57,9 +66,9 @@ const auth = {
     const response = await api.post('/login', { email, password });
     localStorage.setItem('auth_token', response.token);
     localStorage.setItem('user', JSON.stringify(response.user));
-    // 一般使用者登入後直接導向聊天頁
+    // 非 admin 登入後直接導向聊天頁
     try {
-      if (response.user && response.user.role === 'user') {
+      if (response.user && response.user.role !== 'admin') {
         window.location.href = '/pages/chat.html';
       }
     } catch {}
@@ -105,6 +114,84 @@ function showSuccess(message) {
 document.addEventListener('DOMContentLoaded', () => {
   const user = auth.getUser();
 
+  // 依規則重排導覽連結：
+  // - 儀表板 最左
+  // - （admin）使用者、代理者、MCP 管理、技能管理
+  // - 其他項目（如 聊天）置於上述之後
+  // - 登出（或登入）永遠在最右
+  function arrangeNavMenu(currentUser) {
+    try {
+      const navMenu = document.querySelector('.nav-menu');
+      if (!navMenu) return;
+
+      const getLinks = () => Array.from(navMenu.querySelectorAll('a'));
+      const findByHrefEnd = (end) => getLinks().find(a => {
+        const href = a.getAttribute('href') || '';
+        return href.endsWith(end);
+      });
+      const byId = (id) => navMenu.querySelector(`#${id}`);
+
+      const logoutOrAuth = byId('logout-link') || byId('auth-link');
+
+      const order = [];
+
+      // 儀表板（僅 admin 顯示）
+      const dashboard = findByHrefEnd('/pages/dashboard.html');
+      if (currentUser && currentUser.role === 'admin') {
+        if (dashboard) order.push(dashboard);
+      } else if (dashboard && dashboard.parentElement === navMenu) {
+        navMenu.removeChild(dashboard);
+      }
+
+      // 角色相關排序
+      if (currentUser && currentUser.role === 'admin') {
+        const users = byId('users-admin-link') || findByHrefEnd('/pages/users.html');
+        if (users) order.push(users);
+
+        const agents = findByHrefEnd('/pages/agent-list.html');
+        if (agents) order.push(agents);
+
+        const mcps = byId('mcps-admin-link') || findByHrefEnd('/pages/mcps.html');
+        if (mcps) order.push(mcps);
+
+        const skills = byId('skills-admin-link') || findByHrefEnd('/pages/skills.html');
+        if (skills) order.push(skills);
+
+        // 其他（如 聊天）
+        const chat = findByHrefEnd('/pages/chat.html');
+        if (chat) order.push(chat);
+      } else {
+        // 非 admin：依既有頁面存在與否排序
+        const users = findByHrefEnd('/pages/users.html');
+        if (users) order.push(users);
+
+        const agents = findByHrefEnd('/pages/agent-list.html');
+        if (agents) order.push(agents);
+
+        const mcps = findByHrefEnd('/pages/mcps.html');
+        if (mcps) order.push(mcps);
+
+        const skills = findByHrefEnd('/pages/skills.html');
+        if (skills) order.push(skills);
+
+        const chat = findByHrefEnd('/pages/chat.html');
+        if (chat) order.push(chat);
+      }
+
+      // 其餘未收錄的項目（排除登出/登入；非 admin 排除儀表板）
+      getLinks().forEach(a => {
+        const href = a.getAttribute('href') || '';
+        if (a === logoutOrAuth || order.includes(a)) return;
+        if ((!currentUser || currentUser.role !== 'admin') && href.endsWith('/pages/dashboard.html')) return;
+        order.push(a);
+      });
+
+      // 依序附加，最後放登出/登入
+      order.forEach(a => navMenu.appendChild(a));
+      if (logoutOrAuth) navMenu.appendChild(logoutOrAuth);
+    } catch {}
+  }
+
   // 若存在 #auth-link，根據登入狀態切換為 登入/登出
   const authLink = document.getElementById('auth-link');
   if (authLink) {
@@ -112,6 +199,33 @@ document.addEventListener('DOMContentLoaded', () => {
       authLink.textContent = '登出';
       authLink.href = '#logout';
       authLink.id = 'logout-link'; // 正規化 id，後續用同一套綁定
+      // 動態注入『使用者管理』（僅 admin 顯示）
+      try {
+        const navMenu = document.querySelector('.nav-menu');
+        if (navMenu && user.role === 'admin') {
+          if (!navMenu.querySelector('#users-admin-link')) {
+            const usersLink = document.createElement('a');
+            usersLink.id = 'users-admin-link';
+            usersLink.href = '/pages/users.html';
+            usersLink.textContent = '使用者管理';
+            navMenu.appendChild(usersLink);
+          }
+          if (!navMenu.querySelector('#mcps-admin-link')) {
+            const link = document.createElement('a');
+            link.id = 'mcps-admin-link';
+            link.href = '/pages/mcps.html';
+            link.textContent = 'MCP 管理';
+            navMenu.appendChild(link);
+          }
+          if (!navMenu.querySelector('#skills-admin-link')) {
+            const link = document.createElement('a');
+            link.id = 'skills-admin-link';
+            link.href = '/pages/skills.html';
+            link.textContent = '技能管理';
+            navMenu.appendChild(link);
+          }
+        }
+      } catch {}
     } else {
       authLink.textContent = '登入';
       authLink.href = '/pages/login.html';
@@ -156,6 +270,9 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   }
+
+  // 最後統一整理導覽列順序
+  arrangeNavMenu(user);
 });
 
 export { api, auth, showError, showSuccess };

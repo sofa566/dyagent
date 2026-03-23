@@ -24,7 +24,7 @@
     <div id="success-message" class="success-message"></div>
 
     <div class="card">
-      <form id="llm-form">
+      <form id="llm-form" autocomplete="off">
         <div class="form-group">
           <label for="tier">層級 (tier)</label>
           <select id="tier" name="tier">
@@ -107,7 +107,7 @@
         </div>
         <div class="form-group">
           <label for="api_key">直接金鑰 (api_key)</label>
-          <input type="password" id="api_key" name="api_key" placeholder="不建議，僅於測試時暫用；建議改用 api_key_ref">
+          <input type="password" id="api_key" name="api_key_block" autocomplete="new-password" placeholder="不建議，僅於測試時暫用；建議改用 api_key_ref" value="">
           <small style="color: var(--text-secondary);">此欄位僅供測試，請優先使用上方 api_key_ref。</small>
         </div>
 
@@ -138,6 +138,11 @@
     const form = document.getElementById('llm-form');
     const testBtn = document.getElementById('test-btn');
     const testResult = document.getElementById('test-result');
+    // 防止瀏覽器自動填入舊密碼：頁面載入後強制清空，並僅在使用者輸入時才帶入
+    const apiKeyInput = document.getElementById('api_key');
+    try { apiKeyInput.value = ''; } catch {}
+    window.__apiKeyDirty = false;
+    apiKeyInput.addEventListener('input', () => { window.__apiKeyDirty = true; });
 
     function getFormConfig() {
       const cfg = {};
@@ -165,7 +170,7 @@
       if (onprem_base_url) cfg.onprem_base_url = onprem_base_url;
       if (modelOnprem) cfg.model = modelOnprem; // onprem 模型也寫入同一鍵
       if (api_key_ref) cfg.api_key_ref = api_key_ref;
-      if (api_key) cfg.api_key = api_key;
+      if (window.__apiKeyDirty && api_key) cfg.api_key = api_key;
 
       return cfg;
     }

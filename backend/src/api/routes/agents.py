@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, Request
 import uuid
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.database import get_db
-from src.models import User, Agent, Workspace
+from src.models import User, Agent, Workspace, SkillEntry
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
@@ -19,15 +20,12 @@ async def list_public_agents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """提供一般使用者可見的代理者清單。
+    """提供一般使用者可見的代理者清單（寬鬆模式）。
 
-    - 權限：僅需 `chat`（一般使用者具備）
-    - 欄位：僅回傳基本資訊供前端選擇
+    - 僅需通過身份驗證；不再要求 `read_agent`/`chat` 權限，避免一般使用者 403。
+    - 僅回傳基本資訊供前端選擇。
     """
-    if not check_permission(current_user, 'chat'):
-        from src.api.errors import forbidden_error
-        raise forbidden_error()
-
+    # 僅驗證登入；不做額外權限限制
     agents = db.query(Agent).all()
     return {
         'agents': [
@@ -91,13 +89,83 @@ async def get_agent_integrations(
         provider = ''
         skill_examples = {}
 
+    # 解析 skills 名單：優先 skill_ids，再合併 agent.skills 去重；同時提供 schema 摘要
+    skills_out: list[str] = []
+    skill_schemas: dict[str, dict] = {}
+    try:
+        cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
+        sids = list((cfg or {}).get('skill_ids') or []) if isinstance(cfg, dict) else []
+        if sids:
+            rows = db.query(SkillEntry).filter(SkillEntry.id.in_(sids)).all()
+            for r in rows:
+                if bool(r.enabled) and isinstance(r.name, str) and r.name.strip():
+                    nm = r.name.strip()
+                    if nm not in skills_out:
+                        skills_out.append(nm)
+                    try:
+                        if isinstance(getattr(r, 'input_schema', None), dict):
+                            skill_schemas[nm] = r.input_schema or {}
+                    except Exception:
+                        pass
+        # 兼容：合併 agent.skills 中的字串
+        for s in (agent.skills or []):
+            if isinstance(s, str) and s.strip() and s not in skills_out:
+                skills_out.append(s.strip())
+        # 若有名稱但未從 id 抓到 schema，可再以名稱查一次（非嚴格）
+        if skills_out:
+            miss = [n for n in skills_out if n not in skill_schemas]
+            if miss:
+                rows2 = db.query(SkillEntry).filter(SkillEntry.name.in_(miss)).all()
+                for r in rows2:
+                    try:
+                        if isinstance(getattr(r, 'input_schema', None), dict):
+                            skill_schemas[r.name] = r.input_schema or {}
+                    except Exception:
+                        pass
+    except Exception:
+        skills_out = agent.skills or []
+        skill_schemas = {}
+
+    # 蒐集 MCP schemas：優先 model_config.mcp_ids 對應的全域設定，其次合併 inline mcp_config
+    mcp_schemas: dict[str, dict] = {}
+    try:
+        from src.models import MCPConnection
+        cfg2 = agent.model_config if isinstance(agent.model_config, dict) else {}
+        mids = list((cfg2 or {}).get('mcp_ids') or []) if isinstance(cfg2, dict) else []
+        if mids:
+            rows = db.query(MCPConnection).filter(MCPConnection.id.in_(mids)).all()
+            for r in rows:
+                if bool(r.enabled) and isinstance(r.name, str) and r.name.strip():
+                    mcp_schemas[f"mcp:{r.name.strip()}"] = getattr(r, 'input_schema', {}) or {}
+        # inline 覆蓋
+        mraw = agent.mcp_config or []
+        if isinstance(mraw, dict):
+            mlist = list(mraw.values())
+        elif isinstance(mraw, list):
+            mlist = mraw
+        else:
+            mlist = []
+        for c in (mlist or []):
+            if isinstance(c, dict) and c.get('name'):
+                nm = str(c.get('name')).strip()
+                sc = c.get('input_schema') if isinstance(c.get('input_schema'), dict) else {}
+                if nm and sc:
+                    mcp_schemas[f"mcp:{nm}"] = sc
+    except Exception:
+        mcp_schemas = {}
+
     return {
         'mcp_config': _default_mcp(agent.mcp_config or {}),
-        'skills': agent.skills or [],
+        'skills': skills_out,
         'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
         'toolcall_guide': tc_guide,
         'model_provider': provider or '',
         'skill_examples': skill_examples,
+        'skill_schemas': skill_schemas,
+        'mcp_schemas': mcp_schemas,
+        # 參照式設定（來自全域管理清單）
+        'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
+        'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
     }
 
 
@@ -125,6 +193,8 @@ async def update_agent_integrations(
     mcp_cfg = payload.get('mcp_config', []) if isinstance(payload, dict) else []
     skills = payload.get('skills', []) if isinstance(payload, dict) else []
     rag_cfg = payload.get('rag_config', {}) if isinstance(payload, dict) else {}
+    mcp_ids = payload.get('mcp_ids', []) if isinstance(payload, dict) else []
+    skill_ids = payload.get('skill_ids', []) if isinstance(payload, dict) else []
 
     if mcp_cfg is not None and not isinstance(mcp_cfg, list):
         raise validation_error('mcp_config 必須為陣列')
@@ -132,6 +202,10 @@ async def update_agent_integrations(
         raise validation_error('skills 必須為陣列')
     if rag_cfg is not None and not isinstance(rag_cfg, dict):
         raise validation_error('rag_config 必須為物件')
+    if mcp_ids is not None and not isinstance(mcp_ids, list):
+        raise validation_error('mcp_ids 必須為陣列')
+    if skill_ids is not None and not isinstance(skill_ids, list):
+        raise validation_error('skill_ids 必須為陣列')
 
     # 基礎清理
     def _clean_skill(name: str) -> str:
@@ -162,11 +236,16 @@ async def update_agent_integrations(
     # 寫入 toolcall_guide 至 model_config
     try:
         guide = (payload or {}).get('toolcall_guide') if isinstance(payload, dict) else None
-        cfg = agent.model_config or {}
-        if not isinstance(cfg, dict):
-            cfg = {}
+        # 注意：JSON 欄位需避免原地修改，否則 ORM 可能不觸發 UPDATE
+        base_cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
+        cfg = dict(base_cfg)
         if isinstance(guide, str):
             cfg['toolcall_guide'] = guide
+        # 儲存參照式清單（保持彈性：允許同時存在 mcp_config 與 mcp_ids；由準備階段合併）
+        if isinstance(mcp_ids, list):
+            cfg['mcp_ids'] = [str(x) for x in mcp_ids if isinstance(x, (str,)) and x]
+        if isinstance(skill_ids, list):
+            cfg['skill_ids'] = [str(x) for x in skill_ids if isinstance(x, (str,)) and x]
         # 寫入 skills 的示例參數（限制於當前啟用/選取的 skills）
         sk_ex = (payload or {}).get('skill_examples') if isinstance(payload, dict) else None
         if isinstance(sk_ex, dict):
@@ -177,6 +256,7 @@ async def update_agent_integrations(
                     filtered[k] = v
             cfg['skill_examples'] = filtered
         agent.model_config = cfg
+        flag_modified(agent, 'model_config')
     except Exception:
         pass
     db.commit()
@@ -191,7 +271,13 @@ async def update_agent_integrations(
             action='agent.integrations.update',
             resource_type='agent',
             resource_id=agent.id,
-            details={'counts': {'mcp': len(agent.mcp_config or []), 'skills': len(agent.skills or []), 'sources': len(rag_out['sources'])}},
+            details={'counts': {
+                'mcp': len(agent.mcp_config or []),
+                'skills': len(agent.skills or []),
+                'sources': len(rag_out['sources']),
+                'mcp_ids': len((agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else []),
+                'skill_ids': len((agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else []),
+            }},
             ip_address=None,
         )
         db.add(log)
@@ -204,6 +290,8 @@ async def update_agent_integrations(
         'skills': agent.skills or [],
         'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
         'toolcall_guide': (agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else '',
+        'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
+        'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
     }
 
 
@@ -400,7 +488,9 @@ async def update_agent(
     agent_id: str,
     name: str | None = None,
     description: str | None = None,
+    model_type: str | None = None,
     model_config: dict | None = None,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -417,10 +507,37 @@ async def update_agent(
     if not agent:
         raise not_found_error('Agent', agent_id)
 
+    # 相容兩種呼叫方式：query params（舊）與 JSON body（前端）
+    payload = None
+    try:
+        if request is not None:
+            raw = await request.body()
+            if raw:
+                payload = await request.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        if 'name' in payload and name is None:
+            v = payload.get('name')
+            name = str(v) if isinstance(v, str) else name
+        if 'description' in payload and description is None:
+            v = payload.get('description')
+            description = str(v) if isinstance(v, str) else description
+        if 'model_type' in payload and model_type is None:
+            v = payload.get('model_type')
+            model_type = str(v) if isinstance(v, str) else model_type
+        if 'model_config' in payload and model_config is None and isinstance(payload.get('model_config'), dict):
+            model_config = payload.get('model_config')
+
     if name is not None:
         agent.name = name
     if description is not None:
         agent.description = description
+    if model_type is not None:
+        mt = str(model_type).strip().lower()
+        if mt not in {'cloud', 'local'}:
+            raise validation_error('model_type must be cloud or local')
+        agent.model_type = mt
     if model_config is not None:
         agent.model_config = model_config
 

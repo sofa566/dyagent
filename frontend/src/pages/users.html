@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>使用者管理 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <div class="actions" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <h2 style="margin:0;">使用者管理</h2>
+      <details class="card" style="padding:8px;">
+        <summary>新增使用者</summary>
+        <form id="create-user-form" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px;">
+          <div class="form-group">
+            <label>使用者名稱</label>
+            <input id="cu-username" type="text" required maxlength="100" placeholder="username">
+          </div>
+          <div class="form-group">
+            <label>Email</label>
+            <input id="cu-email" type="email" required placeholder="email@example.com">
+          </div>
+          <div class="form-group">
+            <label>密碼</label>
+            <input id="cu-password" type="password" required autocomplete="new-password">
+          </div>
+          <div class="form-group">
+            <label>角色</label>
+            <select id="cu-role">
+              <option value="user" selected>user（預設）</option>
+              <option value="agent_admin">agent_admin</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">建立</button>
+        </form>
+      </details>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div id="users-list" class="card"><p>載入中...</p></div>
+  </main>
+  <script type="module">
+    import { api, auth, showError } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const me = auth.getUser();
+    if (!me || me.role !== 'admin') {
+      showError('僅限管理者使用');
+      setTimeout(()=> window.location.href='/pages/chat.html', 1500);
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await api.get('/users');
+        const container = document.getElementById('users-list');
+        const list = Array.isArray(res.users) ? res.users.filter(u => u.id !== (me && me.id)) : [];
+        if (list.length === 0) {
+          container.innerHTML = '<p>沒有其他使用者</p>';
+          return;
+        }
+        container.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>名稱</th>
+                <th>Email</th>
+                <th>角色</th>
+                <th>建立時間</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${list.map(u => `
+                <tr>
+                  <td>${u.username || '-'}</td>
+                  <td>${u.email || '-'}</td>
+                  <td>${u.role}</td>
+                  <td>${u.created_at ? new Date(u.created_at).toLocaleString() : ''}</td>
+                  <td><a href="/pages/user-edit.html?id=${u.id}" class="btn">編輯</a></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (e) {
+        showError(e.message || '載入使用者失敗');
+      }
+    }
+
+    loadUsers();
+
+    // 建立使用者（僅 admin）
+    const cuForm = document.getElementById('create-user-form');
+    cuForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('cu-username').value.trim();
+      const email = document.getElementById('cu-email').value.trim();
+      const password = document.getElementById('cu-password').value;
+      const role = document.getElementById('cu-role').value;
+      if (!username || !email || !password) { showError('請完整填寫表單'); return; }
+      try {
+        await api.post('/users', { username, email, password, role });
+        // 清空表單並刷新清單
+        cuForm.reset();
+        document.getElementById('success-message').textContent = '已建立使用者';
+        document.getElementById('success-message').style.display = 'block';
+        setTimeout(()=>{ document.getElementById('success-message').style.display='none'; }, 2000);
+        loadUsers();
+      } catch (e2) {
+        showError(e2.message || '建立失敗');
+      }
+    });
+  </script>
+</body>
+</html>
