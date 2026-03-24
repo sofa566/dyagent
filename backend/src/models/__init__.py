@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric
 from sqlalchemy.types import CHAR, TypeDecorator
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
@@ -82,8 +82,12 @@ class Agent(Base):
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False)
     description = Column(Text, default='')
+    system_prompt = Column(Text, nullable=True)
     model_type = Column(Enum('local', 'cloud', name='model_type'), nullable=False)
+    # 代理者是否為主代理（Router）
+    is_router = Column(Boolean, nullable=False, default=False)
     model_config = Column(JSON, default=dict)
+    function_profile_id = Column(GUID(), ForeignKey('function_profiles.id'), nullable=True)
     mcp_config = Column(JSON, default=dict)
     skills = Column(JSON, default=list)
     tools = Column(JSON, default=list)
@@ -130,6 +134,9 @@ class Document(Base):
     filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
     file_type = Column(String(100), nullable=False)
+    status = Column(String(20), nullable=False, default='uploaded')
+    last_error = Column(Text, nullable=True)
+    indexed_at = Column(DateTime, nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
     # 同上：查詢時以 agent_id 過濾
@@ -200,3 +207,60 @@ class SkillEntry(Base):
     input_schema = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# 全域函式協定模板（Functions）
+class FunctionProfile(Base):
+    __tablename__ = 'function_profiles'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), unique=True, nullable=False)
+    provider = Column(String(50), nullable=True)
+    template = Column(Text, nullable=False)
+    description = Column(Text, default='')
+    enabled = Column(Boolean, default=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# RAG 資料集註冊表（公有/代理者私有）
+class RagDataset(Base):
+    __tablename__ = 'rag_datasets'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), nullable=False)
+    scope = Column(Enum('global', 'agent_private', name='rag_scope'), nullable=False)
+    agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=True)
+    owner_user_id = Column(GUID(), ForeignKey('users.id'), nullable=True)
+    sensitivity = Column(Enum('normal', 'confidential', 'restricted', name='rag_sensitivity'), nullable=False, default='normal')
+    vector_backend = Column(String(50), nullable=True)
+    index_name = Column(String(150), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# LLM 每輪審計紀錄
+class LlmTurn(Base):
+    __tablename__ = 'llm_turns'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=False)
+    agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=False)
+    message_user_id = Column(GUID(), ForeignKey('messages.id'), nullable=True)
+    message_assistant_id = Column(GUID(), ForeignKey('messages.id'), nullable=True)
+    provider = Column(String(50), nullable=True)
+    model = Column(String(120), nullable=True)
+    tier = Column(String(20), nullable=True)
+    system_prompt_snapshot = Column(Text, nullable=True)
+    context_snapshot = Column(JSON, default=dict)
+    usage = Column(JSON, default=dict)
+    cost_usd = Column(Numeric(12, 6), nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default='success')
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

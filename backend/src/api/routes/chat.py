@@ -9,10 +9,12 @@ import time
 import asyncio
 import threading
 import re
+from functools import lru_cache
+from decimal import Decimal
 from datetime import datetime
 
 from src.core.database import get_db
-from src.models import User, Agent, Conversation, Message
+from src.models import User, Agent, Conversation, Message, LlmTurn
 from src.models.events import EventPart
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
@@ -165,8 +167,12 @@ def _apply_custom_toolcall_guide(router_obj: ChatRouter, agent: Agent) -> None:
     """
     try:
         cfg = agent.model_config or {}
-        if isinstance(cfg, dict) and isinstance(cfg.get('toolcall_guide'), str) and cfg.get('toolcall_guide').strip():
-            router_obj.set_toolcall_guide(cfg.get('toolcall_guide'))
+        if isinstance(cfg, dict):
+            guide = cfg.get('functions_definition_template')
+            if not (isinstance(guide, str) and guide.strip()):
+                guide = cfg.get('toolcall_guide')
+            if isinstance(guide, str) and guide.strip():
+                router_obj.set_toolcall_guide(guide)
     except Exception:
         pass
 
@@ -187,6 +193,225 @@ def _build_capability_prompt(*, router_obj: ChatRouter, agent_ctx: dict[str, Any
     return f"{prefix}{guide}\n{message}"
 
 
+def _resolve_agent_system_prompt_snapshot(agent: Agent) -> str:
+    """目的：取得本輪使用的 system prompt 快照。
+    為什麼：llm_turns 需要保留審計資料，供後續問題追溯。
+    """
+    if isinstance(getattr(agent, 'system_prompt', None), str) and agent.system_prompt.strip():
+        return agent.system_prompt.strip()
+    cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
+    cfg_prompt = cfg.get('system_prompt') if isinstance(cfg, dict) else None
+    if isinstance(cfg_prompt, str) and cfg_prompt.strip():
+        return cfg_prompt.strip()
+    if isinstance(getattr(agent, 'description', None), str) and agent.description.strip():
+        return agent.description.strip()
+    return ''
+
+
+def _safe_last_route_info(router_obj: ChatRouter) -> dict[str, Any]:
+    """目的：安全取得模型路由資訊。
+    為什麼：不同 LLM backend 不保證存在同名方法，需保留相容性。
+    """
+    try:
+        getter = getattr(router_obj._llm, 'last_route_info', None)
+        if callable(getter):
+            info = getter()
+            if isinstance(info, dict):
+                return info
+    except Exception:
+        pass
+    return {}
+
+
+def _estimate_token_count(text: str) -> int:
+    """目的：估算 token 數。
+    為什麼：部分供應商未回傳 usage，仍需提供 llm_turns 的基礎審計資訊。
+    """
+    if not isinstance(text, str) or not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _normalize_usage_payload(*, usage_raw: Any, user_text: str, assistant_text: str) -> dict[str, Any]:
+    """目的：統一 usage 結構。
+    為什麼：不同供應商欄位命名不同，需落地一致格式供查詢與報表使用。
+    """
+    usage = usage_raw if isinstance(usage_raw, dict) else {}
+    input_tokens = (
+        _to_int_or_none(usage.get('input'))
+        or _to_int_or_none(usage.get('prompt_tokens'))
+        or _to_int_or_none(usage.get('input_tokens'))
+        or _estimate_token_count(user_text)
+    )
+    output_tokens = (
+        _to_int_or_none(usage.get('output'))
+        or _to_int_or_none(usage.get('completion_tokens'))
+        or _to_int_or_none(usage.get('output_tokens'))
+        or _estimate_token_count(assistant_text)
+    )
+    total_tokens = (
+        _to_int_or_none(usage.get('total_tokens'))
+        or _to_int_or_none(usage.get('total'))
+        or int((input_tokens or 0) + (output_tokens or 0))
+    )
+    return {
+        'input_tokens': int(input_tokens or 0),
+        'output_tokens': int(output_tokens or 0),
+        'total_tokens': int(total_tokens or 0),
+        'raw': usage,
+    }
+
+
+def _estimate_cost_usd(*, provider: str, model: str, usage: dict[str, Any], route_info: dict[str, Any]) -> Decimal | None:
+    """目的：估算每輪成本（USD）。
+    為什麼：成本欄位是 llm_turns 核心審計資料，需在供應商未回傳時計算近似值。
+    """
+    for key in ('cost_usd', 'cost'):
+        direct = _to_float_or_none(route_info.get(key))
+        if direct is None and isinstance(usage.get('raw'), dict):
+            direct = _to_float_or_none((usage.get('raw') or {}).get(key))
+        if direct is not None and direct >= 0:
+            return Decimal(f"{direct:.6f}")
+
+    in_rate, out_rate = _resolve_price_rates(provider=provider, model=model)
+    if in_rate is None or out_rate is None:
+        return None
+
+    input_tokens = int(usage.get('input_tokens') or 0)
+    output_tokens = int(usage.get('output_tokens') or 0)
+    estimated = (input_tokens / 1000.0) * in_rate + (output_tokens / 1000.0) * out_rate
+    return Decimal(f"{estimated:.6f}")
+
+
+@lru_cache(maxsize=1)
+def _load_cost_table_from_settings() -> dict[tuple[str, str], tuple[float, float]]:
+    """目的：讀取環境中的成本估算表。
+    為什麼：將價格配置化，避免硬編碼散落在聊天流程，便於運維調整。
+    """
+    raw = str(getattr(settings, 'LLM_COST_TABLE_JSON', '') or '').strip()
+    if not raw:
+        return {}
+    try:
+        parsed = _json.loads(raw)
+    except Exception as e:
+        _log.warning('llm.cost_table.invalid_json', error=str(e))
+        return {}
+    if not isinstance(parsed, dict):
+        _log.warning('llm.cost_table.invalid_schema', reason='top_level_not_object')
+        return {}
+
+    output: dict[tuple[str, str], tuple[float, float]] = {}
+    invalid_items = 0
+    for key, value in parsed.items():
+        if not isinstance(key, str) or ':' not in key or not isinstance(value, dict):
+            invalid_items += 1
+            continue
+        provider, model = key.split(':', 1)
+        input_per_1k = _to_float_or_none(value.get('input_per_1k'))
+        output_per_1k = _to_float_or_none(value.get('output_per_1k'))
+        if input_per_1k is None or output_per_1k is None:
+            invalid_items += 1
+            continue
+        if input_per_1k < 0 or output_per_1k < 0:
+            invalid_items += 1
+            continue
+        output[(provider.strip().lower(), model.strip().lower())] = (input_per_1k, output_per_1k)
+
+    if invalid_items > 0:
+        _log.warning('llm.cost_table.invalid_items', invalid_items=invalid_items, valid_items=len(output))
+    if not output:
+        _log.warning('llm.cost_table.empty_after_parse')
+    return output
+
+
+def _default_cost_table() -> dict[tuple[str, str], tuple[float, float]]:
+    """目的：提供內建成本估算表。
+    為什麼：在未配置環境變數時，仍能提供可用的審計近似值。
+    """
+    return {
+        ('openai', 'gpt-4o'): (0.005, 0.015),
+        ('openai', 'gpt-4o-mini'): (0.00015, 0.0006),
+        ('anthropic', 'claude-3-5-sonnet'): (0.003, 0.015),
+        ('gemini', 'gemini-1.5-pro'): (0.0035, 0.0105),
+    }
+
+
+def _resolve_price_rates(*, provider: str, model: str) -> tuple[float | None, float | None]:
+    """目的：解析 provider/model 對應的 input/output 單價。
+    為什麼：支援設定覆寫與內建預設雙路徑，降低維護風險。
+    """
+    provider_key = str(provider or '').lower()
+    model_key = str(model or '').lower()
+    custom = _load_cost_table_from_settings()
+    table = custom if custom else _default_cost_table()
+    for (pv, mk), (in_price, out_price) in table.items():
+        if pv == provider_key and mk in model_key:
+            return in_price, out_price
+    return None, None
+
+
+def _create_llm_turn_record(
+    *,
+    db: Session,
+    conversation_id: str,
+    agent_id: str,
+    user_message_id: str | None,
+    assistant_message_id: str | None,
+    provider: str | None,
+    model: str | None,
+    tier: str | None,
+    system_prompt_snapshot: str,
+    context_snapshot: dict[str, Any],
+    usage: dict[str, Any],
+    cost_usd: Decimal | None,
+    latency_ms: int | None,
+    status: str,
+    error: str | None,
+) -> None:
+    """目的：寫入 llm_turns 審計資料。
+    為什麼：聊天流程不應因審計寫入失敗而中斷，需集中保護。
+    """
+    try:
+        row = LlmTurn(
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+            message_user_id=user_message_id,
+            message_assistant_id=assistant_message_id,
+            provider=provider,
+            model=model,
+            tier=tier,
+            system_prompt_snapshot=system_prompt_snapshot,
+            context_snapshot=context_snapshot,
+            usage=usage,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+            status=status,
+            error=error,
+        )
+        db.add(row)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def _get_by_path(obj: dict, path: str):
     """目的：讀取巢狀欄位（a.b.c）。
     為什麼：WS 與 stdio 兩條串流共用同一欄位解析邏輯。
@@ -203,6 +428,35 @@ def _get_by_path(obj: dict, path: str):
         return cur
     except Exception:
         return None
+
+
+def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> Agent | None:
+    """目的：以輕量規則選擇工作代理者。
+    為什麼：在不引入額外編排框架前，先提供可用的主從分派能力。
+    """
+    workers = db.query(Agent).filter(Agent.id != router_agent.id).all()
+    if not workers:
+        return None
+    lower_msg = str(message or '').lower()
+    # 優先依名稱/描述關鍵字匹配
+    for w in workers:
+        name = str(w.name or '').strip().lower()
+        desc = str(w.description or '').strip().lower()
+        if (name and name in lower_msg) or (desc and any(tok and tok in lower_msg for tok in desc.split()[:5])):
+            return w
+    return workers[0]
+
+
+def _write_event_part_safe(*, db: Session, conversation_id: str, type_: str, payload: dict[str, Any]) -> None:
+    """目的：將事件寫入 event_parts，失敗時不中斷聊天流程。
+    為什麼：路由事件屬於可觀測性資料，不應影響主要回覆可用性。
+    """
+    try:
+        event_row = EventPart(conversation_id=conversation_id, type=type_, payload=payload)
+        db.add(event_row)
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def _parse_tool_call_block(buffer: str) -> tuple[bool, str, dict[str, Any]]:
@@ -495,12 +749,44 @@ async def chat_stream(
 
     agent_ctx = router._prepare_integrations(db=db, agent_id=str(agent.id))
     composed_user_message = _build_capability_prompt(router_obj=router, agent_ctx=agent_ctx, message=message)
+    started_at = time.monotonic()
+    system_prompt_snapshot = _resolve_agent_system_prompt_snapshot(agent)
+    turn_status = 'success'
+    turn_error: str | None = None
 
     # 無可用模型路由時，依設定採硬失敗
     if getattr(settings, 'LLM_HARD_FAIL_ON_NO_ROUTE', False):
         hc = router._llm.health_check(mode='soft')
         if not bool((hc or {}).get('ok')):
             reason = (hc or {}).get('error') or '模型路由不可用'
+            route_info = _safe_last_route_info(router)
+            context_snapshot = {
+                'skills': list(agent_ctx.get('skills') or []),
+                'mcp_names': [str(c.get('name')) for c in (agent_ctx.get('mcp') or []) if isinstance(c, dict) and c.get('name')],
+                'rag': agent_ctx.get('rag') or {},
+                'route': route_info,
+                'entry': 'agents.chat.stream',
+            }
+            usage = _normalize_usage_payload(usage_raw=route_info.get('usage'), user_text=message, assistant_text='')
+            provider = str(route_info.get('provider') or overrides.get('provider') or '')
+            model = str(route_info.get('model') or overrides.get('model') or '')
+            _create_llm_turn_record(
+                db=db,
+                conversation_id=str(conversation.id),
+                agent_id=str(agent.id),
+                user_message_id=str(user_message.id),
+                assistant_message_id=None,
+                provider=provider,
+                model=model,
+                tier=str(route_info.get('tier') or overrides.get('tier') or ''),
+                system_prompt_snapshot=system_prompt_snapshot,
+                context_snapshot=context_snapshot,
+                usage=usage,
+                cost_usd=_estimate_cost_usd(provider=provider, model=model, usage=usage, route_info=route_info),
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                status='no_route',
+                error=str(reason),
+            )
 
             async def _gen_unavailable():
                 yield f"data: {_json.dumps({'type':'react','phase':'reroute','message':'策略改選：模型路由不可用，改為降級訊息','reason_code':'model.no_route','from':'llm','to':'unavailable_text','reason':reason}, ensure_ascii=False)}\n\n"
@@ -510,6 +796,7 @@ async def chat_stream(
             return StreamingResponse(_gen_unavailable(), media_type='text/event-stream')
 
     async def _gen():
+        nonlocal turn_status, turn_error
         buffer = ''
         detected_tool = False
         tool_name = ''
@@ -557,6 +844,8 @@ async def chat_stream(
                     detected_tool = True
                     react_step += 1
                     if react_step > max_steps:
+                        turn_status = 'error'
+                        turn_error = 'react_step_limit'
                         yield _react_event("finish", f"ReAct 步驟超過上限（{max_steps}）", {"steps": react_step, "error": "react_step_limit"})
                         yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps('工具呼叫步驟過多，已停止本輪執行。請精簡問題後重試。', ensure_ascii=False)} }}\n\n"
                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
@@ -610,6 +899,8 @@ async def chat_stream(
                                     if ok is True:
                                         yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                     elif ok is False:
+                                        turn_status = 'tool_error'
+                                        turn_error = str(frame.get('error') if isinstance(frame, dict) else 'tool_error')
                                         yield _react_event("act_result", f"工具 {tool_name} 執行失敗", {"step": react_step, "tool": tool_name, "ok": False, "error": frame.get('error') if isinstance(frame, dict) else None})
                                         yield _react_event("reroute", "策略改選：工具失敗，改為一般回覆模式", {"reason_code": "tool.error", "from": tool_name, "to": "llm_fallback", "error": frame.get('error') if isinstance(frame, dict) else None})
                                         fb = await _fallback_general_answer(str(frame.get('error') if isinstance(frame, dict) else 'tool_error'))
@@ -617,6 +908,8 @@ async def chat_stream(
                                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                         return
                         except TimeoutError:
+                            turn_status = 'timeout'
+                            turn_error = f'mcp_tool_timeout_{int(tool_timeout_s)}s'
                             timeout_frame = {'ok': False, 'error': f'mcp_tool_timeout_{int(tool_timeout_s)}s'}
                             yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(timeout_frame, ensure_ascii=False)} }}\n\n"
                             yield _react_event("act_result", f"工具 {tool_name} 執行逾時", {"step": react_step, "tool": tool_name, "ok": False, "error": timeout_frame['error']})
@@ -658,6 +951,8 @@ async def chat_stream(
                                     if ok is True:
                                         yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                     elif ok is False:
+                                        turn_status = 'tool_error'
+                                        turn_error = str(frame.get('error') if isinstance(frame, dict) else 'tool_error')
                                         yield _react_event("act_result", f"工具 {tool_name} 執行失敗", {"step": react_step, "tool": tool_name, "ok": False, "error": frame.get('error') if isinstance(frame, dict) else None})
                                         yield _react_event("reroute", "策略改選：工具失敗，改為一般回覆模式", {"reason_code": "tool.error", "from": tool_name, "to": "llm_fallback", "error": frame.get('error') if isinstance(frame, dict) else None})
                                         fb = await _fallback_general_answer(str(frame.get('error') if isinstance(frame, dict) else 'tool_error'))
@@ -665,6 +960,8 @@ async def chat_stream(
                                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                         return
                         except TimeoutError:
+                            turn_status = 'timeout'
+                            turn_error = f'mcp_tool_timeout_{int(tool_timeout_s)}s'
                             timeout_frame = {'ok': False, 'error': f'mcp_tool_timeout_{int(tool_timeout_s)}s'}
                             yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(timeout_frame, ensure_ascii=False)} }}\n\n"
                             yield _react_event("act_result", f"工具 {tool_name} 執行逾時", {"step": react_step, "tool": tool_name, "ok": False, "error": timeout_frame['error']})
@@ -681,6 +978,9 @@ async def chat_stream(
                     res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                     yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
                     yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": bool((res or {}).get('ok', True))})
+                    if not bool((res or {}).get('ok', True)):
+                        turn_status = 'tool_error'
+                        turn_error = str((res or {}).get('error') or 'tool_error')
 
         yield _react_event("finish", "本輪 ReAct 執行完成", {"steps": react_step})
         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
@@ -716,7 +1016,7 @@ async def chat_stream(
         hb_task = asyncio.create_task(_hb_loop())
 
         async def _push_chunks():
-            nonlocal last_emit
+            nonlocal last_emit, turn_status, turn_error
             try:
                 async for chunk in _gen():
                     last_emit = time.monotonic()
@@ -731,6 +1031,8 @@ async def chat_stream(
                         pass
                     await queue.put(chunk)
             except Exception as e:
+                turn_status = 'error'
+                turn_error = str(e)
                 err_payload = {"type": "error", "message": str(e)}
                 await queue.put(f"data: {_json.dumps(err_payload, ensure_ascii=False)}\n\n")
             finally:
@@ -741,6 +1043,9 @@ async def chat_stream(
         try:
             while True:
                 if (time.monotonic() - started_at) > STREAM_TIMEOUT_SEC:
+                    if turn_status == 'success':
+                        turn_status = 'timeout'
+                        turn_error = 'chat_stream_timeout'
                     busy = '系統忙碌中，請稍後再試。'
                     yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(busy, ensure_ascii=False)} }}\n\n"
                     yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
@@ -764,14 +1069,125 @@ async def chat_stream(
                 pass
             try:
                 merged = _sanitize_text(''.join(assistant_chunks))
+                assistant_message_id: str | None = None
                 if merged:
-                    db.add(Message(conversation_id=conversation.id, role='assistant', content=merged, timestamp=datetime.utcnow()))
+                    assistant_message = Message(conversation_id=conversation.id, role='assistant', content=merged, timestamp=datetime.utcnow())
+                    db.add(assistant_message)
                     conversation.last_interacted_at = datetime.utcnow()
                     db.commit()
+                    db.refresh(assistant_message)
+                    assistant_message_id = str(assistant_message.id)
             except Exception:
                 db.rollback()
+                assistant_message_id = None
+            try:
+                route_info = _safe_last_route_info(router)
+                provider = str(route_info.get('provider') or overrides.get('provider') or '')
+                model = str(route_info.get('model') or overrides.get('model') or '')
+                tier_value = str(route_info.get('tier') or overrides.get('tier') or '')
+                usage = _normalize_usage_payload(usage_raw=route_info.get('usage'), user_text=message, assistant_text=merged)
+                context_snapshot = {
+                    'skills': list(agent_ctx.get('skills') or []),
+                    'mcp_names': [str(c.get('name')) for c in (agent_ctx.get('mcp') or []) if isinstance(c, dict) and c.get('name')],
+                    'rag': agent_ctx.get('rag') or {},
+                    'route': route_info,
+                    'entry': 'agents.chat.stream',
+                }
+                _create_llm_turn_record(
+                    db=db,
+                    conversation_id=str(conversation.id),
+                    agent_id=str(agent.id),
+                    user_message_id=str(user_message.id),
+                    assistant_message_id=assistant_message_id,
+                    provider=provider,
+                    model=model,
+                    tier=tier_value,
+                    system_prompt_snapshot=system_prompt_snapshot,
+                    context_snapshot=context_snapshot,
+                    usage=usage,
+                    cost_usd=_estimate_cost_usd(provider=provider, model=model, usage=usage, route_info=route_info),
+                    latency_ms=int((time.monotonic() - started_at) * 1000),
+                    status=(turn_status if (turn_status != 'success' or assistant_message_id) else 'error'),
+                    error=(turn_error if turn_error else (None if assistant_message_id else 'assistant_message_not_persisted')),
+                )
+            except Exception:
+                pass
 
     return StreamingResponse(_gen_hb(), media_type='text/event-stream')
+
+
+@router.post('/chat')
+async def chat_entry_router(
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """統一聊天入口：先經主代理分派，再轉發到目標代理者串流回覆。"""
+    _require_chat_permission(current_user)
+    message = str((payload or {}).get('message') or '').strip()
+    if not message:
+        raise validation_error('Message cannot be empty')
+
+    router_agent = db.query(Agent).filter(Agent.is_router == True).first()  # noqa: E712
+    if router_agent is None:
+        router_agent = db.query(Agent).first()
+    if router_agent is None:
+        raise validation_error('尚未建立可用代理者')
+
+    worker = _pick_worker_agent(db=db, router_agent=router_agent, message=message)
+    is_fallback = False
+    if worker is None:
+        worker = router_agent
+        is_fallback = True
+
+    conversation = _query_latest_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
+    if conversation is None:
+        conversation = _create_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
+
+    route_decision_payload = {
+        'router_agent_id': str(router_agent.id),
+        'target_agent_id': str(worker.id),
+        'target_agent_name': worker.name,
+        'reason': 'worker_not_found_fallback' if is_fallback else 'keyword_or_default',
+    }
+    _write_event_part_safe(
+        db=db,
+        conversation_id=str(conversation.id),
+        type_='route.decision',
+        payload=route_decision_payload,
+    )
+    _write_event_part_safe(
+        db=db,
+        conversation_id=str(conversation.id),
+        type_='route.forward',
+        payload={'from_agent_id': str(router_agent.id), 'to_agent_id': str(worker.id)},
+    )
+    if is_fallback:
+        _write_event_part_safe(
+            db=db,
+            conversation_id=str(conversation.id),
+            type_='route.fallback',
+            payload={'reason': 'worker_not_found', 'target_agent_id': str(worker.id)},
+        )
+
+    routed_response = await chat_stream(
+        agent_id=str(worker.id),
+        message=message,
+        db=db,
+        current_user=current_user,
+    )
+
+    async def _with_route_event():
+        event = {
+            'type': 'route.decision',
+            **route_decision_payload,
+            'conversation_id': str(conversation.id),
+        }
+        yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+        async for chunk in routed_response.body_iterator:
+            yield chunk
+
+    return StreamingResponse(_with_route_event(), media_type='text/event-stream')
 
 
 @router.get('/conversations/{conversation_id}/events')
@@ -802,6 +1218,33 @@ async def list_conversation_events(
         except Exception:
             return {'id': None, 'type': None, 'payload': None, 'created_at': None}
     return {'events': [_to_dict(r) for r in rows]}
+
+
+@router.get('/conversations/{conversation_id}/routing-events')
+async def list_conversation_routing_events(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_chat_permission(current_user)
+    _validate_uuid_or_not_found('Conversation', conversation_id)
+
+    rows = db.query(EventPart).filter(
+        EventPart.conversation_id == conversation_id,
+        EventPart.type.in_(['route.decision', 'route.forward', 'route.fallback']),
+    ).order_by(EventPart.created_at.asc()).all()
+
+    return {
+        'events': [
+            {
+                'id': str(row.id),
+                'type': row.type,
+                'payload': row.payload,
+                'created_at': row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.get('/agents/{agent_id}/conversations')

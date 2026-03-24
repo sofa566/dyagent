@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     # ReAct 合成層設定
     REACT_MAX_STEPS: int = 3
     REACT_MAX_OBSERVATION_CHARS: int = 4000
+    # LLM 成本估算表（JSON）
+    # 格式：{"provider:model": {"input_per_1k": 0.005, "output_per_1k": 0.015}}
+    LLM_COST_TABLE_JSON: str = ''
+
+    # Embedding 設定
+    # provider: deterministic | sentence_transformers | ollama | vllm
+    EMBEDDING_PROVIDER: str = 'deterministic'
+    EMBEDDING_MODEL_NAME: str = 'BAAI/bge-m3'
+    EMBEDDING_OLLAMA_BASE_URL: str = 'http://localhost:11434'
+    EMBEDDING_VLLM_BASE_URL: str = 'http://localhost:8000/v1'
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'

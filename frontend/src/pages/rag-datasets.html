@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG 資料集管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h2>RAG 公有資料集管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+      <button id="btn-new" class="btn btn-primary" type="button">新建資料集</button>
+      <button id="btn-refresh" class="btn" type="button">重新整理</button>
+      <span class="muted">此頁僅管理 scope=global 的 RAG 資料集。</span>
+    </div>
+
+    <section id="form-card" class="card" style="display:none;margin-bottom:1rem;">
+      <h3 id="form-title">新建公有資料集</h3>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+        <div>
+          <label for="name">資料集名稱</label>
+          <input id="name" type="text" placeholder="例如：company-kb" style="min-width:220px;">
+        </div>
+        <div>
+          <label for="sensitivity">敏感等級</label>
+          <select id="sensitivity">
+            <option value="normal">normal</option>
+            <option value="confidential">confidential</option>
+            <option value="restricted">restricted</option>
+          </select>
+        </div>
+        <div>
+          <label for="enabled">狀態</label>
+          <label><input id="enabled" type="checkbox" checked> 啟用</label>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
+        <div>
+          <label for="vector-backend">vector_backend（可選）</label>
+          <input id="vector-backend" type="text" placeholder="例如：qdrant" style="min-width:220px;">
+        </div>
+        <div>
+          <label for="index-name">index_name（可選）</label>
+          <input id="index-name" type="text" placeholder="例如：global_knowledge" style="min-width:220px;">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button id="btn-save" class="btn btn-primary" type="button">建立</button>
+        <button id="btn-cancel" class="btn" type="button">取消</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>資料集清單</h3>
+      <div style="margin-bottom:8px;color:var(--text-secondary);">
+        每筆資料集可直接上傳文件，文件會被切塊與向量化寫入該資料集索引。
+      </div>
+      <table class="table">
+        <thead>
+          <tr><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <input id="dataset-upload-file" type="file" style="display:none;" />
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      showError('僅限管理者存取');
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+
+    const rows = document.getElementById('rows');
+    const formCard = document.getElementById('form-card');
+    const formTitle = document.getElementById('form-title');
+    const newBtn = document.getElementById('btn-new');
+    const refreshBtn = document.getElementById('btn-refresh');
+    const saveBtn = document.getElementById('btn-save');
+    const cancelBtn = document.getElementById('btn-cancel');
+
+    const nameInput = document.getElementById('name');
+    const sensitivityInput = document.getElementById('sensitivity');
+    const enabledInput = document.getElementById('enabled');
+    const vectorBackendInput = document.getElementById('vector-backend');
+    const indexNameInput = document.getElementById('index-name');
+    const datasetUploadFileInput = document.getElementById('dataset-upload-file');
+
+    let editingId = '';
+
+    function showForm() { formCard.style.display = 'block'; }
+    function hideForm() { formCard.style.display = 'none'; }
+
+    function resetForm() {
+      editingId = '';
+      formTitle.textContent = '新建公有資料集';
+      saveBtn.textContent = '建立';
+      nameInput.value = '';
+      sensitivityInput.value = 'normal';
+      enabledInput.checked = true;
+      vectorBackendInput.value = '';
+      indexNameInput.value = '';
+    }
+
+    async function load() {
+      try {
+        const res = await api.get('/rag/datasets?scope=global');
+        const list = Array.isArray(res.datasets) ? res.datasets : [];
+        window.__globalDatasets = list;
+        rows.innerHTML = list.map((item) => `
+          <tr>
+            <td>${item.name || ''}</td>
+            <td>${item.sensitivity || 'normal'}</td>
+            <td>${item.enabled ? '啟用' : '停用'}</td>
+            <td>${item.vector_backend || ''}</td>
+            <td>${item.index_name || ''}</td>
+            <td>
+              <button class="btn" data-upload="${item.id}">上傳文件</button>
+              <button class="btn" data-edit="${item.id}">編輯</button>
+              <button class="btn" data-del="${item.id}">刪除</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        showError(e.message || '載入失敗');
+      }
+    }
+
+    function fillFormById(id) {
+      const list = Array.isArray(window.__globalDatasets) ? window.__globalDatasets : [];
+      const found = list.find((item) => String(item.id) === String(id));
+      if (!found) {
+        showError('找不到資料集');
+        return;
+      }
+      editingId = String(found.id || '');
+      formTitle.textContent = '編輯公有資料集';
+      saveBtn.textContent = '儲存';
+      nameInput.value = found.name || '';
+      sensitivityInput.value = found.sensitivity || 'normal';
+      enabledInput.checked = !!found.enabled;
+      vectorBackendInput.value = found.vector_backend || '';
+      indexNameInput.value = found.index_name || '';
+      showForm();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    async function saveForm() {
+      const payload = {
+        name: String(nameInput.value || '').trim(),
+        sensitivity: String(sensitivityInput.value || 'normal'),
+        enabled: !!enabledInput.checked,
+        vector_backend: String(vectorBackendInput.value || '').trim(),
+        index_name: String(indexNameInput.value || '').trim(),
+      };
+      if (!payload.name) {
+        showError('資料集名稱為必填');
+        return;
+      }
+
+      try {
+        if (editingId) {
+          await api.put(`/rag/datasets/${editingId}`, payload);
+          showSuccess('已更新資料集');
+        } else {
+          await api.post('/rag/datasets', payload);
+          showSuccess('已建立資料集');
+        }
+        resetForm();
+        hideForm();
+        await load();
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
+    }
+
+    rows.addEventListener('click', async (e) => {
+      const editId = e.target.getAttribute('data-edit');
+      const delId = e.target.getAttribute('data-del');
+      const uploadId = e.target.getAttribute('data-upload');
+      if (uploadId) {
+        datasetUploadFileInput.value = '';
+        datasetUploadFileInput.click();
+        datasetUploadFileInput.onchange = async () => {
+          try {
+            const file = datasetUploadFileInput.files && datasetUploadFileInput.files[0];
+            if (!file) return;
+            const token = localStorage.getItem('auth_token') || '';
+            const formData = new FormData();
+            formData.append('file', file);
+            const response = await fetch(`/api/rag/datasets/${encodeURIComponent(uploadId)}/upload`, {
+              method: 'POST',
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+              body: formData,
+            });
+            if (!response.ok) {
+              let message = `HTTP ${response.status}`;
+              try {
+                const err = await response.json();
+                if (err && err.error) message = err.error;
+              } catch {}
+              throw new Error(message);
+            }
+            const data = await response.json();
+            const status = data && data.status ? String(data.status) : 'uploaded';
+            showSuccess(`文件已上傳，狀態：${status}`);
+          } catch (err) {
+            showError(err.message || '上傳失敗');
+          }
+        };
+        return;
+      }
+      if (editId) {
+        fillFormById(editId);
+        return;
+      }
+      if (delId) {
+        const ok = window.confirm('確定刪除此公有資料集？');
+        if (!ok) return;
+        try {
+          await api.delete(`/rag/datasets/${delId}`);
+          showSuccess('已刪除資料集');
+          if (editingId && editingId === String(delId)) {
+            resetForm();
+            hideForm();
+          }
+          await load();
+        } catch (e) {
+          showError(e.message || '刪除失敗');
+        }
+      }
+    });
+
+    newBtn.addEventListener('click', () => {
+      resetForm();
+      showForm();
+    });
+    refreshBtn.addEventListener('click', load);
+    saveBtn.addEventListener('click', saveForm);
+    cancelBtn.addEventListener('click', () => {
+      resetForm();
+      hideForm();
+    });
+
+    resetForm();
+    hideForm();
+    load();
+  </script>
+</body>
+</html>

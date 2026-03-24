@@ -4,13 +4,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.database import get_db
-from src.models import User, Agent, Workspace, SkillEntry
+from src.models import User, Agent, Workspace, SkillEntry, FunctionProfile, RagDataset
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.chat_router import ChatRouter
 from src.services.llm_client import LLMClient
 from src.services.mcp_client import MCPClient
+from src.services.qdrant_service import qdrant_service
+from src.services.embedding_service import embedding_service
 
 router = APIRouter()
 
@@ -67,14 +69,17 @@ async def get_agent_integrations(
             return list(value.values())
         return []
 
-    # 讀取 toolcall_guide（存於 model_config.toolcall_guide）
+    # 讀取 functions_definition_template（回退相容 toolcall_guide）
     tc_guide = ''
     provider = ''
     skill_examples: dict = {}
     try:
         cfg = agent.model_config or {}
-        if isinstance(cfg, dict) and isinstance(cfg.get('toolcall_guide'), str):
-            tc_guide = cfg.get('toolcall_guide') or ''
+        if isinstance(cfg, dict):
+            if isinstance(cfg.get('functions_definition_template'), str):
+                tc_guide = cfg.get('functions_definition_template') or ''
+            elif isinstance(cfg.get('toolcall_guide'), str):
+                tc_guide = cfg.get('toolcall_guide') or ''
         if isinstance(cfg, dict):
             # 優先直接 provider，其次 cloud.provider
             pv = cfg.get('provider')
@@ -154,10 +159,30 @@ async def get_agent_integrations(
     except Exception:
         mcp_schemas = {}
 
+    function_profile_id = None
+    try:
+        if isinstance(agent.model_config, dict):
+            fpid = (agent.model_config or {}).get('function_profile_id')
+            if isinstance(fpid, str) and fpid:
+                function_profile_id = fpid
+    except Exception:
+        function_profile_id = None
+    if function_profile_id is None and getattr(agent, 'function_profile_id', None) is not None:
+        function_profile_id = str(agent.function_profile_id)
+
+    rag_dataset_ids = {'global_dataset_ids': [], 'private_dataset_ids': []}
+    try:
+        cfg3 = agent.rag_config if isinstance(agent.rag_config, dict) else {}
+        rag_dataset_ids['global_dataset_ids'] = list(cfg3.get('global_dataset_ids') or [])
+        rag_dataset_ids['private_dataset_ids'] = list(cfg3.get('private_dataset_ids') or [])
+    except Exception:
+        pass
+
     return {
         'mcp_config': _default_mcp(agent.mcp_config or {}),
         'skills': skills_out,
         'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
+        'functions_definition_template': tc_guide,
         'toolcall_guide': tc_guide,
         'model_provider': provider or '',
         'skill_examples': skill_examples,
@@ -166,6 +191,8 @@ async def get_agent_integrations(
         # 參照式設定（來自全域管理清單）
         'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
         'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
+        'function_profile_id': function_profile_id,
+        'rag_dataset_ids': rag_dataset_ids,
     }
 
 
@@ -193,6 +220,7 @@ async def update_agent_integrations(
     mcp_cfg = payload.get('mcp_config', []) if isinstance(payload, dict) else []
     skills = payload.get('skills', []) if isinstance(payload, dict) else []
     rag_cfg = payload.get('rag_config', {}) if isinstance(payload, dict) else {}
+    function_profile_id = payload.get('function_profile_id') if isinstance(payload, dict) else None
     mcp_ids = payload.get('mcp_ids', []) if isinstance(payload, dict) else []
     skill_ids = payload.get('skill_ids', []) if isinstance(payload, dict) else []
 
@@ -202,6 +230,8 @@ async def update_agent_integrations(
         raise validation_error('skills 必須為陣列')
     if rag_cfg is not None and not isinstance(rag_cfg, dict):
         raise validation_error('rag_config 必須為物件')
+    if function_profile_id is not None and not isinstance(function_profile_id, str):
+        raise validation_error('function_profile_id 必須為字串')
     if mcp_ids is not None and not isinstance(mcp_ids, list):
         raise validation_error('mcp_ids 必須為陣列')
     if skill_ids is not None and not isinstance(skill_ids, list):
@@ -226,21 +256,35 @@ async def update_agent_integrations(
         'enabled': bool((rag_cfg or {}).get('enabled', False)),
         'sources': list((rag_cfg or {}).get('sources', []) or []),
         'topK': int((rag_cfg or {}).get('topK', 5) or 5),
+        'global_dataset_ids': list((rag_cfg or {}).get('global_dataset_ids', []) or []),
+        'private_dataset_ids': list((rag_cfg or {}).get('private_dataset_ids', []) or []),
     }
     if rag_out['topK'] < 1 or rag_out['topK'] > 50:
         raise validation_error('rag_config.topK 必須介於 1..50')
 
+    if isinstance(function_profile_id, str) and function_profile_id.strip():
+        profile = db.query(FunctionProfile).filter(FunctionProfile.id == function_profile_id.strip(), FunctionProfile.enabled == True).first()  # noqa: E712
+        if not profile:
+            raise validation_error('function_profile_id 無效或未啟用')
+
     agent.mcp_config = mcp_cfg or []
     agent.skills = skills_clean
     agent.rag_config = rag_out
-    # 寫入 toolcall_guide 至 model_config
+    # 寫入 functions_definition_template（回退相容 toolcall_guide）至 model_config
     try:
-        guide = (payload or {}).get('toolcall_guide') if isinstance(payload, dict) else None
+        guide = None
+        if isinstance(payload, dict):
+            guide = payload.get('functions_definition_template')
+            if guide is None:
+                guide = payload.get('toolcall_guide')
         # 注意：JSON 欄位需避免原地修改，否則 ORM 可能不觸發 UPDATE
         base_cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
         cfg = dict(base_cfg)
         if isinstance(guide, str):
+            cfg['functions_definition_template'] = guide
             cfg['toolcall_guide'] = guide
+        if isinstance(function_profile_id, str):
+            cfg['function_profile_id'] = function_profile_id.strip() or None
         # 儲存參照式清單（保持彈性：允許同時存在 mcp_config 與 mcp_ids；由準備階段合併）
         if isinstance(mcp_ids, list):
             cfg['mcp_ids'] = [str(x) for x in mcp_ids if isinstance(x, (str,)) and x]
@@ -257,6 +301,11 @@ async def update_agent_integrations(
             cfg['skill_examples'] = filtered
         agent.model_config = cfg
         flag_modified(agent, 'model_config')
+    except Exception:
+        pass
+    try:
+        if isinstance(function_profile_id, str):
+            agent.function_profile_id = function_profile_id.strip() or None
     except Exception:
         pass
     db.commit()
@@ -289,10 +338,204 @@ async def update_agent_integrations(
         'mcp_config': agent.mcp_config or [],
         'skills': agent.skills or [],
         'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
-        'toolcall_guide': (agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else '',
+        'functions_definition_template': ((agent.model_config or {}).get('functions_definition_template') if isinstance(agent.model_config, dict) else None) or ((agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else ''),
+        'toolcall_guide': ((agent.model_config or {}).get('functions_definition_template') if isinstance(agent.model_config, dict) else None) or ((agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else ''),
         'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
         'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
+        'function_profile_id': (agent.model_config or {}).get('function_profile_id') if isinstance(agent.model_config, dict) else None,
     }
+
+
+@router.get('/agents/{agent_id}/prompt')
+async def get_agent_prompt(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'read_agent'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    source = 'default'
+    value = ''
+    if isinstance(getattr(agent, 'system_prompt', None), str) and agent.system_prompt.strip():
+        source = 'agent'
+        value = agent.system_prompt.strip()
+    elif isinstance(agent.model_config, dict) and isinstance((agent.model_config or {}).get('system_prompt'), str) and (agent.model_config or {}).get('system_prompt').strip():
+        source = 'model_config'
+        value = (agent.model_config or {}).get('system_prompt').strip()
+    elif isinstance(agent.description, str) and agent.description.strip():
+        source = 'description'
+        value = agent.description.strip()
+    return {'agent_id': str(agent.id), 'system_prompt': value, 'source': source}
+
+
+@router.put('/agents/{agent_id}/prompt')
+async def update_agent_prompt(
+    agent_id: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'update_agent'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    system_prompt = str((payload or {}).get('system_prompt') or '').strip()
+    agent.system_prompt = system_prompt or None
+    db.commit()
+    db.refresh(agent)
+    return {'ok': True, 'agent_id': str(agent.id), 'system_prompt': agent.system_prompt or ''}
+
+
+@router.put('/agents/{agent_id}/function-profile')
+async def bind_agent_function_profile(
+    agent_id: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'update_agent'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    profile_id = str((payload or {}).get('function_profile_id') or '').strip()
+    custom = None
+    if isinstance(payload, dict):
+        custom = payload.get('custom_functions_definition_template')
+        if custom is None:
+            custom = payload.get('custom_function_guide')
+    if profile_id:
+        profile = db.query(FunctionProfile).filter(FunctionProfile.id == profile_id, FunctionProfile.enabled == True).first()  # noqa: E712
+        if not profile:
+            raise validation_error('function_profile_id 無效或未啟用')
+
+    cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
+    out = dict(cfg)
+    out['function_profile_id'] = profile_id or None
+    if isinstance(custom, str):
+        out['functions_definition_template'] = custom
+        out['toolcall_guide'] = custom
+    agent.model_config = out
+    agent.function_profile_id = profile_id or None
+    flag_modified(agent, 'model_config')
+    db.commit()
+    db.refresh(agent)
+    return {
+        'ok': True,
+        'agent_id': str(agent.id),
+        'function_profile_id': out.get('function_profile_id'),
+        'custom_functions_definition_template': out.get('functions_definition_template') if isinstance(out.get('functions_definition_template'), str) else (out.get('toolcall_guide') if isinstance(out.get('toolcall_guide'), str) else ''),
+        'custom_function_guide': out.get('toolcall_guide') if isinstance(out.get('toolcall_guide'), str) else '',
+    }
+
+
+@router.post('/agents/{agent_id}/rag/datasets')
+async def create_agent_private_dataset(
+    agent_id: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'update_agent'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    name = str((payload or {}).get('name') or '').strip()
+    if not name:
+        raise validation_error('name 為必填')
+    sensitivity = str((payload or {}).get('sensitivity') or 'normal').strip() or 'normal'
+    if sensitivity not in {'normal', 'confidential', 'restricted'}:
+        raise validation_error('sensitivity 僅允許 normal/confidential/restricted')
+    row = RagDataset(
+        name=name,
+        scope='agent_private',
+        agent_id=agent.id,
+        owner_user_id=current_user.id,
+        sensitivity=sensitivity,
+        vector_backend=str((payload or {}).get('vector_backend') or '') or None,
+        index_name=str((payload or {}).get('index_name') or '') or None,
+        enabled=bool((payload or {}).get('enabled', True)),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {'ok': True, 'dataset': {'id': str(row.id), 'name': row.name, 'scope': row.scope, 'agent_id': str(row.agent_id)}}
+
+
+@router.put('/agents/{agent_id}/rag/bindings')
+async def bind_agent_rag_datasets(
+    agent_id: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'update_agent'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    global_ids = [str(x) for x in list((payload or {}).get('global_dataset_ids') or []) if x]
+    private_ids = [str(x) for x in list((payload or {}).get('private_dataset_ids') or []) if x]
+
+    if global_ids:
+        rows = db.query(RagDataset).filter(RagDataset.id.in_(global_ids)).all()
+        if len(rows) != len(set(global_ids)):
+            raise validation_error('global_dataset_ids 含無效 id')
+        for r in rows:
+            if r.scope != 'global':
+                raise validation_error('global_dataset_ids 只能綁定 scope=global')
+    if private_ids:
+        rows = db.query(RagDataset).filter(RagDataset.id.in_(private_ids)).all()
+        if len(rows) != len(set(private_ids)):
+            raise validation_error('private_dataset_ids 含無效 id')
+        for r in rows:
+            if r.scope != 'agent_private' or str(r.agent_id) != str(agent.id):
+                raise validation_error('private_dataset_ids 僅能綁定本代理者私有資料集')
+
+    rag_cfg = agent.rag_config if isinstance(agent.rag_config, dict) else {}
+    out = dict(rag_cfg)
+    out['global_dataset_ids'] = global_ids
+    out['private_dataset_ids'] = private_ids
+    agent.rag_config = out
+    flag_modified(agent, 'rag_config')
+    db.commit()
+    db.refresh(agent)
+    return {'ok': True, 'agent_id': str(agent.id), 'global_dataset_ids': global_ids, 'private_dataset_ids': private_ids}
 
 
 @router.post('/agents/{agent_id}/mcp-test')
@@ -356,6 +599,10 @@ async def test_agent_rag(
     except ValueError:
         raise not_found_error('Agent', agent_id)
 
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
     query = (payload or {}).get('query') if isinstance(payload, dict) else ''
     sources = (payload or {}).get('sources') if isinstance(payload, dict) else []
     topk = (payload or {}).get('topK') if isinstance(payload, dict) else 5
@@ -366,15 +613,35 @@ async def test_agent_rag(
         k = 5 if k <= 0 or k > 50 else k
     except Exception:
         k = 5
-    # 最小化測試：不呼叫外部向量庫，僅回傳樣本結構
-    results = []
-    if sources and query:
-        results.append({
-            'docId': 'sample',
-            'score': 0.87,
-            'snippet': f'snippet for "{query}" from {sources[0]}'[:120],
-        })
-    return {'ok': True, 'results': results}
+    rag_cfg = agent.rag_config if isinstance(agent.rag_config, dict) else {}
+    cfg_sources = list((rag_cfg or {}).get('sources', []) or [])
+    collection_sources = [str(s).strip() for s in (sources or []) if isinstance(s, str) and str(s).strip()]
+    if not collection_sources:
+        collection_sources = [str(s).strip() for s in cfg_sources if isinstance(s, str) and str(s).strip()]
+
+    default_collection = f"agent_{str(agent_id).replace('-', '')}_docs"
+    if default_collection not in collection_sources:
+        collection_sources.append(default_collection)
+
+    if not query:
+        return {'ok': True, 'results': [], 'collections': collection_sources}
+
+    query_vector = embedding_service.embed_one(str(query))
+    merged_results: list[dict] = []
+    for collection in collection_sources:
+        rows = qdrant_service.search(collection_name=collection, query_vector=query_vector, limit=k)
+        for row in rows:
+            payload_obj = row.get('payload') if isinstance(row, dict) and isinstance(row.get('payload'), dict) else {}
+            merged_results.append({
+                'docId': str(payload_obj.get('document_id') or row.get('id') or ''),
+                'score': float(row.get('score') or 0.0),
+                'snippet': str(payload_obj.get('snippet') or ''),
+                'source': collection,
+                'filename': str(payload_obj.get('filename') or ''),
+            })
+
+    merged_results.sort(key=lambda x: x.get('score', 0.0), reverse=True)
+    return {'ok': True, 'results': merged_results[:k], 'collections': collection_sources}
 
 
 @router.get('/agents')

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Functions 管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>Functions 管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+      <button id="btn-new" class="btn btn-primary" type="button">新建 Function Profile</button>
+      <button id="btn-refresh" class="btn" type="button">重新整理</button>
+      <span class="muted">Functions 只可由 admin 建立，agent_admin 僅可在代理設定頁綁定。</span>
+    </div>
+
+    <section id="form-card" class="card" style="margin-bottom: 1rem; display:none;">
+      <h3 id="form-title">新增 Function Profile</h3>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+        <div>
+          <label for="name">名稱</label>
+          <input id="name" type="text" placeholder="例如：generic-strict" style="min-width:240px;">
+        </div>
+        <div>
+          <label for="provider">供應商（可選）</label>
+          <input id="provider" type="text" placeholder="例如：openai" style="min-width:240px;">
+        </div>
+        <div>
+          <label for="version">版本</label>
+          <input id="version" type="number" min="1" step="1" value="1" style="width:100px;">
+        </div>
+      </div>
+      <div style="margin-top:8px;">
+        <label for="description">說明（可選）</label>
+        <textarea id="description" rows="2" placeholder="描述此 Function Profile 的用途與適用情境"></textarea>
+      </div>
+      <div style="margin-top:8px;">
+        <label><input id="enabled" type="checkbox" checked> 啟用</label>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label for="template-preset">模板範本：</label>
+        <select id="template-preset">
+          <option value="">— 請選擇 —</option>
+          <option value="generic-strict">通用嚴謹版（推薦）</option>
+          <option value="generic-compact">通用精簡版</option>
+          <option value="tool-first">工具優先版</option>
+        </select>
+        <button id="btn-apply-preset" class="btn" type="button">套用範本</button>
+      </div>
+      <div style="margin-top:8px;">
+        <label for="template">Functions 定義模板（必填）</label>
+        <textarea id="template" rows="8" placeholder="貼上工具呼叫協定模板。建議先套用範本再調整。"></textarea>
+      </div>
+      <div style="margin-top:6px; color: var(--text-secondary); line-height:1.5;">
+        Functions 定義模板（工具呼叫協定）是「給模型看的規格」，用來規範它何時呼叫工具、輸出格式要長怎樣。<br>
+        若你不確定，先用「通用嚴謹版」，它會要求模型只在需要時輸出：<code>[[CALL tool=工具名稱]]</code> 下一行接 JSON 參數。
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button id="btn-save" class="btn btn-primary" type="button">建立</button>
+        <button id="btn-cancel" class="btn" type="button">取消</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Function Profiles 清單</h3>
+      <table class="table">
+        <thead>
+          <tr><th>名稱</th><th>供應商</th><th>版本</th><th>狀態</th><th>說明</th><th>操作</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      showError('僅限管理者存取');
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+
+    const rows = document.getElementById('rows');
+    const formCard = document.getElementById('form-card');
+    const formTitle = document.getElementById('form-title');
+    const newBtn = document.getElementById('btn-new');
+    const refreshBtn = document.getElementById('btn-refresh');
+    const nameInput = document.getElementById('name');
+    const providerInput = document.getElementById('provider');
+    const versionInput = document.getElementById('version');
+    const descriptionInput = document.getElementById('description');
+    const enabledInput = document.getElementById('enabled');
+    const templateInput = document.getElementById('template');
+    const templatePresetSelect = document.getElementById('template-preset');
+    const applyPresetBtn = document.getElementById('btn-apply-preset');
+    const saveBtn = document.getElementById('btn-save');
+    const cancelBtn = document.getElementById('btn-cancel');
+
+    let editingId = '';
+
+    const TEMPLATE_PRESETS = {
+      'generic-strict': `你是具備工具能力的助理。\n\n規則：\n1) 只有在真的需要外部資料、計算或系統動作時才呼叫工具。\n2) 呼叫工具時，輸出必須「且只能」是兩行：\n   第 1 行：[[CALL tool=<tool_name>]]\n   第 2 行：合法 JSON 物件（工具參數）\n3) 不可在工具呼叫前後加任何解釋文字。\n4) 若不需工具，直接回覆最終答案。\n\n示例：\n[[CALL tool=weather_query]]\n{"city":"Taipei","unit":"celsius"}`,
+      'generic-compact': `需要工具時僅輸出：\n[[CALL tool=<tool_name>]]\n{...json payload...}\n\n不需要工具時直接回答。`,
+      'tool-first': `你優先使用可用工具取得事實。\n若需要工具，必須輸出：\n[[CALL tool=<tool_name>]]\n<JSON參數>\n不允許其他文字。\n若不需要工具，直接輸出最終答案。`,
+    };
+
+    function showForm() {
+      formCard.style.display = 'block';
+    }
+
+    function hideForm() {
+      formCard.style.display = 'none';
+    }
+
+    function resetForm() {
+      editingId = '';
+      formTitle.textContent = '新增 Function Profile';
+      saveBtn.textContent = '建立';
+      nameInput.value = '';
+      providerInput.value = '';
+      versionInput.value = '1';
+      descriptionInput.value = '';
+      enabledInput.checked = true;
+      templateInput.value = '';
+      templatePresetSelect.value = '';
+    }
+
+    async function load() {
+      try {
+        const res = await api.get('/functions');
+        const list = Array.isArray(res.functions) ? res.functions : [];
+        rows.innerHTML = list.map((item) => `
+          <tr>
+            <td>${item.name || ''}</td>
+            <td>${item.provider || ''}</td>
+            <td>${Number.isFinite(item.version) ? item.version : ''}</td>
+            <td>${item.enabled ? '啟用' : '停用'}</td>
+            <td>${item.description || ''}</td>
+            <td>
+              <button class="btn" data-edit="${item.id}">編輯</button>
+              <button class="btn" data-del="${item.id}">刪除</button>
+            </td>
+          </tr>
+        `).join('');
+        window.__functionProfiles = list;
+      } catch (e) {
+        showError(e.message || '載入失敗');
+      }
+    }
+
+    function fillFormById(id) {
+      const list = Array.isArray(window.__functionProfiles) ? window.__functionProfiles : [];
+      const found = list.find((item) => String(item.id) === String(id));
+      if (!found) {
+        showError('找不到指定的 Function Profile');
+        return;
+      }
+      editingId = String(found.id || '');
+      formTitle.textContent = '編輯 Function Profile';
+      saveBtn.textContent = '儲存';
+      nameInput.value = found.name || '';
+      providerInput.value = found.provider || '';
+      versionInput.value = String(found.version || 1);
+      descriptionInput.value = found.description || '';
+      enabledInput.checked = !!found.enabled;
+      templateInput.value = found.template || '';
+      if (!templateInput.value && found.function_definition_template) {
+        templateInput.value = found.function_definition_template;
+      }
+      templatePresetSelect.value = '';
+      showForm();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function applyTemplatePreset() {
+      const key = String(templatePresetSelect.value || '');
+      if (!key || !TEMPLATE_PRESETS[key]) {
+        showError('請先選擇模板範本');
+        return;
+      }
+      templateInput.value = TEMPLATE_PRESETS[key];
+    }
+
+    async function saveForm() {
+      const payload = {
+        name: String(nameInput.value || '').trim(),
+        provider: String(providerInput.value || '').trim(),
+        version: parseInt(versionInput.value, 10) || 1,
+        description: String(descriptionInput.value || ''),
+        enabled: !!enabledInput.checked,
+        function_definition_template: String(templateInput.value || '').trim(),
+        template: String(templateInput.value || '').trim(),
+      };
+      if (!payload.name) {
+        showError('名稱為必填');
+        return;
+      }
+      if (!payload.function_definition_template) {
+        showError('模板為必填');
+        return;
+      }
+      try {
+        if (editingId) {
+          await api.put(`/functions/${editingId}`, payload);
+          showSuccess('已更新 Function Profile');
+        } else {
+          await api.post('/functions', payload);
+          showSuccess('已建立 Function Profile');
+        }
+        resetForm();
+        hideForm();
+        await load();
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
+    }
+
+    rows.addEventListener('click', async (e) => {
+      const editId = e.target.getAttribute('data-edit');
+      const delId = e.target.getAttribute('data-del');
+      if (editId) {
+        fillFormById(editId);
+        return;
+      }
+      if (delId) {
+        const ok = window.confirm('確定刪除此 Function Profile？');
+        if (!ok) return;
+        try {
+          await api.delete(`/functions/${delId}`);
+          showSuccess('已刪除 Function Profile');
+          if (editingId && String(editingId) === String(delId)) {
+            resetForm();
+          }
+          await load();
+        } catch (e) {
+          showError(e.message || '刪除失敗');
+        }
+      }
+    });
+
+    newBtn.addEventListener('click', () => {
+      resetForm();
+      showForm();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    refreshBtn.addEventListener('click', load);
+    applyPresetBtn.addEventListener('click', applyTemplatePreset);
+    saveBtn.addEventListener('click', saveForm);
+    cancelBtn.addEventListener('click', () => {
+      resetForm();
+      hideForm();
+    });
+
+    resetForm();
+    hideForm();
+    load();
+  </script>
+</body>
+</html>

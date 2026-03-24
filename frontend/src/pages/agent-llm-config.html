@@ -69,6 +69,19 @@
     </section>
 
     <section class="card" style="margin-bottom:1rem;">
+      <h3>Functions 綁定</h3>
+      <p class="muted">Functions 由管理者在 Functions 管理頁建立；此處僅綁定到目前代理者。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label for="function-profile-select">Function Profile：</label>
+        <select id="function-profile-select"><option value="">— 不使用（沿用預設）—</option></select>
+        <button id="btn-refresh-functions" class="btn" type="button">重新載入</button>
+      </div>
+      <div style="margin-top:6px;color:var(--text-secondary);">
+        目前綁定：<strong id="function-profile-name">未綁定</strong>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
       <h3>RAG</h3>
       <label><input type="checkbox" id="rag-enabled" /> 啟用 RAG</label>
       <div style="margin-top:0.5rem;">
@@ -82,12 +95,57 @@
         <input id="rag-query" type="text" placeholder="測試查詢關鍵字" />
         <button id="test-rag" class="btn" type="button">測試檢索</button>
       </div>
+
+      <hr style="margin:12px 0; border:none; border-top:1px solid #e5e7eb;">
+      <h4 style="margin:0 0 8px 0;">資料集綁定</h4>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <label>公有資料集：</label>
+        <select id="global-dataset-select"><option value="">— 請選擇 —</option></select>
+        <button id="btn-add-global-dataset" class="btn" type="button">加入</button>
+        <a class="btn" href="/pages/rag-datasets.html">管理公有資料集</a>
+      </div>
+      <table class="table">
+        <thead>
+          <tr><th>名稱</th><th>類型</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
+        </thead>
+        <tbody id="rag-bound-datasets-list"></tbody>
+      </table>
+
+      <div style="margin-top:12px;">
+        <h4 style="margin:0 0 8px 0;">建立此代理者私有資料集</h4>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input id="new-private-dataset-name" type="text" placeholder="資料集名稱" style="min-width:220px;">
+          <select id="new-private-dataset-sensitivity">
+            <option value="normal">normal</option>
+            <option value="confidential">confidential</option>
+            <option value="restricted">restricted</option>
+          </select>
+          <input id="new-private-dataset-backend" type="text" placeholder="vector_backend（可選）" style="min-width:180px;">
+          <input id="new-private-dataset-index" type="text" placeholder="index_name（可選）" style="min-width:180px;">
+          <button id="btn-create-private-dataset" class="btn" type="button">建立並加入</button>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <h4 style="margin:0 0 8px 0;">上傳代理者私有文件（RAG）</h4>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input id="rag-upload-file" type="file" />
+          <button id="btn-upload-rag-file" class="btn" type="button">上傳文件</button>
+        </div>
+        <table class="table" style="margin-top:8px;">
+          <thead>
+            <tr><th>檔名</th><th>類型</th><th>狀態</th><th>上傳時間</th><th>操作</th></tr>
+          </thead>
+          <tbody id="rag-documents-list"></tbody>
+        </table>
+      </div>
+
       <pre id="rag-output" class="code" style="white-space:pre-wrap;"></pre>
     </section>
 
     <section class="card" style="margin-bottom:1rem;">
-      <h3>工具呼叫協定（進階）</h3>
-      <p class="muted">可客製化模型在需要使用工具時應輸出的精確格式說明；非必要請保持預設。</p>
+      <h3>Functions 定義（進階）</h3>
+      <p class="muted">此區為單一代理者的進階覆寫。若留空，會使用上方綁定的 Function Profile 模板。</p>
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
         <label for="toolcall-template">快速套用範本：</label>
         <select id="toolcall-template">
@@ -118,6 +176,7 @@
         </select>
         <button id="btn-insert-var" class="btn" type="button">插入</button>
       </div>
+      <label for="toolcall-guide">Functions 定義模板（進階覆寫）</label>
       <textarea id="toolcall-guide" rows="8" placeholder="例如：\n[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format...\n  [[CALL tool=<allowed-tool-name>]]\n{\n  &quot;arg&quot;: &quot;value&quot;\n}\n- Otherwise, answer normally."></textarea>
       <p class="muted" style="margin-top:6px;">
         可用變數：
@@ -190,8 +249,31 @@
     const testRagBtn = document.getElementById('test-rag');
     const ragOutput = document.getElementById('rag-output');
     const saveBtn = document.getElementById('save');
+    const functionProfileSelect = document.getElementById('function-profile-select');
+    const functionProfileName = document.getElementById('function-profile-name');
+    const refreshFunctionsBtn = document.getElementById('btn-refresh-functions');
+    const globalDatasetSelect = document.getElementById('global-dataset-select');
+    const addGlobalDatasetBtn = document.getElementById('btn-add-global-dataset');
+    const ragBoundDatasetsList = document.getElementById('rag-bound-datasets-list');
+    const createPrivateDatasetBtn = document.getElementById('btn-create-private-dataset');
+    const newPrivateDatasetNameInput = document.getElementById('new-private-dataset-name');
+    const newPrivateDatasetSensitivitySelect = document.getElementById('new-private-dataset-sensitivity');
+    const newPrivateDatasetBackendInput = document.getElementById('new-private-dataset-backend');
+    const newPrivateDatasetIndexInput = document.getElementById('new-private-dataset-index');
+    const ragUploadFileInput = document.getElementById('rag-upload-file');
+    const uploadRagFileBtn = document.getElementById('btn-upload-rag-file');
+    const ragDocumentsList = document.getElementById('rag-documents-list');
 
-    let state = { mcp_config: [], skills: [], rag_config: { enabled: false, sources: [], topK: 5 }, skill_examples: {}, mcp_ids: [], skill_ids: [] };
+    let state = {
+      mcp_config: [],
+      skills: [],
+      rag_config: { enabled: false, sources: [], topK: 5 },
+      rag_dataset_ids: { global_dataset_ids: [], private_dataset_ids: [] },
+      skill_examples: {},
+      mcp_ids: [],
+      skill_ids: [],
+      function_profile_id: '',
+    };
     let toolcallGuideEl = document.getElementById('toolcall-guide');
     const toolcallTplSelect = document.getElementById('toolcall-template');
     const toolcallTplApply = document.getElementById('apply-toolcall-template');
@@ -265,6 +347,99 @@
       const cnt = document.getElementById('skill-count'); if (cnt) cnt.textContent = `${(state.skill_ids||[]).length + customCount} 項`;
     }
 
+    function renderFunctionBinding() {
+      const list = Array.isArray(window.__functionRegistry) ? window.__functionRegistry : [];
+      functionProfileSelect.innerHTML = '<option value="">— 不使用（沿用預設）—</option>' + list.map((item) => {
+        const id = String(item.id || '');
+        const provider = item.provider ? ` (${String(item.provider)})` : '';
+        return `<option value="${id}">${String(item.name || id)}${provider}</option>`;
+      }).join('');
+      functionProfileSelect.value = String(state.function_profile_id || '');
+      const selected = list.find((item) => String(item.id) === String(state.function_profile_id || ''));
+      functionProfileName.textContent = selected ? String(selected.name || '未命名') : '未綁定';
+    }
+
+    function renderRagDatasetBindings() {
+      const globalRegistry = Array.isArray(window.__globalRagDatasets) ? window.__globalRagDatasets : [];
+      const privateRegistry = Array.isArray(window.__privateRagDatasets) ? window.__privateRagDatasets : [];
+
+      globalDatasetSelect.innerHTML = '<option value="">— 請選擇 —</option>' + globalRegistry.map((item) => `
+        <option value="${String(item.id || '')}">${String(item.name || item.id || '')}</option>
+      `).join('');
+
+      const globalById = Object.fromEntries(globalRegistry.map((item) => [String(item.id), item]));
+      const privateById = Object.fromEntries(privateRegistry.map((item) => [String(item.id), item]));
+
+      const globalRows = (state.rag_dataset_ids.global_dataset_ids || []).map((id, index) => {
+        const d = globalById[String(id)] || {};
+        return {
+          name: String(d.name || id),
+          scopeLabel: '公有',
+          sensitivity: String(d.sensitivity || 'normal'),
+          enabled: !!d.enabled,
+          vectorBackend: String(d.vector_backend || ''),
+          indexName: String(d.index_name || ''),
+          scopeKey: 'global',
+          idx: index,
+        };
+      });
+      const privateRows = (state.rag_dataset_ids.private_dataset_ids || []).map((id, index) => {
+        const d = privateById[String(id)] || {};
+        return {
+          name: String(d.name || id),
+          scopeLabel: '私有',
+          sensitivity: String(d.sensitivity || 'normal'),
+          enabled: !!d.enabled,
+          vectorBackend: String(d.vector_backend || ''),
+          indexName: String(d.index_name || ''),
+          scopeKey: 'private',
+          idx: index,
+        };
+      });
+      const rows = [...globalRows, ...privateRows];
+      ragBoundDatasetsList.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${row.name}</td>
+          <td>${row.scopeLabel}</td>
+          <td>${row.sensitivity}</td>
+          <td>${row.enabled ? '啟用' : '停用'}</td>
+          <td>${row.vectorBackend}</td>
+          <td>${row.indexName}</td>
+          <td><button class="btn" data-act="remove-rag-dataset" data-scope="${row.scopeKey}" data-i="${row.idx}">移除</button></td>
+        </tr>
+      `).join('');
+      if (!rows.length) {
+        ragBoundDatasetsList.innerHTML = '<tr><td colspan="7" class="muted">尚未綁定資料集</td></tr>';
+      }
+    }
+
+    async function loadFunctionRegistry() {
+      try {
+        const res = await api.get('/functions/selectable');
+        window.__functionRegistry = Array.isArray(res.functions) ? res.functions.filter((item) => item && item.enabled !== false) : [];
+      } catch (e) {
+        window.__functionRegistry = [];
+        showError((e && e.message) || '無法載入 Functions 清單');
+      }
+      renderFunctionBinding();
+    }
+
+    async function loadRagDatasetRegistry() {
+      try {
+        const [globalRes, privateRes] = await Promise.all([
+          api.get('/rag/datasets?scope=global'),
+          api.get(`/rag/datasets?scope=agent_private&agent_id=${encodeURIComponent(agentId)}`),
+        ]);
+        window.__globalRagDatasets = Array.isArray(globalRes.datasets) ? globalRes.datasets.filter((item) => item && item.enabled !== false) : [];
+        window.__privateRagDatasets = Array.isArray(privateRes.datasets) ? privateRes.datasets.filter((item) => item && item.enabled !== false) : [];
+      } catch (e) {
+        window.__globalRagDatasets = [];
+        window.__privateRagDatasets = [];
+        showError((e && e.message) || '無法載入 RAG 資料集清單');
+      }
+      renderRagDatasetBindings();
+    }
+
     async function load() {
       try {
         // 取得代理者名稱以顯示於標題
@@ -283,7 +458,17 @@
         state.skill_examples = (res.skill_examples && typeof res.skill_examples === 'object') ? res.skill_examples : {};
         state.mcp_ids = Array.isArray(res.mcp_ids) ? res.mcp_ids : [];
         state.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
-        if (typeof res.toolcall_guide === 'string') toolcallGuideEl.value = res.toolcall_guide;
+        state.function_profile_id = String(res.function_profile_id || '');
+        const ragDatasetIds = (res.rag_dataset_ids && typeof res.rag_dataset_ids === 'object') ? res.rag_dataset_ids : {};
+        state.rag_dataset_ids = {
+          global_dataset_ids: Array.isArray(ragDatasetIds.global_dataset_ids) ? ragDatasetIds.global_dataset_ids.map(String) : [],
+          private_dataset_ids: Array.isArray(ragDatasetIds.private_dataset_ids) ? ragDatasetIds.private_dataset_ids.map(String) : [],
+        };
+        if (typeof res.functions_definition_template === 'string') {
+          toolcallGuideEl.value = res.functions_definition_template;
+        } else if (typeof res.toolcall_guide === 'string') {
+          toolcallGuideEl.value = res.toolcall_guide;
+        }
         // 若尚未自訂模板，根據 provider 建議一個預設範本
         try {
           if ((!toolcallGuideEl.value || !toolcallGuideEl.value.trim()) && typeof res.model_provider === 'string') {
@@ -326,6 +511,9 @@
         } catch (e) {
           showError((e && e.message) || '無法載入 MCP/Skill 管理清單');
         }
+        await loadFunctionRegistry();
+        await loadRagDatasetRegistry();
+        await loadAgentDocuments();
       } catch (e) {
         showError(e.message || '載入失敗');
       }
@@ -422,6 +610,144 @@
       }
     });
     // 移除在此頁面編輯技能示例參數的能力
+
+    functionProfileSelect.addEventListener('change', () => {
+      state.function_profile_id = String(functionProfileSelect.value || '');
+      renderFunctionBinding();
+    });
+
+    refreshFunctionsBtn.addEventListener('click', async () => {
+      await loadFunctionRegistry();
+      showSuccess('Functions 清單已更新');
+    });
+
+    addGlobalDatasetBtn.addEventListener('click', () => {
+      const id = String(globalDatasetSelect.value || '').trim();
+      if (!id) {
+        showError('請先選擇全域資料集');
+        return;
+      }
+      if (!state.rag_dataset_ids.global_dataset_ids.includes(id)) {
+        state.rag_dataset_ids.global_dataset_ids.push(id);
+      }
+      renderRagDatasetBindings();
+      showSuccess('已加入全域資料集');
+    });
+
+    ragBoundDatasetsList.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      const act = btn ? btn.getAttribute('data-act') : '';
+      if (act !== 'remove-rag-dataset') return;
+      const scope = String(btn.getAttribute('data-scope') || '');
+      const index = parseInt(btn.getAttribute('data-i'), 10);
+      if (scope === 'global') {
+        state.rag_dataset_ids.global_dataset_ids.splice(index, 1);
+      } else {
+        state.rag_dataset_ids.private_dataset_ids.splice(index, 1);
+      }
+      renderRagDatasetBindings();
+    });
+
+    createPrivateDatasetBtn.addEventListener('click', async () => {
+      const name = String(newPrivateDatasetNameInput.value || '').trim();
+      if (!name) {
+        showError('請輸入資料集名稱');
+        return;
+      }
+      const payload = {
+        name,
+        sensitivity: String(newPrivateDatasetSensitivitySelect.value || 'normal'),
+        vector_backend: String(newPrivateDatasetBackendInput.value || '').trim(),
+        index_name: String(newPrivateDatasetIndexInput.value || '').trim(),
+        enabled: true,
+      };
+      try {
+        const res = await api.post(`/agents/${agentId}/rag/datasets`, payload);
+        const dataset = res && res.dataset ? res.dataset : null;
+        await loadRagDatasetRegistry();
+        if (dataset && dataset.id) {
+          const id = String(dataset.id);
+          if (!state.rag_dataset_ids.private_dataset_ids.includes(id)) {
+            state.rag_dataset_ids.private_dataset_ids.push(id);
+          }
+          renderRagDatasetBindings();
+        }
+        newPrivateDatasetNameInput.value = '';
+        newPrivateDatasetBackendInput.value = '';
+        newPrivateDatasetIndexInput.value = '';
+        showSuccess('已建立並直接綁定私有資料集');
+      } catch (e) {
+        showError((e && e.message) || '建立私有資料集失敗');
+      }
+    });
+
+    async function loadAgentDocuments() {
+      try {
+        const res = await api.get(`/rag/${agentId}/documents`);
+        const docs = Array.isArray(res.documents) ? res.documents : [];
+        ragDocumentsList.innerHTML = docs.map((doc) => `
+          <tr>
+            <td>${String(doc.filename || '')}</td>
+            <td>${String(doc.file_type || '')}</td>
+            <td>${String(doc.status || 'ready')}</td>
+            <td>${String(doc.uploaded_at || '')}</td>
+            <td><button class="btn" data-act="remove-rag-doc" data-id="${String(doc.id || '')}">刪除</button></td>
+          </tr>
+        `).join('');
+        if (!docs.length) {
+          ragDocumentsList.innerHTML = '<tr><td colspan="5" class="muted">尚未上傳文件</td></tr>';
+        }
+      } catch (e) {
+        ragDocumentsList.innerHTML = '<tr><td colspan="5" class="muted">文件清單載入失敗</td></tr>';
+      }
+    }
+
+    ragDocumentsList.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      if (!btn || btn.getAttribute('data-act') !== 'remove-rag-doc') return;
+      const id = String(btn.getAttribute('data-id') || '').trim();
+      if (!id) return;
+      (async () => {
+        try {
+          await api.delete(`/rag/${agentId}/documents/${id}`);
+          showSuccess('已刪除文件');
+          await loadAgentDocuments();
+        } catch (e2) {
+          showError((e2 && e2.message) || '刪除文件失敗');
+        }
+      })();
+    });
+
+    uploadRagFileBtn.addEventListener('click', async () => {
+      try {
+        const file = ragUploadFileInput && ragUploadFileInput.files ? ragUploadFileInput.files[0] : null;
+        if (!file) {
+          showError('請先選擇要上傳的文件');
+          return;
+        }
+        const token = localStorage.getItem('auth_token') || '';
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch(`/api/rag/upload?agent_id=${encodeURIComponent(agentId)}`, {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: formData,
+        });
+        if (!response.ok) {
+          let message = `HTTP ${response.status}`;
+          try {
+            const error = await response.json();
+            if (error && error.error) message = error.error;
+          } catch {}
+          throw new Error(message);
+        }
+        ragUploadFileInput.value = '';
+        showSuccess('文件已上傳');
+        await loadAgentDocuments();
+      } catch (e) {
+        showError((e && e.message) || '上傳文件失敗');
+      }
+    });
 
     testRagBtn.addEventListener('click', async () => {
       try {
@@ -548,8 +874,20 @@
         const sources = (ragSources.value || '').split(',').map(s => s.trim()).filter(Boolean);
         const topK = parseInt(ragTopK.value, 10) || 5;
         const enabled = !!ragEnabled.checked;
+        const globalDatasetIds = Array.isArray(state.rag_dataset_ids.global_dataset_ids) ? state.rag_dataset_ids.global_dataset_ids.map(String) : [];
+        const privateDatasetIds = Array.isArray(state.rag_dataset_ids.private_dataset_ids) ? state.rag_dataset_ids.private_dataset_ids.map(String) : [];
         // 僅以參照保存，不允許覆寫
-        const payload = { mcp_config: [], skills: state.skills || [], rag_config: { enabled, sources, topK }, toolcall_guide: (toolcallGuideEl.value || '').trim(), skill_examples: {}, mcp_ids: state.mcp_ids, skill_ids: state.skill_ids };
+        const payload = {
+          mcp_config: [],
+          skills: state.skills || [],
+          rag_config: { enabled, sources, topK, global_dataset_ids: globalDatasetIds, private_dataset_ids: privateDatasetIds },
+          functions_definition_template: (toolcallGuideEl.value || '').trim(),
+          toolcall_guide: (toolcallGuideEl.value || '').trim(),
+          skill_examples: {},
+          mcp_ids: state.mcp_ids,
+          skill_ids: state.skill_ids,
+          function_profile_id: String(state.function_profile_id || ''),
+        };
         const res = await api.put(`/agents/${agentId}/integrations`, payload);
         const savedMcpIds = Array.isArray(res && res.mcp_ids) ? res.mcp_ids.map(String) : [];
         const savedSkillIds = Array.isArray(res && res.skill_ids) ? res.skill_ids.map(String) : [];
@@ -560,6 +898,10 @@
         if (!sameMcp || !sameSkill) {
           showError('儲存未完全生效，請重新整理後再試（mcp_ids/skill_ids 不一致）');
         } else {
+          await api.put(`/agents/${agentId}/rag/bindings`, {
+            global_dataset_ids: globalDatasetIds,
+            private_dataset_ids: privateDatasetIds,
+          });
           showSuccess('已儲存');
         }
       } catch (e) {

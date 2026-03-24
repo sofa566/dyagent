@@ -16,7 +16,7 @@ from collections import deque
 from src.services.llm_client import LLMClient
 from src.core.logging import get_logger
 from sqlalchemy.orm import Session
-from src.models import Log, Agent, MCPConnection, SkillEntry
+from src.models import Log, Agent, MCPConnection, SkillEntry, FunctionProfile
 from src.models.events import EventPart
 from src.core.config import settings
 from src.services.permission_service import PermissionService
@@ -49,6 +49,7 @@ class ChatRouter:
         self._tool_start_times: dict[tuple[str, str], datetime] = {}
         # 每回合可覆蓋的工具呼叫協定模板
         self._custom_toolcall_guide: Optional[str] = None
+        self._function_profile_template: Optional[str] = None
 
     def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: Optional[str] = None, db: Optional[Session] = None, llm_overrides: Optional[dict] = None) -> str:
         """執行單輪回合並回傳助理文字。
@@ -257,6 +258,7 @@ class ChatRouter:
 
     def _prepare_integrations(self, *, db: Optional[Session], agent_id: str) -> dict[str, Any]:
         agent_ctx: dict[str, Any] = {"skills": [], "mcp": [], "rag": {"enabled": False, "sources": [], "topK": 5}}
+        self._function_profile_template = None
         try:
             if db is not None:
                 ag = db.query(Agent).filter(Agent.id == agent_id).first()
@@ -361,6 +363,17 @@ class ChatRouter:
                         "sources": list(rc.get("sources", []) or []),
                         "topK": int(rc.get("topK", 5) or 5),
                     }
+                    try:
+                        cfg = ag.model_config if isinstance(ag.model_config, dict) else {}
+                        fid = str((cfg or {}).get('function_profile_id') or '').strip()
+                        if not fid and getattr(ag, 'function_profile_id', None) is not None:
+                            fid = str(ag.function_profile_id)
+                        if fid:
+                            fp = db.query(FunctionProfile).filter(FunctionProfile.id == fid, FunctionProfile.enabled == True).first()  # noqa: E712
+                            if fp and isinstance(fp.template, str) and fp.template.strip():
+                                self._function_profile_template = fp.template.strip()
+                    except Exception:
+                        self._function_profile_template = None
         except Exception as _e:
             self._log.warning("agent.integrations.load_failed", error=str(_e))
         # 允許的工具名（若未來加入工具呼叫時作為白名單）
@@ -381,6 +394,8 @@ class ChatRouter:
         # 會話級覆蓋
         if isinstance(self._custom_toolcall_guide, str) and self._custom_toolcall_guide.strip():
             return "\n" + self._custom_toolcall_guide.strip() + "\n"
+        if isinstance(self._function_profile_template, str) and self._function_profile_template.strip():
+            return "\n" + self._function_profile_template.strip() + "\n"
         # 預設模板：簡短且機械可解析，避免模型誤觸
         return (
             "\n[Tool-Call Protocol]\n"

@@ -157,6 +157,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const skills = byId('skills-admin-link') || findByHrefEnd('/pages/skills.html');
         if (skills) order.push(skills);
 
+        const functionsLink = byId('functions-admin-link') || findByHrefEnd('/pages/functions.html');
+        if (functionsLink) order.push(functionsLink);
+
+        const ragDatasetsLink = byId('rag-datasets-admin-link') || findByHrefEnd('/pages/rag-datasets.html');
+        if (ragDatasetsLink) order.push(ragDatasetsLink);
+
         // 其他（如 聊天）
         const chat = findByHrefEnd('/pages/chat.html');
         if (chat) order.push(chat);
@@ -222,6 +228,20 @@ document.addEventListener('DOMContentLoaded', () => {
             link.id = 'skills-admin-link';
             link.href = '/pages/skills.html';
             link.textContent = '技能管理';
+            navMenu.appendChild(link);
+          }
+          if (!navMenu.querySelector('#functions-admin-link')) {
+            const link = document.createElement('a');
+            link.id = 'functions-admin-link';
+            link.href = '/pages/functions.html';
+            link.textContent = 'Functions';
+            navMenu.appendChild(link);
+          }
+          if (!navMenu.querySelector('#rag-datasets-admin-link')) {
+            const link = document.createElement('a');
+            link.id = 'rag-datasets-admin-link';
+            link.href = '/pages/rag-datasets.html';
+            link.textContent = 'RAG 資料集';
             navMenu.appendChild(link);
           }
         }
