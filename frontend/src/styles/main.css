@@ -181,6 +181,7 @@ th {
   background-color: rgba(0, 0, 0, 0.5);
   justify-content: center;
   align-items: center;
+  z-index: 1000;
 }
 
 .modal.active {
@@ -222,4 +223,29 @@ th {
 .badge-user {
   background-color: #d1fae5;
   color: #065f46;
+}
+
+/* 搜尋結果狀態 */
+.search-status-success {
+  background-color: #f0fdf4;
+  border: 1px solid var(--success-color);
+  color: #166534;
+  padding: 0.75rem;
+  border-radius: var(--radius);
+}
+
+.search-status-error {
+  background-color: #fef2f2;
+  border: 1px solid var(--error-color);
+  color: var(--error-color);
+  padding: 0.75rem;
+  border-radius: var(--radius);
+}
+
+.search-status-loading {
+  background-color: #f8fafc;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 0.75rem;
+  border-radius: var(--radius);
 }

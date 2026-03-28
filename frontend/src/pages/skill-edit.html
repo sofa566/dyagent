@@ -5,404 +5,838 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>技能設定</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) {
+      .form-grid, .form-grid-3 { grid-template-columns: 1fr; }
+    }
+    .tab-buttons { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tab-buttons .btn.active { background: var(--primary-color); color: #fff; }
+    .preview-box {
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg-secondary, #f8fafc);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+    }
+    .preview-box h4 { margin: 0 0 8px 0; font-size: 14px; }
+    .badge-info { background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 8px; font-size: 12px; }
+    .badge-warn { background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 8px; font-size: 12px; }
+    .test-result-box {
+      background: var(--card-bg, #ffffff);
+      color: var(--text-primary, #1e293b);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 12px;
+      max-height: 300px;
+      overflow: auto;
+      font-family: monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+    .history-table { max-height: 200px; overflow-y: auto; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .section-header h3 { margin: 0; }
+  </style>
 </head>
 <body>
   <nav class="navbar">
     <div class="nav-brand"><h1>dyagent</h1></div>
     <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
       <a href="/pages/skills.html">技能管理</a>
       <a href="/pages/login.html" id="auth-link">登入</a>
     </div>
   </nav>
+
   <main class="container">
     <h2 id="title">技能設定</h2>
     <div id="error-message" class="error-message"></div>
-    <div class="card">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <label style="min-width:90px;">名稱</label>
-        <input id="name" placeholder="skill_name" />
-        <label><input type="checkbox" id="enabled" checked/> 啟用</label>
+    <div id="success-message" class="success-message"></div>
+
+    <!-- 基本設定 -->
+    <section class="card">
+      <h3>基本設定</h3>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="name">技能名稱 <span style="color:var(--error-color);">*</span></label>
+          <input id="name" type="text" placeholder="skill_name">
+        </div>
+        <div class="form-group">
+          <label for="skill_type">技能格式</label>
+          <select id="skill_type">
+            <option value="executable" selected>executable（可執行工具）</option>
+            <option value="prompt">prompt（提示詞模板）</option>
+            <option value="hybrid">hybrid（混合）</option>
+          </select>
+        </div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
-        <label style="min-width:90px;">類型</label>
-        <select id="type">
-          <option value="webhook" selected>webhook</option>
-          <option value="python">python</option>
-        </select>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="type">執行類型</label>
+          <select id="type">
+            <option value="webhook" selected>webhook</option>
+            <option value="python">python</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;margin-top:26px;">
+            <input type="checkbox" id="enabled" checked> 啟用此技能
+          </label>
+        </div>
       </div>
-      <div style="margin-top:8px;">
-        <label>說明</label>
+      <div class="form-group">
+        <label for="description">說明</label>
         <textarea id="description" rows="2" placeholder="此技能的用途..."></textarea>
       </div>
-      <div style="margin-top:8px;">
-        <label>輸入結構（JSON Schema，可選）</label>
-        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
-      </div>
-      <div id="panel-webhook" style="margin-top:8px;">
-        <div style="margin-top:8px;">
-          <label>Endpoint URL</label>
-          <input id="endpoint_url" placeholder="https://example.com/skill" style="width:420px;" />
+    </section>
+
+    <!-- Claude Skills（提示詞模板 + ZIP） -->
+    <section id="panel-claude-skills" class="card">
+      <h3>Claude Skills 設定</h3>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;">
+        Claude Skills 格式相容。可上傳 ZIP 檔案或直接輸入提示詞模板。
+      </p>
+
+      <!-- ZIP 上傳 -->
+      <div class="form-group">
+        <label>上傳 ZIP 檔案（包含 SKILL.md + scripts/ + references/）</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="file" id="zip_file" accept=".zip" style="flex:1;">
+          <button type="button" class="btn" id="btn-parse-zip">解析 ZIP</button>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-          <label style="min-width:90px;">HTTP 方法</label>
+        <small style="color:var(--text-secondary);">上傳後將自動解析 SKILL.md 提示詞模板和 references/ 內容</small>
+      </div>
+
+      <div id="zip-preview" class="preview-box" style="display:none;">
+        <h4>ZIP 解析結果</h4>
+        <div id="zip-info"></div>
+      </div>
+
+      <div class="form-group" id="has-zip-indicator" style="display:none;">
+        <span class="badge-info">✓ 已儲存 ZIP 檔案</span>
+        <button type="button" class="btn" id="btn-clear-zip" style="margin-left:8px;">清除 ZIP</button>
+      </div>
+
+      <!-- 提示詞模板 -->
+      <div class="form-group">
+        <label for="prompt_template">提示詞模板（SKILL.md 內容）</label>
+        <textarea id="prompt_template" rows="8" placeholder="# My Skill
+
+當用戶需要 ... 時，執行以下步驟：
+
+1. ...
+2. ...
+3. ..."></textarea>
+        <small style="color:var(--text-secondary);">Claude Skills 的核心提示詞，指導 LLM 如何執行此技能</small>
+      </div>
+
+      <!-- References 顯示 -->
+      <div class="form-group" id="references-section" style="display:none;">
+        <label>References（參考文檔）</label>
+        <div id="references-list" style="border:1px solid var(--border-color);border-radius:var(--radius);padding:8px;background:var(--card-bg);max-height:150px;overflow-y:auto;">
+        </div>
+      </div>
+    </section>
+
+    <!-- 輸入結構 -->
+    <section class="card">
+      <h3>輸入結構（JSON Schema）</h3>
+      <div class="form-group">
+        <label for="input_schema">定義此技能接受的參數格式（可選）</label>
+        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
+        <small style="color:var(--text-secondary);">使用 JSON Schema 格式定義輸入參數。若為空則不驗證輸入。</small>
+      </div>
+    </section>
+
+    <!-- Webhook 設定 -->
+    <section id="panel-webhook" class="card">
+      <h3>Webhook 設定</h3>
+      <div class="form-group">
+        <label for="endpoint_url">Endpoint URL <span style="color:var(--error-color);">*</span></label>
+        <input id="endpoint_url" type="text" placeholder="https://example.com/skill">
+      </div>
+      <div class="form-grid-3">
+        <div class="form-group">
+          <label for="http_method">HTTP 方法</label>
           <select id="http_method">
             <option>POST</option>
             <option>GET</option>
             <option>PUT</option>
             <option>DELETE</option>
           </select>
-          <label style="min-width:90px;">逾時 (ms)</label>
-          <input id="timeout_ms" type="number" min="100" step="100" value="8000" style="width:120px;" />
         </div>
-        <div style="margin-top:8px;">
-          <label>Headers（JSON）</label>
-          <textarea id="headers" rows="3" placeholder='{"Authorization":"Bearer ..."}'></textarea>
+        <div class="form-group">
+          <label for="timeout_ms">逾時（ms）</label>
+          <input id="timeout_ms" type="number" min="100" step="100" value="8000">
         </div>
-      </div>
-      <div id="panel-python" style="margin-top:8px; display:none;">
-        <div style="margin-top:8px;">
-          <label>Python Handler（package.module:function）</label>
-          <input id="python_handler" placeholder="my_pkg.skills.weather:run" style="width:420px;" />
+        <div class="form-group">
+          <label>&nbsp;</label>
+          <small style="color:var(--text-secondary);display:block;margin-top:12px;">預設 8000ms</small>
         </div>
       </div>
-    </div>
-    <div class="card" style="margin-top:8px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <h3 style="margin:0;">測試技能</h3>
-        <small class="muted">僅限已儲存的技能</small>
+      <div class="form-group">
+        <label for="headers">Headers（JSON）</label>
+        <textarea id="headers" rows="3" placeholder='{"Authorization":"Bearer ..."}'></textarea>
       </div>
-      <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
-        <button id="tab-form" class="btn">表單</button>
-        <button id="tab-json" class="btn btn-secondary">JSON</button>
-      </div>
-      <div id="test-form" style="margin-top:6px;"></div>
-      <div id="test-json" style="margin-top:6px; display:none;">
-        <textarea id="test_payload" rows="5" style="width:100%;min-width:280px;" placeholder='{"amount":100,"from":"USD","to":"TWD"}'></textarea>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-        <button id="btn-test" class="btn" type="button">執行測試</button>
-        <button id="btn-clear-test" class="btn" type="button">清空</button>
-      </div>
-      <div id="test-error" class="error-message" style="display:none;margin-top:6px;"></div>
-      <pre id="test-result" class="code" style="white-space:pre-wrap;margin-top:6px;"></pre>
-    </div>
+    </section>
 
-    <div class="card" style="margin-top:8px;">
-      <h3 style="margin:0;">最近測試</h3>
-      <table class="table" style="margin-top:6px;">
-        <thead><tr><th>時間</th><th>狀態</th><th>耗時(ms)</th><th>備註</th></tr></thead>
-        <tbody id="test-history"></tbody>
-      </table>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:8px;">
+    <!-- Python 設定 -->
+    <section id="panel-python" class="card" style="display:none;">
+      <h3>Python 設定</h3>
+      <div class="form-group">
+        <label for="python_handler">Handler（package.module:function）</label>
+        <input id="python_handler" type="text" placeholder="my_pkg.skills.weather:run">
+        <small style="color:var(--text-secondary);">例如：my_pkg.skills.weather:run</small>
+      </div>
+    </section>
+
+    <!-- 測試區塊 -->
+    <section class="card">
+      <div class="section-header">
+        <h3>測試技能</h3>
+        <small style="color:var(--text-secondary);">僅限已儲存的技能</small>
+      </div>
+
+      <div class="tab-buttons">
+        <button id="tab-form" class="btn active">表單輸入</button>
+        <button id="tab-json" class="btn">JSON 輸入</button>
+      </div>
+
+      <div id="test-form"></div>
+      <div id="test-json" style="display:none;">
+        <div class="form-group">
+          <label for="test_payload">測試資料（JSON）</label>
+          <textarea id="test_payload" rows="5" placeholder='{"amount":100,"from":"USD","to":"TWD"}'></textarea>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin:12px 0;">
+        <button id="btn-test" class="btn btn-primary" type="button">執行測試</button>
+        <button id="btn-clear-test" class="btn" type="button">清空結果</button>
+      </div>
+
+      <div id="test-error" class="error-message" style="display:none;"></div>
+
+      <div class="form-group">
+        <label>測試結果</label>
+        <div id="test-result" class="test-result-box">尚無結果</div>
+      </div>
+    </section>
+
+    <!-- 測試歷史 -->
+    <section class="card">
+      <div class="section-header">
+        <h3>最近測試紀錄</h3>
+        <button id="btn-clear-history" class="btn" type="button">清除紀錄</button>
+      </div>
+      <div class="history-table" style="border:1px solid var(--border-color);border-radius:var(--radius);">
+        <table class="table" style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr><th>時間</th><th>狀態</th><th>耗時(ms)</th><th>備註</th></tr>
+          </thead>
+          <tbody id="test-history">
+            <tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">尚無紀錄</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 操作按鈕 -->
+    <div style="display:flex;gap:8px;margin-top:16px;">
       <button id="save" class="btn btn-primary" type="button">儲存</button>
-      <a class="btn" href="/pages/skills.html">返回</a>
+      <a class="btn btn-secondary" href="/pages/skills.html">返回列表</a>
     </div>
   </main>
+
   <script type="module">
     import { api, auth, showError, showSuccess } from '/main.js';
-    if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
     const u = new URL(window.location.href);
     const id = u.searchParams.get('id');
-    const $ = (id)=>document.getElementById(id);
+    const $ = (sel) => document.getElementById(sel);
+
+    // ========== 類型切換 ==========
     function syncTypeUI() {
-      const t = $('type').value;
-      $('panel-webhook').style.display = (t === 'webhook') ? 'block' : 'none';
-      $('panel-python').style.display = (t === 'python') ? 'block' : 'none';
+      const skillType = $('skill_type').value;
+      const execType = $('type').value;
+
+      // Claude Skills 區塊：prompt 和 hybrid 顯示
+      const showClaudeSkills = skillType === 'prompt' || skillType === 'hybrid';
+      $('panel-claude-skills').style.display = showClaudeSkills ? 'block' : 'none';
+
+      // 執行設定：executable 和 hybrid 顯示
+      const showExec = skillType === 'executable' || skillType === 'hybrid';
+      $('panel-webhook').style.display = (showExec && execType === 'webhook') ? 'block' : 'none';
+      $('panel-python').style.display = (showExec && execType === 'python') ? 'block' : 'none';
+
+      // 執行類型選擇器
+      $('type').closest('.form-group').style.display = showExec ? 'block' : 'none';
     }
+
     $('type').addEventListener('change', syncTypeUI);
-    async function load(){
+    $('skill_type').addEventListener('change', syncTypeUI);
+
+    // ========== ZIP 上傳相關 ==========
+    let parsedZipData = null;
+    let hasStoredZip = false;
+
+    async function parseZipFile() {
+      const fileInput = $('zip_file');
+      const file = fileInput.files?.[0];
+      if (!file) {
+        showError('請選擇 ZIP 檔案');
+        return;
+      }
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        showError('請選擇 .zip 檔案');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await api.uploadFile('/skills/import-claude-skill-zip', formData);
+        if (res.ok && res.parsed) {
+          parsedZipData = res.parsed;
+
+          // 顯示解析結果
+          let infoHtml = '';
+          if (res.parsed.skill_md) {
+            infoHtml += `<div><strong>SKILL.md</strong>: ${res.parsed.skill_md.name || '(無名稱)'}</div>`;
+            // 自動填入 prompt_template
+            if (res.parsed.skill_md.template) {
+              $('prompt_template').value = res.parsed.skill_md.template;
+            }
+          }
+          if (res.parsed.scripts && res.parsed.scripts.length > 0) {
+            infoHtml += `<div style="margin-top:4px;"><strong>scripts/</strong>: ${res.parsed.scripts.map(s => s.filename).join(', ')}</div>`;
+          }
+          if (res.parsed.references && res.parsed.references.length > 0) {
+            infoHtml += `<div style="margin-top:4px;"><strong>references/</strong>: ${res.parsed.references.map(r => r.filename).join(', ')}</div>`;
+            // 顯示 references
+            showReferences(res.parsed.references);
+          }
+
+          $('zip-info').innerHTML = infoHtml || '(無內容)';
+          $('zip-preview').style.display = 'block';
+          showSuccess('ZIP 解析成功');
+        } else {
+          showError(res.error || 'ZIP 解析失敗');
+        }
+      } catch (e) {
+        showError(e.message || 'ZIP 解析失敗');
+      }
+    }
+
+    function showReferences(refs) {
+      if (!refs || refs.length === 0) {
+        $('references-section').style.display = 'none';
+        return;
+      }
+      const list = $('references-list');
+      list.innerHTML = refs.map(r => `
+        <div style="margin-bottom:4px;">
+          <strong>${r.filename || '(未命名)'}</strong>
+          <pre style="margin:4px 0;padding:8px;background:var(--bg-secondary);border-radius:4px;font-size:12px;max-height:100px;overflow:auto;white-space:pre-wrap;">${(r.content || '').substring(0, 500)}${(r.content || '').length > 500 ? '...' : ''}</pre>
+        </div>
+      `).join('');
+      $('references-section').style.display = 'block';
+    }
+
+    function clearZip() {
+      parsedZipData = null;
+      hasStoredZip = false;
+      $('zip_file').value = '';
+      $('zip-preview').style.display = 'none';
+      $('has-zip-indicator').style.display = 'none';
+      $('references-section').style.display = 'none';
+    }
+
+    $('btn-parse-zip').addEventListener('click', parseZipFile);
+    $('btn-clear-zip').addEventListener('click', clearZip);
+
+    // ========== 載入技能 ==========
+    async function load() {
       if (!id) return;
-      try{
+      try {
         const r = await api.get(`/skills/${id}`);
         $('title').textContent = `技能設定：${r.name}`;
-        $('name').value = r.name||'';
+        $('name').value = r.name || '';
         $('enabled').checked = !!r.enabled;
-        $('description').value = r.description||'';
+        $('description').value = r.description || '';
         $('type').value = r.type || 'webhook';
+        $('skill_type').value = r.skill_type || 'executable';
         $('endpoint_url').value = r.endpoint_url || '';
         $('http_method').value = (r.http_method || 'POST').toUpperCase();
         $('timeout_ms').value = r.timeout_ms || 8000;
         $('headers').value = (r.headers && typeof r.headers === 'object') ? JSON.stringify(r.headers, null, 2) : '';
         $('python_handler').value = r.python_handler || '';
         $('input_schema').value = (r.input_schema && typeof r.input_schema === 'object') ? JSON.stringify(r.input_schema, null, 2) : '';
+
+        // Claude Skills 欄位
+        $('prompt_template').value = r.prompt_template || '';
+        if (r.has_zip) {
+          hasStoredZip = true;
+          $('has-zip-indicator').style.display = 'block';
+        }
+        if (r.references && Array.isArray(r.references) && r.references.length > 0) {
+          showReferences(r.references);
+        }
+
         syncTypeUI();
-      }catch(e){ showError(e.message||'載入失敗'); }
+        renderTestForm();
+      } catch (e) {
+        showError(e.message || '載入失敗');
+      }
     }
-    async function save(){
-      try{
+
+    // ========== 儲存技能 ==========
+    async function save() {
+      try {
+        const skillType = $('skill_type').value;
+        const execType = $('type').value;
+
         const body = {
           name: $('name').value.trim(),
           enabled: $('enabled').checked,
           description: $('description').value.trim(),
-          type: $('type').value,
-          input_schema: (function(){ const raw=$('input_schema').value.trim(); if(!raw) return {}; try { return JSON.parse(raw);} catch(e){ showError('輸入結構需為合法 JSON'); throw e; } })(),
+          skill_type: skillType,
+          type: execType,
+          input_schema: (() => {
+            const raw = $('input_schema').value.trim();
+            if (!raw) return {};
+            try { return JSON.parse(raw); }
+            catch (e) { showError('輸入結構需為合法 JSON'); throw e; }
+          })(),
         };
-        if (body.type === 'webhook') {
-          body.endpoint_url = $('endpoint_url').value.trim();
-          body.http_method = ($('http_method').value || 'POST').toUpperCase();
-          const tm = parseInt($('timeout_ms').value || '8000', 10); body.timeout_ms = isFinite(tm) && tm > 0 ? tm : 8000;
-          const hdr = $('headers').value.trim(); if (hdr) { try { body.headers = JSON.parse(hdr); } catch { showError('Headers 需為合法 JSON'); return; } }
-        } else if (body.type === 'python') {
-          body.python_handler = $('python_handler').value.trim();
+
+        // Claude Skills 欄位（prompt 或 hybrid）
+        if (skillType === 'prompt' || skillType === 'hybrid') {
+          body.prompt_template = $('prompt_template').value.trim();
+
+          // 若有解析的 ZIP 資料，附加 references
+          if (parsedZipData && parsedZipData.references) {
+            body.references = parsedZipData.references;
+          }
         }
-        if (id) await api.put(`/skills/${id}`, body); else await api.post('/skills', body);
-        showSuccess('已儲存'); setTimeout(()=> window.location.href = '/pages/skills.html', 600);
-      }catch(e){ showError(e.message||'儲存失敗'); }
+
+        // 執行設定（executable 或 hybrid）
+        if (skillType === 'executable' || skillType === 'hybrid') {
+          if (execType === 'webhook') {
+            body.endpoint_url = $('endpoint_url').value.trim();
+            body.http_method = ($('http_method').value || 'POST').toUpperCase();
+            const tm = parseInt($('timeout_ms').value || '8000', 10);
+            body.timeout_ms = isFinite(tm) && tm > 0 ? tm : 8000;
+            const hdr = $('headers').value.trim();
+            if (hdr) {
+              try { body.headers = JSON.parse(hdr); }
+              catch { showError('Headers 需為合法 JSON'); return; }
+            }
+          } else if (execType === 'python') {
+            body.python_handler = $('python_handler').value.trim();
+          }
+        }
+
+        // 處理 ZIP 上傳（若有新檔案）
+        const zipFileInput = $('zip_file');
+        const zipFile = zipFileInput.files?.[0];
+
+        if (zipFile) {
+          // 使用 FormData 上傳 ZIP + 其他資料
+          const formData = new FormData();
+          formData.append('file', zipFile);
+          formData.append('data', JSON.stringify(body));
+
+          if (id) {
+            await api.uploadFile(`/skills/${id}/upload-zip`, formData);
+          } else {
+            // 新建時先建立，再上傳 ZIP
+            const created = await api.post('/skills', body);
+            if (created && created.id) {
+              const fd = new FormData();
+              fd.append('file', zipFile);
+              await api.uploadFile(`/skills/${created.id}/upload-zip`, fd);
+            }
+            showSuccess('已儲存');
+            setTimeout(() => window.location.href = '/pages/skills.html', 600);
+            return;
+          }
+        } else {
+          // 一般儲存（無 ZIP）
+          if (id) {
+            await api.put(`/skills/${id}`, body);
+          } else {
+            await api.post('/skills', body);
+          }
+        }
+
+        showSuccess('已儲存');
+        setTimeout(() => window.location.href = '/pages/skills.html', 600);
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
     }
-    document.getElementById('save').addEventListener('click', save);
-    // 測試技能
-    function clearFieldErrors(root){ root.querySelectorAll('.field-error').forEach(n=>n.remove()); root.querySelectorAll('input,select,textarea').forEach(el=> el.style.borderColor=''); }
-    function addFieldError(el,msg){ const d=document.createElement('div'); d.className='field-error'; d.style.color='var(--danger-color, #c0392b)'; d.style.fontSize='12px'; d.style.marginTop='2px'; d.textContent=String(msg); el.style.borderColor='var(--danger-color, #c0392b)'; el.insertAdjacentElement('afterend', d); }
-    function validateAgainstSchema(containerId, schema, payload){
-      const root=document.getElementById(containerId); clearFieldErrors(root);
-      const req = Array.isArray(schema.required)? schema.required: [];
-      const props = (schema && schema.properties) ? schema.properties: {};
+    $('save').addEventListener('click', save);
+
+    // ========== 分頁切換 ==========
+    const tabForm = $('tab-form');
+    const tabJson = $('tab-json');
+    const boxForm = $('test-form');
+    const boxJson = $('test-json');
+
+    function activateTab(which) {
+      if (which === 'form') {
+        boxForm.style.display = 'block';
+        boxJson.style.display = 'none';
+        tabForm.classList.add('active');
+        tabJson.classList.remove('active');
+      } else {
+        boxForm.style.display = 'none';
+        boxJson.style.display = 'block';
+        tabJson.classList.add('active');
+        tabForm.classList.remove('active');
+      }
+    }
+
+    tabForm.addEventListener('click', () => {
+      try {
+        const schRaw = $('input_schema').value.trim();
+        const schema = schRaw ? JSON.parse(schRaw) : {};
+        const raw = $('test_payload').value.trim();
+        if (raw && schema && schema.type === 'object') {
+          try { const init = JSON.parse(raw); renderFormFromSchema('test-form', schema, init); }
+          catch { renderFormFromSchema('test-form', schema); }
+        } else {
+          renderFormFromSchema('test-form', schema);
+        }
+      } catch { /* ignore */ }
+      activateTab('form');
+    });
+
+    tabJson.addEventListener('click', () => {
+      try {
+        if (boxForm.style.display !== 'none') {
+          const body = collectFormPayload('test-form');
+          $('test_payload').value = JSON.stringify(body, null, 2);
+        }
+      } catch { /* ignore */ }
+      activateTab('json');
+    });
+
+    // ========== 表單驗證 ==========
+    function clearFieldErrors(root) {
+      root.querySelectorAll('.field-error').forEach(n => n.remove());
+      root.querySelectorAll('input,select,textarea').forEach(el => el.style.borderColor = '');
+    }
+
+    function addFieldError(el, msg) {
+      const d = document.createElement('div');
+      d.className = 'field-error';
+      d.style.cssText = 'color:var(--error-color);font-size:12px;margin-top:2px;';
+      d.textContent = String(msg);
+      el.style.borderColor = 'var(--error-color)';
+      el.insertAdjacentElement('afterend', d);
+    }
+
+    function validateAgainstSchema(containerId, schema, payload) {
+      const root = document.getElementById(containerId);
+      clearFieldErrors(root);
+      const req = Array.isArray(schema.required) ? schema.required : [];
+      const props = (schema && schema.properties) ? schema.properties : {};
       let ok = true;
-      Object.entries(props).forEach(([k, spec])=>{
-        const el = root.querySelector(`[data-key="${k}"]`) || root.querySelector(`[data-type] [data-key="${k}"]`) || null;
-        const v = payload[k]; const t = (spec && spec.type) || 'string';
-        if (req.includes(k) && (v === undefined || v === null || v === '')){ ok=false; if (el) addFieldError(el, '必填'); return; }
+
+      Object.entries(props).forEach(([k, spec]) => {
+        const el = root.querySelector(`[data-key="${k}"]`);
+        const v = payload[k];
+        const t = (spec && spec.type) || 'string';
+
+        if (req.includes(k) && (v === undefined || v === null || v === '')) {
+          ok = false;
+          if (el) addFieldError(el, '必填');
+          return;
+        }
         if (v === undefined || v === null || v === '') return;
-        if (t==='number' || t==='integer'){
-          if (typeof v !== 'number' || Number.isNaN(v)) { ok=false; if (el) addFieldError(el, '需為數字'); }
-          if (spec && typeof spec.minimum==='number' && v < spec.minimum){ ok=false; if (el) addFieldError(el, `不可小於 ${spec.minimum}`); }
-          if (spec && typeof spec.maximum==='number' && v > spec.maximum){ ok=false; if (el) addFieldError(el, `不可大於 ${spec.maximum}`); }
-        } else if (t==='string'){
-          if (typeof v !== 'string'){ ok=false; if (el) addFieldError(el, '需為字串'); }
-          if (spec && typeof spec.minLength==='number' && v.length < spec.minLength){ ok=false; if (el) addFieldError(el, `長度不可小於 ${spec.minLength}`); }
-          if (spec && typeof spec.maxLength==='number' && v.length > spec.maxLength){ ok=false; if (el) addFieldError(el, `長度不可大於 ${spec.maxLength}`); }
-          if (spec && spec.pattern){ try { const re=new RegExp(spec.pattern); if (!re.test(v)) { ok=false; if (el) addFieldError(el, '格式不符合規則'); } } catch {}
+
+        if (t === 'number' || t === 'integer') {
+          if (typeof v !== 'number' || Number.isNaN(v)) {
+            ok = false;
+            if (el) addFieldError(el, '需為數字');
+          }
+          if (spec && typeof spec.minimum === 'number' && v < spec.minimum) {
+            ok = false;
+            if (el) addFieldError(el, `不可小於 ${spec.minimum}`);
+          }
+          if (spec && typeof spec.maximum === 'number' && v > spec.maximum) {
+            ok = false;
+            if (el) addFieldError(el, `不可大於 ${spec.maximum}`);
+          }
+        } else if (t === 'string') {
+          if (typeof v !== 'string') {
+            ok = false;
+            if (el) addFieldError(el, '需為字串');
+          }
+          if (spec && typeof spec.minLength === 'number' && v.length < spec.minLength) {
+            ok = false;
+            if (el) addFieldError(el, `長度不可小於 ${spec.minLength}`);
+          }
+          if (spec && typeof spec.maxLength === 'number' && v.length > spec.maxLength) {
+            ok = false;
+            if (el) addFieldError(el, `長度不可大於 ${spec.maxLength}`);
           }
         }
       });
       return ok;
     }
-    document.getElementById('btn-test').addEventListener('click', async ()=>{
-      const err = $('test-error'); const out = $('test-result'); err.style.display='none'; out.textContent='';
-      if (!id) { err.textContent='請先儲存技能後再測試'; err.style.display='block'; return; }
-      let payload={};
-      if (document.getElementById('test-json').style.display !== 'none') {
-        const raw=$('test_payload').value.trim(); if (raw) { try { payload = JSON.parse(raw);} catch(e){ err.textContent='測試輸入需為合法 JSON'; err.style.display='block'; return; } }
-      } else {
-        try { payload = collectFormPayload('test-form'); } catch(e){ err.textContent = e.message || '表單驗證失敗'; err.style.display='block'; return; }
-        // 基本前端驗證
-        try { const schRaw = $('input_schema').value.trim(); if (schRaw){ const schema = JSON.parse(schRaw); if (schema && schema.type==='object'){ if (!validateAgainstSchema('test-form', schema, payload)){ err.textContent='表單欄位有誤，請修正紅框標示'; err.style.display='block'; return; } } } } catch{}
+
+    // ========== 執行測試 ==========
+    $('btn-test').addEventListener('click', async () => {
+      const err = $('test-error');
+      const out = $('test-result');
+      err.style.display = 'none';
+      out.textContent = '';
+
+      if (!id) {
+        err.textContent = '請先儲存技能後再測試';
+        err.style.display = 'block';
+        return;
       }
-      try { const r = await api.post(`/skills/${id}/test`, payload); out.textContent = JSON.stringify(r, null, 2); 
+
+      let payload = {};
+      if (boxJson.style.display !== 'none') {
+        const raw = $('test_payload').value.trim();
+        if (raw) {
+          try { payload = JSON.parse(raw); }
+          catch (e) {
+            err.textContent = '測試輸入需為合法 JSON';
+            err.style.display = 'block';
+            return;
+          }
+        }
+      } else {
+        try { payload = collectFormPayload('test-form'); }
+        catch (e) {
+          err.textContent = e.message || '表單驗證失敗';
+          err.style.display = 'block';
+          return;
+        }
+        try {
+          const schRaw = $('input_schema').value.trim();
+          if (schRaw) {
+            const schema = JSON.parse(schRaw);
+            if (schema && schema.type === 'object') {
+              if (!validateAgainstSchema('test-form', schema, payload)) {
+                err.textContent = '表單欄位有誤，請修正紅框標示';
+                err.style.display = 'block';
+                return;
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
+      out.textContent = '執行中...';
+      try {
+        const r = await api.post(`/skills/${id}/test`, payload);
+        out.textContent = JSON.stringify(r, null, 2);
+
         if (r && r.ok === false && Array.isArray(r.errors)) {
-          // 從後端回傳的錯誤映射到欄位
           const root = document.getElementById('test-form');
           r.errors.forEach(e => {
             const p = (e && e.path) ? String(e.path) : '';
             const key = p.split('.')[0];
             if (!key) return;
-            const el = root.querySelector(`[data-key="${key}"]`) || root.querySelector(`[data-type] [data-key="${key}"]`);
+            const el = root.querySelector(`[data-key="${key}"]`);
             if (el) addFieldError(el, (e && e.message) ? String(e.message) : '不符合結構');
           });
-          err.textContent = '表單欄位有誤，請依提示修正'; err.style.display='block';
+          err.textContent = '表單欄位有誤，請依提示修正';
+          err.style.display = 'block';
         }
+        loadHistory();
+      } catch (e) {
+        err.textContent = e.message || '測試失敗';
+        err.style.display = 'block';
+        out.textContent = '測試失敗';
       }
-      catch(e){ err.textContent = e.message || '測試失敗'; err.style.display='block'; }
     });
-    document.getElementById('btn-clear-test').addEventListener('click', ()=>{ $('test_payload').value=''; $('test-result').textContent=''; $('test-error').style.display='none'; });
-    // 分頁切換（含 JSON ↔ 表單同步）
-    (function(){
-      const tabF = $('tab-form'); const tabJ = $('tab-json'); const boxF = $('test-form'); const boxJ = $('test-json');
-      function activate(which){
-        if (which==='form'){ boxF.style.display='block'; boxJ.style.display='none'; tabF.classList.add('btn-secondary'); tabJ.classList.remove('btn-secondary'); }
-        else { boxF.style.display='none'; boxJ.style.display='block'; tabJ.classList.add('btn-secondary'); tabF.classList.remove('btn-secondary'); }
-      }
-      tabF.addEventListener('click', ()=> {
-        // 切到表單：若 JSON 有內容就用它當初始值重繪表單
-        try{
-          const schRaw = $('input_schema').value.trim();
-          const schema = schRaw? JSON.parse(schRaw): {};
-          const raw = $('test_payload').value.trim();
-          if (raw && schema && schema.type==='object'){
-            try { const init = JSON.parse(raw); renderFormFromSchema('test-form', schema, init); }
-            catch { renderFormFromSchema('test-form', schema); }
-          } else {
-            renderFormFromSchema('test-form', schema);
-          }
-        } catch { /* ignore */ }
-        activate('form');
-      });
-      tabJ.addEventListener('click', ()=> {
-        // 切到 JSON：若表單可見則把值序列化到 JSON 區
-        try{
-          if (boxF.style.display !== 'none'){
-            const body = collectFormPayload('test-form');
-            $('test_payload').value = JSON.stringify(body, null, 2);
-          }
-        } catch { /* ignore */ }
-        activate('json');
-      });
-      activate('form');
-    })();
-    // Schema 表單渲染（子集）；第三參數 initial 可用於 JSON→表單
-    function renderFormFromSchema(containerId, schema, initial){
+
+    $('btn-clear-test').addEventListener('click', () => {
+      $('test_payload').value = '';
+      $('test-result').textContent = '尚無結果';
+      $('test-error').style.display = 'none';
+    });
+
+    // ========== Schema 表單渲染 ==========
+    function renderFormFromSchema(containerId, schema, initial) {
       const root = document.getElementById(containerId);
       root.innerHTML = '';
-      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties){
-        root.innerHTML = '<div class="muted">此技能未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
-        document.getElementById('test-json').style.display='block';
+
+      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties) {
+        root.innerHTML = '<div style="color:var(--text-secondary);padding:12px;">此技能未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
         return;
       }
+
       const required = Array.isArray(schema.required) ? schema.required : [];
       const init = (initial && typeof initial === 'object') ? initial : {};
-      Object.entries(schema.properties).forEach(([key, spec])=>{
-        const row = document.createElement('div'); row.style.marginTop = '6px';
+
+      Object.entries(schema.properties).forEach(([key, spec]) => {
+        const row = document.createElement('div');
+        row.className = 'form-group';
+
         const label = document.createElement('label');
         const title = (spec && spec.title) ? spec.title : key;
-        label.textContent = title + (required.includes(key)? ' *' : '');
-        label.style.display='block'; label.style.fontWeight='600';
+        label.textContent = title + (required.includes(key) ? ' *' : '');
         row.appendChild(label);
+
         const desc = (spec && spec.description) ? String(spec.description) : '';
-        if (desc) { const small = document.createElement('div'); small.className='muted'; small.textContent = desc; small.style.marginBottom='4px'; row.appendChild(small); }
+        if (desc) {
+          const small = document.createElement('small');
+          small.style.cssText = 'color:var(--text-secondary);display:block;margin-bottom:4px;';
+          small.textContent = desc;
+          row.appendChild(small);
+        }
+
         const t = (spec && spec.type) || 'string';
         let inputEl = null;
-        if (spec && Array.isArray(spec.enum)){
-          const sel = document.createElement('select'); sel.dataset.key = key;
-          spec.enum.forEach(v=>{ const opt = document.createElement('option'); opt.value = String(v); opt.textContent = String(v); sel.appendChild(opt); });
+
+        if (spec && Array.isArray(spec.enum)) {
+          const sel = document.createElement('select');
+          sel.dataset.key = key;
+          spec.enum.forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = String(v);
+            opt.textContent = String(v);
+            sel.appendChild(opt);
+          });
           if (spec.default != null) sel.value = String(spec.default);
           if (Object.prototype.hasOwnProperty.call(init, key)) sel.value = String(init[key]);
           inputEl = sel;
-        } else if (t === 'boolean'){
-          const cb = document.createElement('input'); cb.type='checkbox'; cb.dataset.key = key; cb.checked = !!spec.default; if (Object.prototype.hasOwnProperty.call(init, key)) cb.checked = !!init[key]; inputEl = cb;
-        } else if (t === 'number' || t === 'integer'){
-          const num = document.createElement('input'); num.type='number'; num.dataset.key = key;
-          if (typeof spec.minimum==='number') num.min = String(spec.minimum);
-          if (typeof spec.maximum==='number') num.max = String(spec.maximum);
-          if (typeof spec.multipleOf==='number') num.step = String(spec.multipleOf);
+        } else if (t === 'boolean') {
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.dataset.key = key;
+          cb.checked = !!spec.default;
+          if (Object.prototype.hasOwnProperty.call(init, key)) cb.checked = !!init[key];
+          inputEl = cb;
+        } else if (t === 'number' || t === 'integer') {
+          const num = document.createElement('input');
+          num.type = 'number';
+          num.dataset.key = key;
+          if (typeof spec.minimum === 'number') num.min = String(spec.minimum);
+          if (typeof spec.maximum === 'number') num.max = String(spec.maximum);
           if (spec.default != null) num.value = String(spec.default);
           if (typeof init[key] === 'number') num.value = String(init[key]);
           inputEl = num;
-        } else if (t === 'array'){
-          const wrap = document.createElement('div'); wrap.dataset.key = key; wrap.dataset.type='array';
-          const list = document.createElement('div'); wrap.appendChild(list);
-          const btn = document.createElement('button'); btn.type='button'; btn.className='btn'; btn.textContent = '新增一列'; btn.style.marginTop='4px';
-          wrap.appendChild(btn);
-          function addItem(def){
-            const item = document.createElement('div'); item.style.border='1px dashed var(--border-color)'; item.style.padding='6px'; item.style.marginTop='4px';
-            const rm = document.createElement('button'); rm.type='button'; rm.className='btn'; rm.textContent='移除'; rm.style.float='right';
-            rm.addEventListener('click', ()=> item.remove()); item.appendChild(rm);
-            const specItem = spec.items || {};
-            if (specItem.type === 'object' && specItem.properties){
-              Object.entries(specItem.properties).forEach(([k2, s2])=>{
-                const r2 = document.createElement('div'); r2.style.marginTop='6px';
-                const lb2 = document.createElement('label'); lb2.textContent = (s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2);
-                const t2 = s2.type || 'string';
-                let el2;
-                if (Array.isArray(s2.enum)){
-                  el2 = document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); });
-                  if (s2.default!=null) el2.value=String(s2.default);
-                  if (def && def[k2] != null) el2.value=String(def[k2]);
-                } else if (t2==='boolean'){
-                  el2 = document.createElement('input'); el2.type='checkbox'; el2.checked = !!s2.default; if (def && def[k2] != null) el2.checked=!!def[k2];
-                } else if (t2==='number' || t2==='integer'){
-                  el2 = document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default); if (def && typeof def[k2]==='number') el2.value=String(def[k2]);
-                } else {
-                  el2 = document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default); if (def && def[k2] != null) el2.value=String(def[k2]);
-                }
-                el2.dataset.key = k2;
-                r2.appendChild(el2);
-                item.appendChild(r2);
-              });
-            } else {
-              const el = document.createElement('input'); el.type='text'; el.dataset.key='__scalar__'; if (def!=null) el.value=String(def); item.appendChild(el);
-            }
-            list.appendChild(item);
-          }
-          btn.addEventListener('click', ()=> addItem(undefined));
-          if (Array.isArray(spec.default)) spec.default.forEach(v=> addItem(v));
-          if (Array.isArray(init[key])) init[key].forEach(v=> addItem(v));
-          inputEl = wrap;
-        } else if (t === 'object' && spec.properties){
-          const sub = document.createElement('div'); sub.dataset.key = key; sub.dataset.type='object'; sub.style.border='1px dashed var(--border-color)'; sub.style.padding='6px';
-          const subInit = (init && typeof init[key] === 'object') ? init[key] : {};
-          Object.entries(spec.properties).forEach(([k2, s2])=>{
-            const r2 = document.createElement('div'); r2.style.marginTop='6px';
-            const lb2 = document.createElement('label'); lb2.textContent = (s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2);
-            const t2 = s2.type || 'string';
-            let el2;
-            if (Array.isArray(s2.enum)){
-              el2 = document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default); if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.value=String(subInit[k2]);
-            } else if (t2==='boolean'){
-              el2 = document.createElement('input'); el2.type='checkbox'; el2.checked = !!s2.default; if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.checked=!!subInit[k2];
-            } else if (t2==='number' || t2==='integer'){
-              el2 = document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default); if (typeof subInit[k2]==='number') el2.value=String(subInit[k2]);
-            } else {
-              el2 = document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default); if (Object.prototype.hasOwnProperty.call(subInit,k2)) el2.value=String(subInit[k2]);
-            }
-            el2.dataset.key = k2;
-            r2.appendChild(el2);
-            sub.appendChild(r2);
-          });
-          inputEl = sub;
         } else {
-          const txt = document.createElement('input'); txt.type='text'; txt.dataset.key = key; if (spec && spec.default!=null) txt.value=String(spec.default); if (spec && spec.pattern) txt.pattern = String(spec.pattern); if (Object.prototype.hasOwnProperty.call(init,key)) txt.value = String(init[key]);
+          const txt = document.createElement('input');
+          txt.type = 'text';
+          txt.dataset.key = key;
+          if (spec && spec.default != null) txt.value = String(spec.default);
+          if (Object.prototype.hasOwnProperty.call(init, key)) txt.value = String(init[key]);
           inputEl = txt;
         }
+
         if (inputEl) row.appendChild(inputEl);
         root.appendChild(row);
       });
     }
-    function collectFormPayload(containerId){
+
+    function collectFormPayload(containerId) {
       const root = document.getElementById(containerId);
       const payload = {};
-      const rows = Array.from(root.children);
-      for (const row of rows){
-        const arrayBlock = row.querySelector('[data-type="array"]');
-        const objectBlock = row.querySelector('[data-type="object"]');
-        if (arrayBlock){
-          const key = arrayBlock.dataset.key; const items = [];
-          arrayBlock.querySelectorAll(':scope > div > div').forEach(item=>{
-            const scalar = item.querySelector('input[data-key="__scalar__"]');
-            if (scalar) items.push(scalar.value);
-            else {
-              const obj = {}; item.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value || 0); else obj[k]=el.value; });
-              items.push(obj);
-            }
-          });
-          payload[key] = items;
-          continue;
-        }
-        if (objectBlock){
-          const key = objectBlock.dataset.key; const obj = {};
-          objectBlock.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value || 0); else obj[k]=el.value; });
-          payload[key] = obj;
-          continue;
-        }
-        const inp = row.querySelector('[data-key]'); if (!inp) continue; const key = inp.dataset.key;
-        if (inp.tagName==='SELECT') payload[key] = inp.value;
-        else if (inp.type==='checkbox') payload[key] = !!inp.checked;
-        else if (inp.type==='number') payload[key] = (inp.value.trim()===''? null : Number(inp.value));
-        else payload[key] = inp.value;
-      }
+      root.querySelectorAll('[data-key]').forEach(el => {
+        const key = el.dataset.key;
+        if (el.type === 'checkbox') payload[key] = !!el.checked;
+        else if (el.type === 'number') payload[key] = (el.value.trim() === '' ? null : Number(el.value));
+        else payload[key] = el.value;
+      });
       return payload;
     }
-    function renderTestForm(){
-      try{ const raw = $('input_schema').value.trim(); const schema = raw? JSON.parse(raw): {}; renderFormFromSchema('test-form', schema); }
-      catch{ const c = document.getElementById('test-form'); c.innerHTML = '<div class="error-message">input_schema 不是合法 JSON，請修正或改用 JSON 分頁</div>'; }
+
+    function renderTestForm() {
+      try {
+        const raw = $('input_schema').value.trim();
+        const schema = raw ? JSON.parse(raw) : {};
+        renderFormFromSchema('test-form', schema);
+      } catch {
+        const c = document.getElementById('test-form');
+        c.innerHTML = '<div class="error-message">input_schema 不是合法 JSON，請修正或改用 JSON 分頁</div>';
+      }
     }
-    $('input_schema').addEventListener('input', ()=>{ renderTestForm(); });
-    async function loadHistory(){
+
+    $('input_schema').addEventListener('input', renderTestForm);
+
+    // ========== 測試歷史 ==========
+    function formatTimestamp(ts) {
+      if (!ts) return '-';
+      try {
+        // 若沒有時區資訊，假設為 UTC
+        let isoStr = ts;
+        if (!isoStr.endsWith('Z') && !isoStr.includes('+') && !isoStr.includes('-', 10)) {
+          isoStr = ts + 'Z';
+        }
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return ts;
+        return d.toLocaleString('zh-TW', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+      } catch {
+        return ts;
+      }
+    }
+
+    async function loadHistory() {
       if (!id) return;
-      try{
+      try {
         const r = await api.get(`/skills/${id}/tests?limit=20`);
         const rows = Array.isArray(r.items) ? r.items : [];
         const tb = $('test-history');
-        tb.innerHTML = rows.map(x=>{
-          const d = x.details || {}; const ok = !!d.ok; const ms = (typeof d.duration_ms==='number')? d.duration_ms : '';
-          const note = d.type ? d.type : '';
-          return `<tr><td>${x.timestamp || ''}</td><td>${ok?'成功':'失敗'}</td><td>${ms}</td><td>${note}</td></tr>`;
-        }).join('');
-      }catch(e){ /* ignore */ }
+        if (rows.length === 0) {
+          tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">尚無紀錄</td></tr>';
+        } else {
+          tb.innerHTML = rows.map(x => {
+            const d = x.details || {};
+            const ok = !!d.ok;
+            const ms = (typeof d.duration_ms === 'number') ? d.duration_ms : '';
+            const note = d.type ? d.type : '';
+            const time = formatTimestamp(x.timestamp || x.created_at);
+            return `<tr><td>${time}</td><td>${ok ? '成功' : '失敗'}</td><td>${ms}</td><td>${note}</td></tr>`;
+          }).join('');
+        }
+      } catch { /* ignore */ }
     }
+
+    $('btn-clear-history').addEventListener('click', async () => {
+      if (!id) return;
+      if (!confirm('確定要清除所有測試紀錄嗎？')) return;
+      try {
+        await api.delete(`/skills/${id}/tests`);
+        showSuccess('已清除測試紀錄');
+        loadHistory();
+      } catch (e) {
+        // 如果後端沒有此 API，就只清空 UI
+        $('test-history').innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">尚無紀錄</td></tr>';
+        showSuccess('已清除顯示');
+      }
+    });
+
     setInterval(loadHistory, 8000);
-    loadHistory();
+
+    // ========== 初始化 ==========
+    syncTypeUI();
     load();
+    loadHistory();
     renderTestForm();
   </script>
 </body>

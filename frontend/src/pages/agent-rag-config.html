@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RAG 資料集管理</title>
+  <title>RAG 設定 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
 </head>
 <body>
@@ -18,40 +18,66 @@
   </nav>
 
   <main class="container">
-    <h2>RAG 公有資料集管理</h2>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:1rem;">
+      <a href="/pages/agent-list.html" class="btn">&larr; 返回列表</a>
+      <h2 id="page-title">RAG 設定</h2>
+    </div>
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
 
-    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
-      <button id="btn-new" class="btn btn-primary" type="button">新建資料集</button>
-      <button id="btn-refresh" class="btn" type="button">重新整理</button>
-      <span style="color:var(--text-secondary);">此頁僅管理 scope=global 的 RAG 資料集。</span>
-    </div>
+    <!-- Section 1: 公有資料集加入 -->
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>公有資料集綁定</h3>
+      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <label>從公有資料集加入：</label>
+            <select id="global-dataset-select"><option value="">— 請選擇 —</option></select>
+            <button id="btn-add-global" class="btn btn-primary" type="button">加入</button>
+          </div>
+          <p style="color:var(--text-secondary);font-size:0.9rem;">從全域 RAG 資料集挑選，加入後會出現在右側清單，可移除。</p>
+        </div>
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <strong>已綁定公有資料集</strong>
+            <small style="color:var(--text-secondary);" id="global-count">0 項</small>
+          </div>
+          <div id="global-dataset-list" style="margin-top:6px;max-height:200px;overflow-y:auto;"></div>
+        </div>
+      </div>
+    </section>
 
+    <!-- Section 2: 私有資料集管理 -->
     <section class="card">
-      <h3>資料集清單</h3>
-      <div style="margin-bottom:8px;color:var(--text-secondary);">
-        每筆資料集可直接上傳文件，文件會被切塊與向量化寫入該資料集索引。
+      <h3>私有資料集管理</h3>
+      <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+        <button id="btn-new-private" class="btn btn-primary" type="button">新建私有資料集</button>
+        <button id="btn-refresh-private" class="btn" type="button">重新整理</button>
+        <span style="color:var(--text-secondary);">此區僅管理當前代理者的私有資料集（scope=agent_private）。</span>
       </div>
       <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
         <table class="table" style="margin:0;">
           <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
             <tr><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
           </thead>
-          <tbody id="rows"></tbody>
+          <tbody id="private-rows"></tbody>
         </table>
       </div>
     </section>
+
+    <div style="margin-top:1rem;">
+      <button id="btn-save" class="btn btn-success" type="button">儲存設定</button>
+    </div>
   </main>
 
-  <!-- Modal：新建/編輯資料集 -->
+  <!-- Modal：新建/編輯私有資料集 -->
   <div id="dataset-modal" class="modal">
     <div class="modal-content" style="max-width:550px;">
-      <h3 id="dataset-modal-title">新建公有資料集</h3>
+      <h3 id="dataset-modal-title">新建私有資料集</h3>
       <form id="dataset-form">
         <div class="form-group">
           <label for="modal-name">資料集名稱 <span style="color:var(--error-color);">*</span></label>
-          <input id="modal-name" type="text" placeholder="例如：company-kb" required>
+          <input id="modal-name" type="text" placeholder="例如：agent-private-kb" required>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div class="form-group">
@@ -75,7 +101,7 @@
         </div>
         <div class="form-group">
           <label for="modal-index-name">index_name（可選）</label>
-          <input id="modal-index-name" type="text" placeholder="例如：global_knowledge">
+          <input id="modal-index-name" type="text" placeholder="例如：agent_private_knowledge">
         </div>
         <div class="actions">
           <button type="submit" class="btn btn-primary" id="dataset-modal-save">建立</button>
@@ -165,16 +191,35 @@
       window.location.href = '/pages/login.html';
     }
     const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
-      showError('僅限管理者存取');
+    if (!user || !['admin', 'agent_admin'].includes(user.role)) {
+      showError('僅限管理者或代理者管理者存取');
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
 
+    // 取得 agent_id
+    const urlParams = new URLSearchParams(window.location.search);
+    const agentId = urlParams.get('id');
+    if (!agentId) {
+      showError('缺少代理者 ID');
+      setTimeout(() => { window.location.href = '/pages/agent-list.html'; }, 1200);
+      throw new Error('missing_agent_id');
+    }
+
+    // 狀態
+    let state = {
+      agent: null,
+      globalDatasets: [],       // 全域公有資料集選項
+      privateDatasets: [],      // 當前代理者的私有資料集
+      boundGlobalIds: [],       // 已綁定的公有資料集 ID
+    };
+
     // DOM 元素
-    const rows = document.getElementById('rows');
-    const newBtn = document.getElementById('btn-new');
-    const refreshBtn = document.getElementById('btn-refresh');
+    const pageTitle = document.getElementById('page-title');
+    const globalDatasetSelect = document.getElementById('global-dataset-select');
+    const globalDatasetList = document.getElementById('global-dataset-list');
+    const globalCountEl = document.getElementById('global-count');
+    const privateRows = document.getElementById('private-rows');
 
     // Modal 元素
     const datasetModal = document.getElementById('dataset-modal');
@@ -186,12 +231,74 @@
     function openModal(el) { el.classList.add('active'); }
     function closeModal(el) { el.classList.remove('active'); }
 
-    // ========== 資料集表單 Modal ==========
-    let editingId = '';
+    // ========== 輔助函式 ==========
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text || '';
+      return div.innerHTML;
+    }
 
-    newBtn.addEventListener('click', () => {
-      editingId = '';
-      document.getElementById('dataset-modal-title').textContent = '新建公有資料集';
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatDate(isoString) {
+      if (!isoString) return '-';
+      return new Date(isoString).toLocaleString('zh-TW');
+    }
+
+    // ========== 公有資料集綁定 ==========
+    function renderGlobalDatasetList() {
+      const byId = Object.fromEntries(state.globalDatasets.map(d => [d.id, d]));
+      globalDatasetList.innerHTML = '';
+      state.boundGlobalIds.forEach((id, idx) => {
+        const ds = byId[id] || { name: id };
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);';
+        row.innerHTML = `
+          <span style="flex:1;">${escapeHtml(ds.name || id)}</span>
+          <button class="btn btn-danger" data-remove-global="${idx}" style="padding:4px 8px;font-size:0.85rem;">移除</button>
+        `;
+        globalDatasetList.appendChild(row);
+      });
+      globalCountEl.textContent = `${state.boundGlobalIds.length} 項`;
+    }
+
+    globalDatasetList.addEventListener('click', (e) => {
+      const target = e.target;
+      const removeIdx = target.getAttribute('data-remove-global');
+      if (removeIdx !== null) {
+        state.boundGlobalIds.splice(parseInt(removeIdx), 1);
+        renderGlobalDatasetList();
+        showSuccess('已移除公有資料集');
+      }
+    });
+
+    document.getElementById('btn-add-global').addEventListener('click', () => {
+      const id = globalDatasetSelect.value;
+      if (!id) {
+        showError('請先選擇一個公有資料集');
+        return;
+      }
+      if (state.boundGlobalIds.includes(id)) {
+        showSuccess('已在清單中');
+        return;
+      }
+      state.boundGlobalIds.push(id);
+      renderGlobalDatasetList();
+      showSuccess('已加入公有資料集');
+    });
+
+    // ========== 私有資料集表單 Modal ==========
+    let editingPrivateId = '';
+
+    document.getElementById('btn-new-private').addEventListener('click', () => {
+      editingPrivateId = '';
+      document.getElementById('dataset-modal-title').textContent = '新建私有資料集';
       document.getElementById('dataset-modal-save').textContent = '建立';
       document.getElementById('dataset-form').reset();
       document.getElementById('modal-enabled').checked = true;
@@ -206,6 +313,8 @@
       e.preventDefault();
       const payload = {
         name: document.getElementById('modal-name').value.trim(),
+        scope: 'agent_private',
+        agent_id: agentId,
         sensitivity: document.getElementById('modal-sensitivity').value,
         enabled: document.getElementById('modal-enabled').checked,
         vector_backend: document.getElementById('modal-vector-backend').value.trim(),
@@ -216,29 +325,28 @@
         return;
       }
       try {
-        if (editingId) {
-          await api.put(`/rag/datasets/${encodeURIComponent(editingId)}`, payload);
-          showSuccess('已更新資料集');
+        if (editingPrivateId) {
+          await api.put(`/rag/datasets/${encodeURIComponent(editingPrivateId)}`, payload);
+          showSuccess('已更新私有資料集');
         } else {
           await api.post('/rag/datasets', payload);
-          showSuccess('已建立資料集');
+          showSuccess('已建立私有資料集');
         }
         closeModal(datasetModal);
-        await load();
+        await loadPrivateDatasets();
       } catch (err) {
         showError(err.message || '儲存失敗');
       }
     });
 
     function openEditModal(id) {
-      const list = window.__globalDatasets || [];
-      const found = list.find((item) => String(item.id) === String(id));
+      const found = state.privateDatasets.find((item) => String(item.id) === String(id));
       if (!found) {
         showError('找不到資料集');
         return;
       }
-      editingId = String(found.id);
-      document.getElementById('dataset-modal-title').textContent = '編輯公有資料集';
+      editingPrivateId = String(found.id);
+      document.getElementById('dataset-modal-title').textContent = '編輯私有資料集';
       document.getElementById('dataset-modal-save').textContent = '儲存';
       document.getElementById('modal-name').value = found.name || '';
       document.getElementById('modal-sensitivity').value = found.sensitivity || 'normal';
@@ -396,7 +504,6 @@
       }
     });
 
-    // Enter 鍵觸發搜尋
     document.getElementById('search-query').addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
         document.getElementById('search-btn').click();
@@ -420,9 +527,9 @@
       if (!deleteTargetId) return;
       try {
         await api.delete(`/rag/datasets/${encodeURIComponent(deleteTargetId)}`);
-        showSuccess('已刪除資料集');
+        showSuccess('已刪除私有資料集');
         closeModal(deleteModal);
-        await load();
+        await loadPrivateDatasets();
       } catch (err) {
         showError(err.message || '刪除失敗');
       }
@@ -432,33 +539,26 @@
       closeModal(deleteModal);
     });
 
-    // ========== 列表載入與事件委派 ==========
-    async function load() {
-      try {
-        const res = await api.get('/rag/datasets?scope=global');
-        const list = Array.isArray(res.datasets) ? res.datasets : [];
-        window.__globalDatasets = list;
-        rows.innerHTML = list.map((item) => `
-          <tr>
-            <td>${escapeHtml(item.name || '')}</td>
-            <td>${escapeHtml(item.sensitivity || 'normal')}</td>
-            <td>${item.enabled ? '啟用' : '停用'}</td>
-            <td>${escapeHtml(item.vector_backend || '')}</td>
-            <td>${escapeHtml(item.index_name || '')}</td>
-            <td style="white-space:nowrap;">
-              <button class="btn" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
-              <button class="btn" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
-              <button class="btn" data-edit="${item.id}">編輯</button>
-              <button class="btn btn-danger" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>
-            </td>
-          </tr>
-        `).join('');
-      } catch (err) {
-        showError(err.message || '載入失敗');
-      }
+    // ========== 私有資料集列表 ==========
+    function renderPrivateDatasets() {
+      privateRows.innerHTML = state.privateDatasets.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.name || '')}</td>
+          <td>${escapeHtml(item.sensitivity || 'normal')}</td>
+          <td>${item.enabled ? '啟用' : '停用'}</td>
+          <td>${escapeHtml(item.vector_backend || '')}</td>
+          <td>${escapeHtml(item.index_name || '')}</td>
+          <td style="white-space:nowrap;">
+            <button class="btn" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
+            <button class="btn" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
+            <button class="btn" data-edit="${item.id}">編輯</button>
+            <button class="btn btn-danger" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>
+          </td>
+        </tr>
+      `).join('');
     }
 
-    rows.addEventListener('click', (e) => {
+    privateRows.addEventListener('click', (e) => {
       const target = e.target;
       if (target.tagName !== 'BUTTON') return;
 
@@ -479,30 +579,97 @@
       }
     });
 
-    refreshBtn.addEventListener('click', load);
+    document.getElementById('btn-refresh-private').addEventListener('click', loadPrivateDatasets);
 
-    // ========== 輔助函式 ==========
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text || '';
-      return div.innerHTML;
+    // ========== 資料載入 ==========
+    async function loadPrivateDatasets() {
+      try {
+        const res = await api.get(`/rag/datasets?scope=agent_private&agent_id=${encodeURIComponent(agentId)}`);
+        state.privateDatasets = Array.isArray(res.datasets) ? res.datasets : [];
+        renderPrivateDatasets();
+      } catch (err) {
+        showError(err.message || '載入私有資料集失敗');
+      }
     }
 
-    function formatBytes(bytes) {
-      if (!bytes || bytes === 0) return '0 B';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    async function loadGlobalDatasets() {
+      try {
+        const res = await api.get('/rag/datasets?scope=global');
+        state.globalDatasets = Array.isArray(res.datasets) ? res.datasets : [];
+        globalDatasetSelect.innerHTML = '<option value="">— 請選擇 —</option>' +
+          state.globalDatasets.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+      } catch (err) {
+        showError(err.message || '載入公有資料集失敗');
+      }
     }
 
-    function formatDate(isoString) {
-      if (!isoString) return '-';
-      return new Date(isoString).toLocaleString('zh-TW');
+    async function loadAgentIntegrations() {
+      try {
+        const res = await api.get(`/agents/${agentId}/integrations`);
+        const ragDatasetIds = res.rag_dataset_ids || {};
+        state.boundGlobalIds = Array.isArray(ragDatasetIds.global_dataset_ids)
+          ? ragDatasetIds.global_dataset_ids.map(String)
+          : [];
+        renderGlobalDatasetList();
+      } catch (err) {
+        showError(err.message || '載入代理者設定失敗');
+      }
     }
 
-    // 初始載入
-    load();
+    async function loadAgentInfo() {
+      try {
+        const res = await api.get(`/agents/${agentId}`);
+        state.agent = res.agent || res;
+        pageTitle.textContent = `${state.agent.name || '代理者'} - RAG 設定`;
+        document.title = `${state.agent.name || '代理者'} RAG 設定 - dyagent`;
+      } catch (err) {
+        showError(err.message || '載入代理者資訊失敗');
+      }
+    }
+
+    // ========== 儲存 ==========
+    document.getElementById('btn-save').addEventListener('click', async () => {
+      try {
+        // 取得當前代理者設定
+        const currentRes = await api.get(`/agents/${agentId}/integrations`);
+
+        // 更新 rag_dataset_ids
+        const privateDatasetIds = state.privateDatasets.map(d => String(d.id));
+
+        const payload = {
+          mcp_config: currentRes.mcp_config || [],
+          skills: currentRes.skills || [],
+          rag_config: currentRes.rag_config || { enabled: false, sources: [], topK: 5 },
+          functions_definition_template: currentRes.functions_definition_template || '',
+          toolcall_guide: currentRes.toolcall_guide || '',
+          skill_examples: currentRes.skill_examples || {},
+          mcp_ids: currentRes.mcp_ids || [],
+          skill_ids: currentRes.skill_ids || [],
+          function_profile_id: currentRes.function_profile_id || '',
+        };
+
+        // 更新 rag_config 中的 dataset IDs
+        payload.rag_config.global_dataset_ids = state.boundGlobalIds;
+        payload.rag_config.private_dataset_ids = privateDatasetIds;
+
+        await api.put(`/agents/${agentId}/integrations`, payload);
+        showSuccess('RAG 設定已儲存');
+      } catch (err) {
+        showError(err.message || '儲存失敗');
+      }
+    });
+
+    // ========== 初始化 ==========
+    async function init() {
+      await loadAgentInfo();
+      await Promise.all([
+        loadGlobalDatasets(),
+        loadPrivateDatasets(),
+        loadAgentIntegrations(),
+      ]);
+    }
+
+    init();
   </script>
 </body>
 </html>

@@ -24,6 +24,16 @@ const api = {
     });
 
     if (!response.ok) {
+      // 401 表示 token 無效或過期，自動清除並重導向到登入頁
+      if (response.status === 401) {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('user');
+        // 避免在登入頁再次重導向
+        if (!window.location.pathname.endsWith('/login.html')) {
+          window.location.href = '/pages/login.html';
+        }
+        throw new Error('登入已過期，請重新登入');
+      }
       const error = await response.json().catch(() => ({ error: 'Unknown error' }));
       throw new Error(error.error || `HTTP ${response.status}`);
     }
@@ -57,6 +67,33 @@ const api = {
     return this.request(endpoint, {
       method: 'DELETE',
     });
+  },
+
+  async uploadFile(endpoint, formData) {
+    const token = localStorage.getItem('auth_token');
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      // 401 表示 token 無效或過期，自動清除並重導向到登入頁
+      if (response.status === 401) {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('user');
+        if (!window.location.pathname.endsWith('/login.html')) {
+          window.location.href = '/pages/login.html';
+        }
+        throw new Error('登入已過期，請重新登入');
+      }
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+
+    return response.json();
   },
 };
 

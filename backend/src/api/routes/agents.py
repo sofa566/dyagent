@@ -29,12 +29,14 @@ async def list_public_agents(
     """
     # 僅驗證登入；不做額外權限限制
     agents = db.query(Agent).all()
+    agents = sorted(agents, key=lambda x: (0 if bool(getattr(x, 'is_router', False)) else 1, str(x.name or '')))
     return {
         'agents': [
             {
                 'id': str(a.id),
                 'name': a.name,
                 'description': a.description,
+                'is_router': bool(getattr(a, 'is_router', False)),
             }
             for a in agents
         ]
@@ -675,6 +677,7 @@ async def create_agent(
     description: str = '',
     model_type: str = 'cloud',
     model_config: dict = {},
+    system_prompt: str = '',
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -695,6 +698,7 @@ async def create_agent(
     agent = Agent(
         name=name,
         description=description,
+        system_prompt=system_prompt.strip() or None,
         model_type=model_type,
         model_config=model_config,
         workspace_id=workspace.id,
@@ -707,6 +711,7 @@ async def create_agent(
         'id': str(agent.id),
         'name': agent.name,
         'description': agent.description,
+        'system_prompt': agent.system_prompt or '',
         'model_type': agent.model_type,
         'model_config': agent.model_config,
         'created_at': agent.created_at.isoformat() if agent.created_at else None,
@@ -738,6 +743,7 @@ async def get_agent(
         'id': str(agent.id),
         'name': agent.name,
         'description': agent.description,
+        'system_prompt': agent.system_prompt or '',
         'model_type': agent.model_type,
         'model_config': agent.model_config,
         'mcp_config': agent.mcp_config,
@@ -757,6 +763,7 @@ async def update_agent(
     description: str | None = None,
     model_type: str | None = None,
     model_config: dict | None = None,
+    system_prompt: str | None = None,
     request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -795,6 +802,9 @@ async def update_agent(
             model_type = str(v) if isinstance(v, str) else model_type
         if 'model_config' in payload and model_config is None and isinstance(payload.get('model_config'), dict):
             model_config = payload.get('model_config')
+        if 'system_prompt' in payload and system_prompt is None:
+            v = payload.get('system_prompt')
+            system_prompt = str(v) if isinstance(v, str) else system_prompt
 
     if name is not None:
         agent.name = name
@@ -807,6 +817,8 @@ async def update_agent(
         agent.model_type = mt
     if model_config is not None:
         agent.model_config = model_config
+    if system_prompt is not None:
+        agent.system_prompt = system_prompt.strip() or None
 
     db.commit()
     db.refresh(agent)
@@ -816,6 +828,7 @@ async def update_agent(
         'name': agent.name,
         'description': agent.description,
         'model_type': agent.model_type,
+        'system_prompt': agent.system_prompt or '',
         'updated_at': agent.updated_at.isoformat() if agent.updated_at else None,
     }
 

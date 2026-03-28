@@ -33,6 +33,11 @@
           <textarea id="description" name="description" rows="4" maxlength="1000"></textarea>
         </div>
         <div class="form-group">
+          <label for="system_prompt">System Prompt（系統提示詞）</label>
+          <textarea id="system_prompt" name="system_prompt" rows="6" maxlength="10000" placeholder="輸入代理者專屬的系統提示詞，用於指導 LLM 的行為和角色定位..."></textarea>
+          <small style="color: var(--text-secondary);">此欄位優先於「功能描述」作為 LLM 的 system prompt。若留空則使用「功能描述」作為 fallback。</small>
+        </div>
+        <div class="form-group">
           <label for="model_type">模型類型 *</label>
           <select id="model_type" name="model_type" required>
             <option value="cloud">雲端模型 (Cloud)</option>
@@ -67,9 +72,10 @@
 
     document.getElementById('create-agent-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      
+
       const name = document.getElementById('name').value;
       const description = document.getElementById('description').value;
+      const system_prompt = document.getElementById('system_prompt').value;
       const model_type = document.getElementById('model_type').value;
       const provider = document.getElementById('provider').value;
       const model_name = document.getElementById('model_name').value;
@@ -80,10 +86,11 @@
       };
 
       try {
-        // 後端 /api/agents 期望參數以 query 形式傳遞（name/description/model_type）
+        // 後端 /api/agents 期望參數以 query 形式傳遞（name/description/model_type/system_prompt）
         const qs = new URLSearchParams({
           name,
           description,
+          system_prompt,
           model_type,
         });
         await api.request(`/agents?${qs.toString()}`, { method: 'POST' });

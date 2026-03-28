@@ -16,6 +16,7 @@ else
   echo "[info] starting frontend..."
   (
     cd "$FRONTEND_DIR"
+    npm run build
     nohup npm run dev > "$FRONTEND_LOG" 2>&1 &
   )
   disown || true

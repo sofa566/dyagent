@@ -20,6 +20,8 @@ from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error, forbidden_error
 from src.services.chat_router import ChatRouter
+from src.services.embedding_service import embedding_service
+from src.services.llm_client import LLMClient
 from src.core.logging import get_logger
 from src.core.config import settings
 
@@ -430,21 +432,105 @@ def _get_by_path(obj: dict, path: str):
         return None
 
 
-def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> Agent | None:
-    """目的：以輕量規則選擇工作代理者。
-    為什麼：在不引入額外編排框架前，先提供可用的主從分派能力。
+def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
+    if not v1 or not v2 or len(v1) != len(v2):
+        return -1.0
+    dot = sum((a * b) for a, b in zip(v1, v2))
+    n1 = sum((a * a) for a in v1) ** 0.5
+    n2 = sum((b * b) for b in v2) ** 0.5
+    if n1 <= 0 or n2 <= 0:
+        return -1.0
+    return float(dot / (n1 * n2))
+
+
+def _pick_worker_by_rules(*, workers: list[Agent], message: str) -> Agent | None:
+    lower_msg = str(message or '').lower()
+    for worker in workers:
+        name = str(worker.name or '').strip().lower()
+        desc = str(worker.description or '').strip().lower()
+        if name and name in lower_msg:
+            return worker
+        if desc and any(token and token in lower_msg for token in desc.split()[:8]):
+            return worker
+    return None
+
+
+def _pick_worker_by_embedding(*, workers: list[Agent], message: str) -> tuple[Agent | None, float]:
+    message_vector = embedding_service.embed_one(str(message or ''))
+    if not message_vector:
+        return None, -1.0
+
+    best_worker = None
+    best_score = -1.0
+    for worker in workers:
+        profile_text = f"{str(worker.name or '').strip()}\n{str(worker.description or '').strip()}"
+        worker_vector = embedding_service.embed_one(profile_text)
+        score = _cosine_similarity(message_vector, worker_vector)
+        if score > best_score:
+            best_worker = worker
+            best_score = score
+    return best_worker, best_score
+
+
+def _pick_worker_by_llm(*, workers: list[Agent], message: str) -> Agent | None:
+    """目的：在規則與向量信心不足時，以模型進行最後裁決。
+    為什麼：語意重述與跨領域問題僅靠關鍵字/向量可能誤判，需有第三層補強。
+    """
+    if not workers:
+        return None
+    candidate_lines = [f"- id={str(w.id)} name={str(w.name or '')} desc={str(w.description or '')}" for w in workers]
+    prompt = (
+        "你是路由決策器。請從候選代理者中選一個最適合處理使用者問題的 id。\n"
+        "只輸出 JSON：{\"agent_id\":\"...\",\"confidence\":0~1}\n\n"
+        f"[候選代理者]\n{chr(10).join(candidate_lines)}\n\n"
+        f"[使用者問題]\n{str(message or '').strip()}"
+    )
+    try:
+        llm = LLMClient()
+        llm.init_for_session(session_id='route-judge', preferred_tier='cloud', overrides={'tier': 'cloud'})
+        result = ''.join(list(llm.stream_complete(prompt=prompt, tier='cloud')))
+        start = result.find('{')
+        end = result.rfind('}')
+        if start < 0 or end <= start:
+            return None
+        obj = _json.loads(result[start:end + 1])
+        agent_id = str((obj or {}).get('agent_id') or '').strip()
+        if not agent_id:
+            return None
+        for worker in workers:
+            if str(worker.id) == agent_id:
+                return worker
+    except Exception:
+        return None
+    return None
+
+
+def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tuple[Agent | None, str]:
+    """目的：以混合路由策略挑選工作代理者。
+    為什麼：先用快路徑降低延遲，再以語意比對與模型裁決補齊準確率。
     """
     workers = db.query(Agent).filter(Agent.id != router_agent.id).all()
     if not workers:
-        return None
-    lower_msg = str(message or '').lower()
-    # 優先依名稱/描述關鍵字匹配
-    for w in workers:
-        name = str(w.name or '').strip().lower()
-        desc = str(w.description or '').strip().lower()
-        if (name and name in lower_msg) or (desc and any(tok and tok in lower_msg for tok in desc.split()[:5])):
-            return w
-    return workers[0]
+        return None, 'worker_not_found'
+
+    matched = _pick_worker_by_rules(workers=workers, message=message)
+    if matched is not None:
+        return matched, 'rule_match'
+
+    embedded, score = _pick_worker_by_embedding(workers=workers, message=message)
+    try:
+        threshold = float(getattr(settings, 'ROUTER_EMBEDDING_THRESHOLD', 0.55))
+    except Exception:
+        threshold = 0.55
+    threshold = max(0.0, min(1.0, threshold))
+    if embedded is not None and score >= threshold:
+        return embedded, 'embedding_match'
+
+    judged = _pick_worker_by_llm(workers=workers, message=message)
+    if judged is not None:
+        return judged, 'llm_judge'
+
+    return workers[0], 'default_fallback'
 
 
 def _write_event_part_safe(*, db: Session, conversation_id: str, type_: str, payload: dict[str, Any]) -> None:
@@ -790,7 +876,7 @@ async def chat_stream(
 
             async def _gen_unavailable():
                 yield f"data: {_json.dumps({'type':'react','phase':'reroute','message':'策略改選：模型路由不可用，改為降級訊息','reason_code':'model.no_route','from':'llm','to':'unavailable_text','reason':reason}, ensure_ascii=False)}\n\n"
-                text = f"模型路由暫時不可用（{reason}）。請稍後重試，或改用其他代理者模型。"
+                text = f"模型路由暫時不可用（{reason}）。請稍後重試。"
                 yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(text, ensure_ascii=False)} }}\n\n"
                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
             return StreamingResponse(_gen_unavailable(), media_type='text/event-stream')
@@ -1134,10 +1220,13 @@ async def chat_entry_router(
     if router_agent is None:
         raise validation_error('尚未建立可用代理者')
 
-    worker = _pick_worker_agent(db=db, router_agent=router_agent, message=message)
+    worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=message)
     is_fallback = False
     if worker is None:
         worker = router_agent
+        is_fallback = True
+        route_reason = 'worker_not_found_fallback'
+    elif route_reason in {'default_fallback'}:
         is_fallback = True
 
     conversation = _query_latest_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
@@ -1148,7 +1237,7 @@ async def chat_entry_router(
         'router_agent_id': str(router_agent.id),
         'target_agent_id': str(worker.id),
         'target_agent_name': worker.name,
-        'reason': 'worker_not_found_fallback' if is_fallback else 'keyword_or_default',
+        'reason': route_reason,
     }
     _write_event_part_safe(
         db=db,
@@ -1167,7 +1256,7 @@ async def chat_entry_router(
             db=db,
             conversation_id=str(conversation.id),
             type_='route.fallback',
-            payload={'reason': 'worker_not_found', 'target_agent_id': str(worker.id)},
+            payload={'reason': route_reason, 'target_agent_id': str(worker.id)},
         )
 
     routed_response = await chat_stream(

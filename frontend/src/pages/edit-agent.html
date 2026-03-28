@@ -33,6 +33,11 @@
           <textarea id="description" name="description" rows="4" maxlength="1000"></textarea>
         </div>
         <div class="form-group">
+          <label for="system_prompt">System Prompt（系統提示詞）</label>
+          <textarea id="system_prompt" name="system_prompt" rows="6" maxlength="10000" placeholder="輸入代理者專屬的系統提示詞，用於指導 LLM 的行為和角色定位..."></textarea>
+          <small style="color: var(--text-secondary);">此欄位優先於「功能描述」作為 LLM 的 system prompt。若留空則使用「功能描述」作為 fallback。</small>
+        </div>
+        <div class="form-group">
           <label for="model_type">模型類型 *</label>
           <select id="model_type" name="model_type" required>
             <option value="cloud">雲端模型 (Cloud)</option>
@@ -84,6 +89,7 @@
         const response = await api.get(`/agents/${agentId}`);
         document.getElementById('name').value = response.name;
         document.getElementById('description').value = response.description || '';
+        document.getElementById('system_prompt').value = response.system_prompt || '';
         document.getElementById('model_type').value = response.model_type;
         // 設定進階 LLM 設定連結
         const adv = document.getElementById('llm-config-adv');
@@ -98,15 +104,17 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      
+
       const name = document.getElementById('name').value;
       const description = document.getElementById('description').value;
+      const system_prompt = document.getElementById('system_prompt').value;
       const model_type = document.getElementById('model_type').value;
 
       try {
         await api.put(`/agents/${agentId}`, {
           name,
           description,
+          system_prompt,
           model_type,
         });
         showSuccess('代理者更新成功！');

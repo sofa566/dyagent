@@ -145,7 +145,7 @@
       </aside>
       <section class="chat-container">
         <div id="chat-messages" class="chat-messages">
-          <p style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
+          <p id="chat-initial-hint" style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
         </div>
         <details id="tools-panel" class="tools" style="margin-top:0.75rem;">
           <summary>可用工具</summary>
@@ -180,8 +180,13 @@
       window.location.href = '/pages/login.html';
     }
 
+    const currentUser = auth.getUser() || {};
+    const autoRoutingMode = String(currentUser.role || '') === 'user';
+
     const agentSelect = document.getElementById('agent-select');
+    const agentSelectorWrap = document.querySelector('.agent-selector');
     const chatMessages = document.getElementById('chat-messages');
+    const chatInitialHint = document.getElementById('chat-initial-hint');
     const convList = document.getElementById('conv-list');
     const convEmpty = document.getElementById('conv-empty');
     const newConvBtn = document.getElementById('new-conv');
@@ -685,12 +690,14 @@
     let currentAgentId = null;
     let currentConversationId = null;
     let currentConversations = [];
+    let agentRegistry = [];
 
     async function loadAgents() {
       try {
         // 先嘗試 public 清單（所有登入者可見）
         let response = await api.get('/agents/public');
         let agents = Array.isArray(response.agents) ? response.agents : [];
+        agentRegistry = agents;
         // 若為 admin 且 public 為空，回退 /agents（需要 read_agent）
         try {
           const me = JSON.parse(localStorage.getItem('user') || 'null');
@@ -729,18 +736,33 @@
           agents.forEach(agent => {
             const option = document.createElement('option');
             option.value = agent.id;
-            option.textContent = agent.name;
+            option.textContent = agent.is_router ? `${agent.name}（主代理）` : agent.name;
             agentSelect.appendChild(option);
           });
+        }
+
+        if (autoRoutingMode && agentSelectorWrap) {
+          agentSelectorWrap.style.display = 'none';
         }
 
         const urlParams = new URLSearchParams(window.location.search);
         const agentParam = urlParams.get('agent');
         const lastAgent = localStorage.getItem('last_agent_id');
-        const initial = agentParam || lastAgent;
-        if (initial && [...agentSelect.options].some(o => o.value === initial)) {
-          agentSelect.value = initial;
-          selectAgent(initial);
+        if (autoRoutingMode) {
+          const router = (agents || []).find((a) => !!a.is_router);
+          const initial = (router && router.id) ? router.id : ((agents[0] && agents[0].id) || '');
+          if (initial) {
+            currentAgentId = initial;
+            await selectAgent(initial);
+          } else {
+            chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">目前沒有可用代理者，請聯絡管理者。</p>';
+          }
+        } else {
+          const initial = agentParam || lastAgent;
+          if (initial && [...agentSelect.options].some(o => o.value === initial)) {
+            agentSelect.value = initial;
+            selectAgent(initial);
+          }
         }
       } catch (error) {
         showError(error.message);
@@ -814,8 +836,7 @@
           }
           toolConvInput.value = currentConversationId || '';
         } catch {}
-        // 後台暖機 LLM 路由（不影響 UI；忽略錯誤）
-        try { await api.post(`/agents/${agentId}/llm-test`, {}); } catch {}
+        // 不在前端進行 LLM 暖機，避免主代理或未配置模型造成噪音錯誤
       } catch (error) {
         chatMessages.innerHTML = '<p style="text-align: center; color: var(--error-color);">載入失敗，請稍後再試</p>';
       }
@@ -990,6 +1011,7 @@
     }
 
     agentSelect.addEventListener('change', (e) => {
+      if (autoRoutingMode) return;
       if (e.target.value) {
         selectAgent(e.target.value);
       } else {
@@ -1152,7 +1174,7 @@
 
     newConvBtn.addEventListener('click', async () => {
       if (!currentAgentId) {
-        showError('請先選擇代理者');
+        showError(autoRoutingMode ? '目前尚未取得可用代理者，請先送出一則訊息或聯絡管理者' : '請先選擇代理者');
         return;
       }
       try {
@@ -1192,7 +1214,13 @@
       // 建立助理訊息區塊
       const assistantMsg = document.createElement('div');
       assistantMsg.className = 'message assistant';
+      const routeInfo = document.createElement('div');
+      routeInfo.style.fontSize = '12px';
+      routeInfo.style.color = 'var(--text-secondary)';
+      routeInfo.style.marginBottom = '6px';
+      routeInfo.textContent = '本輪由：主代理分派中...';
       const p = document.createElement('p');
+      assistantMsg.appendChild(routeInfo);
       assistantMsg.appendChild(p);
       const reactTrace = createReactTraceCard();
       assistantMsg.appendChild(reactTrace.wrap);
@@ -1200,14 +1228,34 @@
       // 串流聊天
       try {
         const token = localStorage.getItem('auth_token');
-        const url = `/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: msg });
+        const selected = (agentRegistry || []).find((a) => String(a.id) === String(currentAgentId));
+        const useUnifiedEntry = !!autoRoutingMode || !!(selected && selected.is_router);
+        const url = useUnifiedEntry
+          ? '/api/chat'
+          : (`/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: msg }));
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort('timeout'), STREAM_TIMEOUT_MS);
-        let resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+        let resp = await fetch(url, {
+          method: useUnifiedEntry ? 'POST' : 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body: useUnifiedEntry ? JSON.stringify({ message: msg }) : undefined,
+          signal: controller.signal,
+        });
         if (!resp.ok && resp.status === 503) {
           // 後端重啟或模型路由短暫不可用時，做一次短暫重試
           await new Promise((r) => setTimeout(r, 1200));
-          resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+          resp = await fetch(url, {
+            method: useUnifiedEntry ? 'POST' : 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
+            },
+            body: useUnifiedEntry ? JSON.stringify({ message: msg }) : undefined,
+            signal: controller.signal,
+          });
         }
         if (!resp.ok || !resp.body) {
           clearTimeout(timer);
@@ -1236,6 +1284,18 @@
                 p.textContent = p.textContent.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '').trimStart();
               } else if (payload.type === 'react') {
                 appendReactTrace(reactTrace, payload);
+              } else if (payload.type === 'route.decision') {
+                if (payload.target_agent_name) {
+                  routeInfo.textContent = `本輪由：${String(payload.target_agent_name)} 代理者回覆`;
+                } else if (payload.target_agent_id) {
+                  routeInfo.textContent = `本輪由：${String(payload.target_agent_id)} 代理者回覆`;
+                }
+                if (payload.target_agent_id) {
+                  currentAgentId = String(payload.target_agent_id);
+                  if (!autoRoutingMode) {
+                    try { agentSelect.value = String(payload.target_agent_id); } catch {}
+                  }
+                }
               } else if (payload.type === 'tool_start') {
                 const built = createToolCard(payload.name);
                 built._toolName = payload.name;
@@ -1298,6 +1358,9 @@
     });
 
     loadAgents();
+    if (autoRoutingMode && chatInitialHint) {
+      chatInitialHint.textContent = '可直接開始對話，系統會自動由主代理分派。';
+    }
   </script>
 </body>
 </html>

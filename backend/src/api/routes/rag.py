@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Request
 import uuid
 import os
+import io
+import csv
+import json
+import re
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -41,9 +45,32 @@ def _global_collection_name(dataset_row: RagDataset) -> str:
     return f"rag_dataset_{str(dataset_row.id).replace('-', '')}"
 
 
-def _extract_text_for_indexing(content: bytes, content_type: str) -> str:
+def _private_collection_name(dataset_row: RagDataset) -> str:
+    # 目的：統一私有資料集的向量集合名稱。
+    # 為什麼：讓私有資料集與公有資料集使用一致的命名模式，但加上 private 前綴以區分。
+    index_name = str(getattr(dataset_row, 'index_name', '') or '').strip()
+    if index_name:
+        return index_name
+    return f"rag_private_{str(dataset_row.id).replace('-', '')}"
+
+
+def _dataset_collection_name(dataset_row: RagDataset) -> str:
+    # 目的：根據資料集 scope 自動選擇正確的 collection 名稱。
+    if dataset_row.scope == 'agent_private':
+        return _private_collection_name(dataset_row)
+    return _global_collection_name(dataset_row)
+
+
+def _dataset_upload_dir(dataset_row: RagDataset) -> Path:
+    # 目的：根據資料集 scope 返回正確的上傳目錄。
+    if dataset_row.scope == 'agent_private':
+        return UPLOAD_ROOT / 'private' / str(dataset_row.id)
+    return UPLOAD_ROOT / 'global' / str(dataset_row.id)
+
+
+def _extract_text_for_indexing(content: bytes, content_type: str, filename: str) -> tuple[str, str | None]:
     # 目的：萃取可索引文字內容。
-    # 為什麼：最小可行上傳流程先支援文字型檔案，其他格式先保底索引摘要。
+    # 為什麼：支援常見文件格式，並在不支援時回傳明確訊息供前端提示。
     text_types = {
         'text/plain',
         'text/markdown',
@@ -53,12 +80,85 @@ def _extract_text_for_indexing(content: bytes, content_type: str) -> str:
         'text/html',
     }
     ct = (content_type or '').lower().split(';')[0].strip()
-    if ct in text_types:
+    ext = (Path(filename or '').suffix or '').lower()
+
+    def _decode_utf8(raw: bytes) -> str:
         try:
-            return content.decode('utf-8')
+            return raw.decode('utf-8')
         except Exception:
-            return content.decode('utf-8', errors='ignore')
-    return ''
+            return raw.decode('utf-8', errors='ignore')
+
+    if ct in text_types:
+        if ct == 'text/html' or ext in {'.html', '.htm'}:
+            text = _decode_utf8(content)
+            text = re.sub(r'<script[\s\S]*?</script>', ' ', text, flags=re.IGNORECASE)
+            text = re.sub(r'<style[\s\S]*?</style>', ' ', text, flags=re.IGNORECASE)
+            text = re.sub(r'<[^>]+>', ' ', text)
+            return re.sub(r'\s+', ' ', text).strip(), None
+        if ct == 'application/xml' or ext in {'.xml'}:
+            text = _decode_utf8(content)
+            text = re.sub(r'<[^>]+>', ' ', text)
+            return re.sub(r'\s+', ' ', text).strip(), None
+        return _decode_utf8(content), None
+
+    if ext == '.json':
+        try:
+            data = json.loads(_decode_utf8(content) or '{}')
+            return json.dumps(data, ensure_ascii=False, indent=2), None
+        except Exception:
+            return _decode_utf8(content), None
+
+    if ext == '.csv':
+        try:
+            decoded = _decode_utf8(content)
+            reader = csv.reader(io.StringIO(decoded))
+            lines = ['\t'.join(row) for row in reader]
+            return '\n'.join(lines), None
+        except Exception:
+            return _decode_utf8(content), None
+
+    if ext == '.pdf':
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(content))
+            pages = []
+            for page in reader.pages:
+                pages.append((page.extract_text() or '').strip())
+            return '\n'.join([p for p in pages if p]), None
+        except Exception:
+            return '', 'pdf_extraction_failed_or_missing_pypdf'
+
+    if ext == '.docx':
+        try:
+            from docx import Document as DocxDocument
+
+            doc = DocxDocument(io.BytesIO(content))
+            text = '\n'.join([p.text for p in doc.paragraphs if (p.text or '').strip()])
+            return text, None
+        except Exception:
+            return '', 'docx_extraction_failed_or_missing_python_docx'
+
+    if ext in {'.xlsx', '.xlsm'}:
+        try:
+            from openpyxl import load_workbook
+
+            wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            lines: list[str] = []
+            for sheet in wb.worksheets:
+                lines.append(f'[{sheet.title}]')
+                for row in sheet.iter_rows(values_only=True):
+                    vals = [str(v) for v in row if v is not None and str(v).strip()]
+                    if vals:
+                        lines.append('\t'.join(vals))
+            return '\n'.join(lines), None
+        except Exception:
+            return '', 'xlsx_extraction_failed_or_missing_openpyxl'
+
+    if ext in {'.txt', '.md'}:
+        return _decode_utf8(content), None
+
+    return '', f'unsupported_file_type:{ext or ct or "unknown"}'
 
 
 def _index_document_chunks(*, agent_id: str, document_id: str, filename: str, text: str) -> bool:
@@ -111,7 +211,7 @@ def _index_dataset_chunks(*, collection_name: str, dataset_id: str, filename: st
         }
         for idx, chunk in enumerate(chunks)
     ]
-    ids = [f'{dataset_id}-{uuid.uuid4()}-{idx}' for idx in range(len(chunks))]
+    ids = [str(uuid.uuid4()) for _ in range(len(chunks))]
     return bool(qdrant_service.upsert_vectors(collection_name=collection_name, vectors=vectors, payloads=payloads, ids=ids))
 
 
@@ -193,13 +293,13 @@ async def upload_document(
     db.commit()
     db.refresh(doc)
 
-    extracted_text = _extract_text_for_indexing(file_content, content_type)
+    extracted_text, extract_error = _extract_text_for_indexing(file_content, content_type, filename)
     indexed = False
     status = 'uploaded'
     last_error = None
     if not extracted_text.strip():
         status = 'uploaded'
-        last_error = 'unsupported_or_empty_content'
+        last_error = extract_error or 'unsupported_or_empty_content'
     else:
         indexed = _index_document_chunks(
             agent_id=str(agent_id),
@@ -228,6 +328,7 @@ async def upload_document(
         'status': status,
         'indexed': bool(indexed),
         'last_error': last_error,
+        'message': '文件已索引完成' if status == 'ready' else (f'文件已上傳，但無法索引：{last_error}' if last_error else '文件已上傳'),
     }
 
 
@@ -305,18 +406,32 @@ async def delete_document(
 
 
 @router.post('/rag/datasets/{dataset_id}/upload')
-async def upload_global_dataset_document(
+async def upload_dataset_document(
     dataset_id: str,
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != 'admin':
-        raise forbidden_error()
+    # 目的：上傳文件到資料集（支援 global 和 agent_private）。
+    # 為什麼：統一上傳邏輯，讓公有和私有資料集使用同一端點。
+    try:
+        dataset_uuid = uuid.UUID(str(dataset_id))
+    except Exception:
+        raise not_found_error('RagDataset', dataset_id)
 
-    row = db.query(RagDataset).filter(RagDataset.id == dataset_id, RagDataset.scope == 'global').first()
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid).first()
     if not row:
         raise not_found_error('RagDataset', dataset_id)
+
+    # 權限檢查：公有資料集需要 admin，私有資料集需要 read_agent 權限
+    if row.scope == 'global':
+        if current_user.role != 'admin':
+            raise forbidden_error()
+    elif row.scope == 'agent_private':
+        if not check_permission(current_user, 'read_agent'):
+            raise forbidden_error()
+    else:
+        raise forbidden_error()
 
     form = await request.form()
     uploaded = form.get('file')
@@ -332,14 +447,14 @@ async def upload_global_dataset_document(
         content_type = 'application/octet-stream'
         file_content = b''
 
-    save_dir = UPLOAD_ROOT / 'global' / str(dataset_id)
+    save_dir = _dataset_upload_dir(row)
     save_dir.mkdir(parents=True, exist_ok=True)
     saved_path = save_dir / f'{uuid.uuid4()}_{filename}'
     with open(saved_path, 'wb') as f:
         f.write(file_content)
 
-    extracted_text = _extract_text_for_indexing(file_content, content_type)
-    collection = _global_collection_name(row)
+    extracted_text, extract_error = _extract_text_for_indexing(file_content, content_type, filename)
+    collection = _dataset_collection_name(row)
     indexed = False
     status = 'uploaded'
     if extracted_text.strip():
@@ -350,6 +465,8 @@ async def upload_global_dataset_document(
             text=extracted_text,
         )
         status = 'ready' if indexed else 'failed'
+    else:
+        status = 'uploaded'
 
     return {
         'ok': True,
@@ -359,6 +476,8 @@ async def upload_global_dataset_document(
         'file_path': str(saved_path),
         'status': status,
         'indexed': bool(indexed),
+        'message': '文件已索引完成' if status == 'ready' else (f'文件已上傳，但無法索引：{extract_error or "unsupported_or_empty_content"}' if not indexed else '文件已上傳'),
+        'last_error': (None if indexed else (extract_error or 'unsupported_or_empty_content')),
     }
 
 
@@ -425,7 +544,12 @@ async def update_global_rag_dataset(
     if current_user.role != 'admin':
         raise forbidden_error()
 
-    row = db.query(RagDataset).filter(RagDataset.id == dataset_id, RagDataset.scope == 'global').first()
+    try:
+        dataset_uuid = uuid.UUID(str(dataset_id))
+    except Exception:
+        raise not_found_error('RagDataset', dataset_id)
+
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid, RagDataset.scope == 'global').first()
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
@@ -464,10 +588,132 @@ async def delete_global_rag_dataset(
     if current_user.role != 'admin':
         raise forbidden_error()
 
-    row = db.query(RagDataset).filter(RagDataset.id == dataset_id, RagDataset.scope == 'global').first()
+    try:
+        dataset_uuid = uuid.UUID(str(dataset_id))
+    except Exception:
+        raise not_found_error('RagDataset', dataset_id)
+
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid, RagDataset.scope == 'global').first()
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
     db.delete(row)
     db.commit()
     return {'ok': True, 'id': dataset_id}
+
+
+@router.get('/rag/datasets/{dataset_id}/documents')
+async def list_dataset_documents(
+    dataset_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 目的：列出資料集已上傳的文件清單（支援 global 和 agent_private）。
+    # 為什麼：讓前端顯示已上傳檔案避免重複上傳，並提供文件數量統計。
+    try:
+        dataset_uuid = uuid.UUID(str(dataset_id))
+    except Exception:
+        raise not_found_error('RagDataset', dataset_id) from None
+
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid).first()
+    if not row:
+        raise not_found_error('RagDataset', dataset_id)
+
+    # 權限檢查：公有資料集需要 admin，私有資料集需要 read_agent 權限
+    if row.scope == 'global':
+        if current_user.role != 'admin':
+            raise forbidden_error()
+    elif row.scope == 'agent_private':
+        if not check_permission(current_user, 'read_agent'):
+            raise forbidden_error()
+    else:
+        raise forbidden_error()
+
+    upload_dir = _dataset_upload_dir(row)
+    documents = []
+    if upload_dir.is_dir():
+        for fname in os.listdir(upload_dir):
+            fpath = upload_dir / fname
+            if fpath.is_file():
+                stat = fpath.stat()
+                # 去掉 UUID 前綴顯示原始檔名（格式：{uuid}_{原始檔名}）
+                display_name = fname.split('_', 1)[1] if '_' in fname else fname
+                documents.append({
+                    'filename': display_name,
+                    'file_path': str(fpath),
+                    'size_bytes': stat.st_size,
+                    'uploaded_at': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                })
+
+    # 依上傳時間倒序
+    documents.sort(key=lambda d: d['uploaded_at'], reverse=True)
+
+    return {
+        'ok': True,
+        'dataset_id': str(row.id),
+        'documents': documents,
+        'total_count': len(documents),
+    }
+
+
+@router.post('/rag/datasets/{dataset_id}/search')
+async def search_dataset(
+    dataset_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 目的：對資料集執行向量檢索測試（支援 global 和 agent_private）。
+    # 為什麼：讓管理員/代理者管理員可在上傳文件後驗證索引是否正常運作。
+    import time
+    start = time.time()
+
+    query = str((payload or {}).get('query') or '').strip()
+    limit = int((payload or {}).get('limit') or 5)
+    if not query:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail='query_required')
+
+    try:
+        dataset_uuid = uuid.UUID(str(dataset_id))
+    except Exception:
+        raise not_found_error('RagDataset', dataset_id) from None
+
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid).first()
+    if not row:
+        raise not_found_error('RagDataset', dataset_id)
+
+    # 權限檢查：公有資料集需要 admin，私有資料集需要 read_agent 權限
+    if row.scope == 'global':
+        if current_user.role != 'admin':
+            raise forbidden_error()
+    elif row.scope == 'agent_private':
+        if not check_permission(current_user, 'read_agent'):
+            raise forbidden_error()
+    else:
+        raise forbidden_error()
+
+    collection = _dataset_collection_name(row)
+
+    try:
+        query_vector = embedding_service.embed_one(query)
+        results = qdrant_service.search(collection, query_vector, limit=limit)
+        elapsed_ms = int((time.time() - start) * 1000)
+
+        return {
+            'ok': True,
+            'dataset_id': str(row.id),
+            'collection': collection,
+            'query': query,
+            'elapsed_ms': elapsed_ms,
+            'results': results,
+            'total_found': len(results),
+        }
+    except Exception as e:
+        elapsed_ms = int((time.time() - start) * 1000)
+        return {
+            'ok': False,
+            'error': str(e),
+            'message': '查詢失敗',
+            'elapsed_ms': elapsed_ms,
+        }

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric, LargeBinary
 from sqlalchemy.types import CHAR, TypeDecorator
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
@@ -185,7 +185,7 @@ class MCPConnection(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-# 全域 Skill 註冊表（由管理者維護）
+# 全域 Skill 註冊表（由管理者維護）- 相容 Claude Skills
 class SkillEntry(Base):
     __tablename__ = 'skills'
     __table_args__ = {'extend_existing': True}
@@ -194,8 +194,8 @@ class SkillEntry(Base):
     name = Column(String(100), unique=True, nullable=False)
     description = Column(Text, default='')
     enabled = Column(Boolean, default=True)
-    # 執行類型：webhook 或 python（預設 webhook）
-    type = Column(Enum('webhook', 'python', name='skill_type'), nullable=False, default='webhook')
+    # 執行類型：webhook 或 python（預設 webhook）- 舊版欄位
+    type = Column(Enum('webhook', 'python', name='skill_type_enum'), nullable=False, default='webhook')
     # webhook 參數
     endpoint_url = Column(Text, nullable=True)
     http_method = Column(String(8), nullable=False, default='POST')
@@ -205,11 +205,16 @@ class SkillEntry(Base):
     python_handler = Column(String(255), nullable=True)
     # 輸入結構（JSON Schema）
     input_schema = Column(JSON, default=dict)
+    # Claude Skills 相容欄位
+    skill_type = Column(String(20), nullable=True, default='executable')  # prompt | executable | hybrid
+    prompt_template = Column(Text, nullable=True)  # SKILL.md 內容（提示詞模板）
+    zip_bundle = Column(LargeBinary, nullable=True)  # 完整 ZIP 檔案
+    references = Column(JSON, nullable=True)  # 解壓後的 references/ 內容（JSON 快取）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-# 全域函式協定模板（Functions）
+# 全域函式協定模板（Functions）- 相容 OpenAI Function Calling
 class FunctionProfile(Base):
     __tablename__ = 'function_profiles'
     __table_args__ = {'extend_existing': True}
@@ -217,10 +222,15 @@ class FunctionProfile(Base):
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), unique=True, nullable=False)
     provider = Column(String(50), nullable=True)
-    template = Column(Text, nullable=False)
+    template = Column(Text, nullable=True)  # 舊版提示詞模板（向後相容）
     description = Column(Text, default='')
     enabled = Column(Boolean, default=True)
     version = Column(Integer, nullable=False, default=1)
+    references = Column(JSON, nullable=True)  # Claude Skill 的 references/ 內容
+    # OpenAI Function Calling 格式欄位
+    parameters = Column(JSON, nullable=True)  # OpenAI JSON Schema 格式
+    handler_type = Column(String(20), nullable=True, default='internal')  # internal | webhook | mcp
+    handler_config = Column(JSON, nullable=True)  # 執行配置（endpoint URL、MCP server 等）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -262,6 +262,19 @@ async def list_mcp_tests(
     return {'items': [_to(x) for x in rows]}
 
 
+@router.delete('/mcps/{mcp_id}/tests')
+@require_role([Role.ADMIN])
+async def delete_mcp_tests(
+    mcp_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """刪除指定 MCP 的所有測試記錄。"""
+    db.query(Log).filter(Log.resource_type == 'mcp', Log.resource_id == mcp_id, Log.action == 'mcp.test').delete(synchronize_session=False)
+    db.commit()
+    return {'ok': True}
+
+
 @router.post('/mcps/{mcp_id}/discover-schema')
 @require_role([Role.ADMIN])
 async def discover_mcp_schema(

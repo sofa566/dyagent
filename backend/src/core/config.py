@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     EMBEDDING_OLLAMA_BASE_URL: str = 'http://localhost:11434'
     EMBEDDING_VLLM_BASE_URL: str = 'http://localhost:8000/v1'
 
+    # Router 路由門檻（0~1）
+    ROUTER_EMBEDDING_THRESHOLD: float = 0.55
+
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
     ANTHROPIC_MODEL: str = 'claude-3-5-sonnet-20240620'
@@ -82,6 +85,9 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = ''   # 例如 http://localhost:11434
     VLLM_BASE_URL: str = ''     # 例如 http://localhost:8000/v1
     LITELLM_ONPREM_API_KEY: str = 'none'  # 如需 OpenAI 相容 API，可用佔位鍵
+
+    # 資料快取目錄（ZIP 解壓縮、暫存檔）
+    DATA_CACHE_PATH: str = '/tmp/dyagent-cache'
 
     # Secrets provider 設定
     # env | vault | aws | gcp | k8s
