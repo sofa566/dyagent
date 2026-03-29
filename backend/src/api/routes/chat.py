@@ -1686,6 +1686,10 @@ async def _multi_agent_orchestrator(
         if eval_ok:
             session.status = 'done'
             try:
+                if synthesis:
+                    asst_msg = Message(conversation_id=conversation.id, role='assistant', content=_sanitize_text(synthesis), timestamp=datetime.utcnow())
+                    db.add(asst_msg)
+                    conversation.last_interacted_at = datetime.utcnow()
                 db.commit()
             except Exception:
                 db.rollback()
@@ -1711,6 +1715,16 @@ async def _multi_agent_orchestrator(
     if not session.synthesis:
         session.synthesis = '抱歉，多代理協作未能在步驟上限內完成，請稍後再試或簡化問題。'
         yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': session.synthesis}, ensure_ascii=False)}\n\n"
+
+    # 儲存助理訊息（失敗路徑）
+    try:
+        if session.synthesis:
+            asst_msg = Message(conversation_id=conversation.id, role='assistant', content=_sanitize_text(session.synthesis), timestamp=datetime.utcnow())
+            db.add(asst_msg)
+            conversation.last_interacted_at = datetime.utcnow()
+            db.commit()
+    except Exception:
+        db.rollback()
 
     yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': str(conversation.id), 'completed': completed_so_far, 'failed': 0, 'react_steps_used': max_steps, 'max_steps_reached': True}, ensure_ascii=False)}\n\n"
 
@@ -1747,6 +1761,13 @@ async def chat_entry_router(
             conversation = _create_conversation_with_fallback(
                 db=db, agent_id=str(router_agent.id), user_id=current_user.id
             )
+
+        # 儲存使用者訊息（在 return StreamingResponse 前，避免在 generator 內卡住）
+        try:
+            user_msg = Message(conversation_id=conversation.id, role='user', content=message)
+            _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_msg)
+        except Exception:
+            pass
 
         async def _orchestrate_stream() -> AsyncGenerator[str, None]:
             # 立即發送第一個事件，讓前端知道已進入多代理模式
