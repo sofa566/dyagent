@@ -1709,7 +1709,7 @@ async def _multi_agent_orchestrator(
 
     # 以最後合成結果（若有）作為保底回覆
     if not session.synthesis:
-        session.synthesis = await _fallback_general_answer('多代理任務未能完成')
+        session.synthesis = '抱歉，多代理協作未能在步驟上限內完成，請稍後再試或簡化問題。'
         yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': session.synthesis}, ensure_ascii=False)}\n\n"
 
     yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': str(conversation.id), 'completed': completed_so_far, 'failed': 0, 'react_steps_used': max_steps, 'max_steps_reached': True}, ensure_ascii=False)}\n\n"
