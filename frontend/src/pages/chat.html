@@ -6,54 +6,116 @@
   <title>聊天 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
   <style>
+    /* 整體字體 */
+    body { font-family: 'Inter', 'Noto Sans TC', system-ui, -apple-system, sans-serif; }
+
     .chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; min-height: calc(100vh - 220px); height: calc(100vh - 220px); }
-    .sidebar { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius); padding: 0.75rem; overflow-y: auto; }
+
+    /* sidebar 改善 */
+    .sidebar {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 0.75rem;
+      overflow-y: auto;
+    }
     .sidebar h3 { margin-bottom: 0.5rem; font-size: 1rem; }
     .conv-list { list-style: none; margin: 0; padding: 0; }
-    .conv-item { padding: 0.5rem; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent; }
-    .conv-item:hover { background: #f8fafc; border-color: var(--border-color); }
-    .conv-item.active { background: #eef2ff; border-color: var(--primary-color); }
+    .conv-item {
+      padding: 0.55rem 0.65rem;
+      border-radius: 10px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 0.15s;
+    }
+    .conv-item:hover { background: #f1f5ff; }
+    .conv-item.active { background: #eef2ff; border-color: #c7d2fe; }
     .conv-title { font-weight: 600; font-size: 0.95rem; }
     .conv-meta { color: var(--text-secondary); font-size: 0.8rem; }
 
     .chat-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+    /* 聊天訊息區背景 */
     .chat-messages {
       flex: 1;
       overflow-y: auto;
       padding: 1rem;
-      background: var(--bg-color);
+      background: #f8f9fc;
+      border: 1px solid var(--border-color);
       border-radius: var(--radius);
       min-height: 0;
       margin-bottom: 0.5rem;
     }
+
+    /* 訊息氣泡 */
     .message {
-      margin-bottom: 1rem;
-      padding: 0.75rem 1rem;
-      border-radius: var(--radius);
-      max-width: 80%;
+      margin-bottom: 1.25rem;
+      padding: 0.85rem 1.1rem;
+      border-radius: 16px;
+      max-width: 78%;
+      line-height: 1.6;
+      font-size: 0.95rem;
     }
     .message.user {
-      background: var(--primary-color);
+      background: linear-gradient(135deg, #4f46e5, #6366f1);
       color: white;
       margin-left: auto;
+      border-bottom-right-radius: 4px;
+      box-shadow: 0 2px 8px rgba(99,102,241,0.25);
     }
     .message.assistant {
       background: var(--card-bg);
       border: 1px solid var(--border-color);
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
     }
+
+    /* 輸入區 */
     .chat-input {
       display: flex;
-      gap: 0.5rem;
+      gap: 0.75rem;
+      align-items: flex-end;
       position: sticky;
       bottom: 0;
       background: var(--card-bg);
-      padding-top: 0.5rem;
+      padding: 0.75rem;
       border-top: 1px solid var(--border-color);
+      border-radius: 0 0 var(--radius) var(--radius);
       z-index: 4;
     }
-    .chat-input input {
+    .chat-input textarea {
       flex: 1;
+      resize: none;
+      border-radius: 12px;
+      padding: 0.6rem 0.9rem;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      max-height: 120px;
+      overflow-y: auto;
+      border: 1.5px solid var(--border-color);
+      transition: border-color 0.2s;
+      font-family: inherit;
     }
+    .chat-input textarea:focus {
+      outline: none;
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+    }
+    .btn-send {
+      background: linear-gradient(135deg, #4f46e5, #6366f1);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 0.6rem 1.1rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.2s;
+      align-self: flex-end;
+    }
+    .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-send:hover:not(:disabled) { opacity: 0.9; }
+
     .agent-selector {
       margin-bottom: 1rem;
     }
@@ -85,27 +147,147 @@
     }
     .conv-menu button:hover { background: #f1f5f9; }
     .conv-menu .danger { color: #b91c1c; }
+
     /* JSON syntax highlight */
     .json { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-    .json .json-key { color: #6b7280; }        /* slate-500 */
-    .json .json-string { color: #0ea5e9; }     /* sky-500 */
-    .json .json-number { color: #d97706; }     /* amber-600 */
-    .json .json-boolean { color: #c0392b; }    /* red-600 */
-    .json .json-null { color: #64748b; font-style: italic; } /* slate-500 */
+    .json .json-key { color: #6b7280; }
+    .json .json-string { color: #0ea5e9; }
+    .json .json-number { color: #d97706; }
+    .json .json-boolean { color: #c0392b; }
+    .json .json-null { color: #64748b; font-style: italic; }
+
     /* Tool card badges/alerts */
     .tool-badge { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; background: #9ca3af; }
     .tool-badge.running { background: #f59e0b; }
     .tool-badge.ok { background: #198754; }
     .tool-badge.error { background: #c0392b; }
     .tool-alert { background: #fdecea; color: #7f1d1d; border: 1px solid #f5c2c0; padding: 6px; border-radius: 6px; margin-top: 6px; display: none; }
+
     /* Progress */
     .tool-progress { margin-top: 6px; background: #f1f5f9; border: 1px solid #e5e7eb; height: 8px; border-radius: 999px; overflow: hidden; display: none; }
     .tool-progress__bar { height: 100%; width: 0%; background: #60a5fa; transition: width 0.2s ease, background-color 0.2s ease; }
     .tool-progress__meta { display: none; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
-    .react-trace { margin-top: 8px; padding: 8px; border: 1px dashed var(--border-color); border-radius: 8px; background: #f8fafc; }
-    .react-trace__title { font-weight: 600; margin-bottom: 4px; }
-    .react-trace__list { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 0.92rem; }
-    .react-trace__list li { margin: 2px 0; }
+
+    /* ReAct trace */
+    /* ── Markdown 輸出樣式 ── */
+    .markdown-body { line-height: 1.7; font-size: 0.95rem; }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: 700; margin: 1em 0 0.4em; line-height: 1.3; }
+    .markdown-body h1 { font-size: 1.25em; } .markdown-body h2 { font-size: 1.1em; } .markdown-body h3 { font-size: 1em; }
+    .markdown-body p { margin: 0.5em 0; }
+    .markdown-body ul, .markdown-body ol { padding-left: 1.5em; margin: 0.4em 0; }
+    .markdown-body li { margin: 0.25em 0; }
+    .markdown-body code { font-family: ui-monospace, 'Courier New', monospace; font-size: 0.88em; background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
+    .markdown-body pre { background: #1e293b; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 0.6em 0; }
+    .markdown-body pre code { background: transparent; color: inherit; padding: 0; font-size: 0.87em; }
+    .markdown-body blockquote { border-left: 3px solid #c7d2fe; margin: 0.5em 0; padding: 4px 12px; color: var(--text-secondary); background: #f8faff; border-radius: 0 6px 6px 0; }
+    .markdown-body table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.9em; }
+    .markdown-body th, .markdown-body td { border: 1px solid var(--border-color); padding: 6px 10px; }
+    .markdown-body th { background: #f1f5f9; font-weight: 600; }
+    .markdown-body a { color: #4f46e5; text-decoration: underline; }
+    .markdown-body hr { border: none; border-top: 1px solid var(--border-color); margin: 0.8em 0; }
+    .agent-output { margin: 6px 0; }
+    .agent-output-label { display: inline-block; font-size: 0.74rem; font-weight: 700; color: #4f46e5; background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-bottom: 4px; }
+    .message.user .markdown-body a { color: #c7d2fe; }
+
+    /* routeInfo 樣式 */
+    .route-info {
+      display: inline-block;
+      font-size: 0.75rem;
+      color: #6366f1;
+      background: #eef2ff;
+      border-radius: 20px;
+      padding: 2px 10px;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+    .route-info.orchestrator-done {
+      background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+      color: #065f46;
+      font-weight: 700;
+    }
+
+    /* orchestrator 計畫 */
+    .orchestrator-plan {
+      margin: 8px 0 10px;
+      padding: 10px 12px;
+      border: 1px solid #c7d2fe;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #f0f4ff, #eef2ff);
+      font-size: 0.88rem;
+    }
+    .orchestrator-plan-header {
+      font-weight: 700;
+      color: #4338ca;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .orchestrator-task-list {
+      margin: 6px 0 0;
+      padding-left: 20px;
+    }
+    .orchestrator-task-list li {
+      margin: 4px 0;
+      color: var(--text-secondary);
+      font-size: 0.87rem;
+    }
+
+    /* agent badges */
+    .agent-task-badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 20px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      margin-right: 6px;
+      background: #e9ecef;
+      color: #666;
+      letter-spacing: 0.02em;
+    }
+    .agent-task-badge.running { background: #fef3c7; color: #d97706; }
+    .agent-task-badge.done { background: #d1fae5; color: #065f46; }
+    .agent-task-badge.error { background: #fee2e2; color: #991b1b; }
+    .agent-text-label {
+      display: block;
+      font-size: 0.74rem;
+      font-weight: 700;
+      color: #4f46e5;
+      background: #eef2ff;
+      border-radius: 4px;
+      padding: 2px 8px;
+      margin: 8px 0 4px;
+      width: fit-content;
+      cursor: pointer;
+      user-select: none;
+    }
+    .agent-detail { margin: 6px 0; }
+    .agent-detail summary { list-style: none; }
+    .agent-detail summary::before { content: '▶ '; font-size: 0.7rem; }
+    .agent-detail[open] summary::before { content: '▼ '; }
+    .agent-markdown { margin: 6px 0 4px; padding: 8px 10px; background: #f8f9fc; border-radius: 8px; border: 1px solid #e5e7eb; }
+    .synthesis-divider { border: none; border-top: 2px solid #c7d2fe; margin: 14px 0 8px; }
+    .synthesis-label {
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #4338ca;
+      background: linear-gradient(135deg, #eef2ff, #e0e7ff);
+      border-radius: 6px;
+      padding: 3px 10px;
+      margin-bottom: 8px;
+      width: fit-content;
+      letter-spacing: 0.03em;
+    }
+
+    /* tool card */
+    .tool-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin: 8px 0;
+      background: #fcfcfe;
+    }
+
     @media (max-width: 900px) {
       .chat-layout { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 220px); }
       .chat-container { min-height: calc(100vh - 340px); }
@@ -147,34 +329,17 @@
         <div id="chat-messages" class="chat-messages">
           <p id="chat-initial-hint" style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
         </div>
-        <details id="tools-panel" class="tools" style="margin-top:0.75rem;">
-          <summary>可用工具</summary>
-          <div id="tools-list" class="tools-list" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;"></div>
-          <div class="tool-runner" style="display:flex;flex-direction:column;gap:6px;">
-            <input id="tool-name" type="text" placeholder="例如 mcp:資料查詢 或 skillX" />
-            <input id="tool-conv" type="text" placeholder="會話 ID（預設取最新）" />
-            <div style="display:flex;gap:8px;align-items:center;">
-              <button id="tool-tab-form" class="btn">表單</button>
-              <button id="tool-tab-json" class="btn btn-secondary">JSON</button>
-            </div>
-            <div id="tool-form" style="display:block;"></div>
-            <div id="tool-json" style="display:none;">
-              <textarea id="tool-payload" rows="3" placeholder='JSON 參數，例如 {"q":"你好"}'></textarea>
-            </div>
-            <button id="run-tool" class="btn">執行工具</button>
-            <button id="stream-tool" class="btn">串流執行（SSE）</button>
-            <div id="tool-output" class="tool-output"></div>
-          </div>
-        </details>
         <form id="chat-form" class="chat-input">
-          <input type="text" id="message-input" placeholder="輸入訊息..." disabled>
-          <button type="submit" class="btn btn-primary" disabled>發送</button>
+          <textarea id="message-input" rows="2" placeholder="輸入訊息… (Enter 送出，Shift+Enter 換行)" disabled></textarea>
+          <button type="submit" class="btn-send" disabled>送出 ↵</button>
         </form>
       </section>
     </div>
   </main>
   <script type="module">
     import { api, auth, showError } from '/main.js';
+    import { marked } from 'marked';
+    marked.setOptions({ breaks: true, gfm: true });
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
@@ -193,208 +358,26 @@
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
-    const toolsList = document.getElementById('tools-list');
-    const runToolBtn = document.getElementById('run-tool');
-    const streamToolBtn = document.getElementById('stream-tool');
-    const toolNameInput = document.getElementById('tool-name');
-    const toolConvInput = document.getElementById('tool-conv');
-    const toolPayloadInput = document.getElementById('tool-payload');
-    const toolOutput = document.getElementById('tool-output');
-    let toolHistory = [];
-    let skillSchemas = {}; // skill name -> schema
-    let mcpSchemas = {};   // 'mcp:<name>' -> schema
+
     // 追蹤目前串流中的工具卡片（需預先宣告，避免在 module 嚴格模式下 ReferenceError）
     let activeToolCard = null;
 
-    // 簡易 tabs 切換（工具表單）
-    (function(){
-      const tF = document.getElementById('tool-tab-form');
-      const tJ = document.getElementById('tool-tab-json');
-      const bF = document.getElementById('tool-form');
-      const bJ = document.getElementById('tool-json');
-      function activate(which){
-        if (which==='form'){
-          bF.style.display='block'; bJ.style.display='none'; tF.classList.add('btn-secondary'); tJ.classList.remove('btn-secondary');
-        } else {
-          // 切到 JSON 分頁時，若表單有內容則自動帶入 JSON
-          try {
-            const tool = (document.getElementById('tool-name').value || '').trim();
-            const hasForm = (document.getElementById('tool-form').style.display !== 'none');
-            if (hasForm && tool) {
-              const body = collectFormPayload('tool-form');
-              const ta = document.getElementById('tool-payload');
-              ta.value = JSON.stringify(body, null, 2);
-            } else {
-              // 若沒有 schema/表單，提供合理預設
-              const ta = document.getElementById('tool-payload');
-              if (!ta.value.trim()) {
-                if (tool.startsWith('mcp:')) ta.value = '{"q": "查詢"}';
-                else ta.value = '{}';
-              }
-            }
-          } catch {}
-          bF.style.display='none'; bJ.style.display='block'; tJ.classList.add('btn-secondary'); tF.classList.remove('btn-secondary');
-        }
+    // Textarea 自動高度與 Enter 送出
+    messageInput.addEventListener('input', () => {
+      messageInput.style.height = 'auto';
+      messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+    });
+    messageInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        chatForm.dispatchEvent(new Event('submit'));
       }
-      tF.addEventListener('click', ()=> {
-        // 切到表單時，若 JSON 有內容則嘗試以 JSON 值重繪表單
-        try{
-          const tool = (document.getElementById('tool-name').value || '').trim();
-          const schema = tool.startsWith('mcp:') ? (mcpSchemas[tool] || null) : (skillSchemas[tool] || null);
-          if (schema){
-            const raw = (document.getElementById('tool-payload').value || '').trim();
-            if (raw){ const parsed = JSON.parse(raw); renderFormFromSchema('tool-form', schema, parsed); }
-          }
-        }catch{}
-        activate('form');
-      });
-      tJ.addEventListener('click', ()=> activate('json'));
-      activate('form');
-    })();
-
-    // Schema 渲染與收集（子集，同 skill-edit）
-    function renderFormFromSchema(containerId, schema, initial){
-      const root = document.getElementById(containerId);
-      root.innerHTML = '';
-      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties){
-        root.innerHTML = '<div class="muted">此技能未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
-        document.getElementById('tool-json').style.display='block';
-        document.getElementById('tool-form').style.display='none';
-        // 切成 JSON 分頁視圖（選中 JSON 應為灰底）
-        const tF = document.getElementById('tool-tab-form'); const tJ = document.getElementById('tool-tab-json');
-        tJ.classList.add('btn-secondary'); tF.classList.remove('btn-secondary');
-        return;
-      }
-      const required = Array.isArray(schema.required) ? schema.required : [];
-      Object.entries(schema.properties).forEach(([key, spec])=>{
-        const row = document.createElement('div'); row.style.marginTop='6px';
-        const lb = document.createElement('label'); const title = (spec && spec.title) ? spec.title : key; lb.textContent = title + (required.includes(key)? ' *': ''); lb.style.display='block'; lb.style.fontWeight='600'; row.appendChild(lb);
-        const desc = (spec && spec.description) ? String(spec.description) : ''; if (desc){ const sm=document.createElement('div'); sm.className='muted'; sm.textContent=desc; sm.style.marginBottom='4px'; row.appendChild(sm); }
-        // oneOf/anyOf（簡版）：若存在，產生選擇器後依選項渲染子 schema
-        const variants = (spec && (spec.oneOf || spec.anyOf)) ? (spec.oneOf || spec.anyOf) : null;
-        let t = (spec && spec.type) || 'string'; let inputEl=null;
-        if (Array.isArray(variants) && variants.length){
-          const sel = document.createElement('select'); sel.dataset.key = key; sel.style.marginBottom='4px';
-          variants.forEach((v, i)=>{ const opt=document.createElement('option'); opt.value=String(i); opt.textContent = (v && v.title) ? v.title : `選項${i+1}`; sel.appendChild(opt); });
-          row.appendChild(sel);
-          const holder = document.createElement('div'); row.appendChild(holder);
-          function renderVariant(idx){ holder.innerHTML=''; const v = variants[idx] || {}; const merged = Object.assign({}, spec, v); delete merged.oneOf; delete merged.anyOf; const fakeSchema = { type: 'object', properties: { [key]: merged }, required: required.includes(key)? [key]: [] };
-            // 遞迴用本函式渲染僅此 key 的子表單
-            const sub = document.createElement('div'); holder.appendChild(sub);
-            const tmpId = containerId + '-' + key + '-variant'; sub.id = tmpId;
-            renderFormFromSchema(tmpId, fakeSchema);
-          }
-          sel.addEventListener('change', ()=> renderVariant(parseInt(sel.value,10)||0));
-          renderVariant(0);
-          root.appendChild(row);
-          return; // 交由子渲染
-        }
-        // format 對應輸入型別
-        const fmt = spec && spec.format;
-        if (spec && Array.isArray(spec.enum)){
-          const sel=document.createElement('select'); sel.dataset.key=key; (spec.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o); }); if (spec.default!=null) sel.value=String(spec.default); inputEl=sel;
-        } else if (t==='boolean'){
-          const cb=document.createElement('input'); cb.type='checkbox'; cb.dataset.key=key; cb.checked=!!spec.default; inputEl=cb;
-        } else if (t==='number' || t==='integer'){
-          const num=document.createElement('input'); num.type='number'; num.dataset.key=key; if (typeof spec.minimum==='number') num.min=String(spec.minimum); if (typeof spec.maximum==='number') num.max=String(spec.maximum); if (spec.default!=null) num.value=String(spec.default); inputEl=num;
-        } else if (t==='object' && spec.properties){
-          const sub=document.createElement('div'); sub.dataset.key=key; sub.dataset.type='object'; sub.style.border='1px dashed var(--border-color)'; sub.style.padding='6px';
-          Object.entries(spec.properties).forEach(([k2,s2])=>{ const r2=document.createElement('div'); r2.style.marginTop='6px'; const lb2=document.createElement('label'); lb2.textContent=(s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2); let el2; const t2=s2.type||'string'; if (Array.isArray(s2.enum)){ el2=document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default);} else if (t2==='boolean'){ el2=document.createElement('input'); el2.type='checkbox'; el2.checked=!!s2.default; } else if (t2==='number' || t2==='integer'){ el2=document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default);} else { el2=document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default);} el2.dataset.key=k2; r2.appendChild(el2); sub.appendChild(r2); }); inputEl=sub;
-        } else if (t==='array'){
-          const wrap=document.createElement('div'); wrap.dataset.key=key; wrap.dataset.type='array'; const list=document.createElement('div'); wrap.appendChild(list); const btn=document.createElement('button'); btn.type='button'; btn.className='btn'; btn.textContent='新增一列'; btn.style.marginTop='4px'; wrap.appendChild(btn);
-          function addItem(def){ const item=document.createElement('div'); item.style.border='1px dashed var(--border-color)'; item.style.padding='6px'; item.style.marginTop='4px'; const rm=document.createElement('button'); rm.type='button'; rm.className='btn'; rm.textContent='移除'; rm.style.float='right'; rm.addEventListener('click', ()=> item.remove()); item.appendChild(rm); const it=spec.items||{}; if (it.type==='object' && it.properties){ Object.entries(it.properties).forEach(([k2,s2])=>{ const r2=document.createElement('div'); r2.style.marginTop='6px'; const lb2=document.createElement('label'); lb2.textContent=(s2.title||k2); lb2.style.display='block'; lb2.style.fontWeight='600'; r2.appendChild(lb2); let el2; const t2=s2.type||'string'; if (Array.isArray(s2.enum)){ el2=document.createElement('select'); (s2.enum||[]).forEach(v=>{ const o=document.createElement('option'); o.value=String(v); o.textContent=String(v); el2.appendChild(o); }); if (s2.default!=null) el2.value=String(s2.default);} else if (t2==='boolean'){ el2=document.createElement('input'); el2.type='checkbox'; el2.checked=!!s2.default; } else if (t2==='number' || t2==='integer'){ el2=document.createElement('input'); el2.type='number'; if (typeof s2.minimum==='number') el2.min=String(s2.minimum); if (typeof s2.maximum==='number') el2.max=String(s2.maximum); if (s2.default!=null) el2.value=String(s2.default);} else { el2=document.createElement('input'); el2.type='text'; if (s2.default!=null) el2.value=String(s2.default);} el2.dataset.key=k2; r2.appendChild(el2); item.appendChild(r2); }); } else { const el=document.createElement('input'); el.type='text'; el.dataset.key='__scalar__'; if (def!=null) el.value=String(def); item.appendChild(el);} list.appendChild(item); }
-          btn.addEventListener('click', ()=> addItem(undefined)); if (Array.isArray(spec.default)) spec.default.forEach(v=> addItem(v)); inputEl=wrap;
-        } else {
-          const txt=document.createElement('input'); txt.type=(fmt==='email'?'email': (fmt==='uri'||fmt==='url')?'url': (fmt==='date'?'date': (fmt==='date-time'?'datetime-local':'text'))); txt.dataset.key=key; if (spec && spec.default!=null) txt.value=String(spec.default); if (spec && spec.pattern) txt.pattern=String(spec.pattern); inputEl=txt;
-        }
-        if (inputEl) row.appendChild(inputEl);
-        root.appendChild(row);
-      });
-      // 若提供 initial，嘗試將 JSON 值灌入表單（包含建立陣列列與巢狀物件）
-      try{ if (initial && typeof initial === 'object') fillFormWithInitial(containerId, initial, schema); }catch{}
-    }
-    function fillFormWithInitial(containerId, data, schema){
-      const root=document.getElementById(containerId);
-      const props = (schema && schema.properties) ? schema.properties : {};
-      Object.keys(props).forEach((key)=>{
-        const spec = props[key] || {};
-        const val = data[key];
-        if (val === undefined) return;
-        // array
-        if (spec.type === 'array'){
-          const wrap = root.querySelector(`[data-type="array"][data-key="${key}"]`);
-          if (!wrap || !Array.isArray(val)) return;
-          const list = wrap.querySelector(':scope > div');
-          const btn = wrap.querySelector('button.btn');
-          const current = list ? list.querySelectorAll(':scope > div').length : 0;
-          for (let i=current; i<val.length; i++){ btn && btn.click && btn.click(); }
-          const items = list ? Array.from(list.querySelectorAll(':scope > div')) : [];
-          items.forEach((it, i)=>{
-            const cur = val[i];
-            if (cur == null) return;
-            // 物件元素
-            const objInputs = it.querySelectorAll('[data-key]');
-            if (objInputs && objInputs.length){
-              objInputs.forEach(el=>{
-                const k2 = el.getAttribute('data-key');
-                if (!k2) return;
-                const v2 = cur[k2];
-                if (el.tagName==='SELECT') el.value = (v2!=null? String(v2): el.value);
-                else if (el.type==='checkbox') el.checked = !!v2;
-                else if (el.type==='number') el.value = (typeof v2==='number'? String(v2): el.value);
-                else el.value = (v2!=null? String(v2): el.value);
-              });
-            } else {
-              // 純量元素（__scalar__）
-              const scalar = it.querySelector('[data-key="__scalar__"]');
-              if (scalar) scalar.value = String(cur);
-            }
-          });
-          return;
-        }
-        // object
-        if (spec.type === 'object' && spec.properties){
-          const sub = root.querySelector(`[data-type="object"][data-key="${key}"]`);
-          if (!sub || typeof val !== 'object') return;
-          Object.keys(spec.properties).forEach(k2=>{
-            const el = sub.querySelector(`[data-key="${k2}"]`);
-            if (!el) return;
-            const v2 = val[k2];
-            if (el.tagName==='SELECT') el.value = (v2!=null? String(v2): el.value);
-            else if (el.type==='checkbox') el.checked = !!v2;
-            else if (el.type==='number') el.value = (typeof v2==='number'? String(v2): el.value);
-            else el.value = (v2!=null? String(v2): el.value);
-          });
-          return;
-        }
-        // 標量（string/number/boolean/enum）
-        const el = root.querySelector(`[data-key="${key}"]`);
-        if (!el) return;
-        if (el.tagName==='SELECT') el.value = String(val);
-        else if (el.type==='checkbox') el.checked = !!val;
-        else if (el.type==='number') el.value = (typeof val==='number'? String(val): el.value);
-        else el.value = String(val);
-      });
-    }
-    function collectFormPayload(containerId){
-      const root=document.getElementById(containerId); const payload={}; const rows=Array.from(root.children);
-      for (const row of rows){
-        const arrayBlock=row.querySelector('[data-type="array"]'); const objectBlock=row.querySelector('[data-type="object"]');
-        if (arrayBlock){ const key=arrayBlock.dataset.key; const items=[]; arrayBlock.querySelectorAll(':scope > div > div').forEach(item=>{ const scalar=item.querySelector('input[data-key="__scalar__"]'); if (scalar) items.push(scalar.value); else { const obj={}; item.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value||0); else obj[k]=el.value; }); items.push(obj);} }); payload[key]=items; continue; }
-        if (objectBlock){ const key=objectBlock.dataset.key; const obj={}; objectBlock.querySelectorAll('[data-key]').forEach(el=>{ const k=el.dataset.key; if (el.type==='checkbox') obj[k]=!!el.checked; else if (el.type==='number') obj[k]=Number(el.value||0); else obj[k]=el.value; }); payload[key]=obj; continue; }
-        const inp=row.querySelector('[data-key]'); if (!inp) continue; const key=inp.dataset.key; if (inp.tagName==='SELECT') payload[key]=inp.value; else if (inp.type==='checkbox') payload[key]=!!inp.checked; else if (inp.type==='number') payload[key]=(inp.value.trim()===''? null : Number(inp.value)); else payload[key]=inp.value;
-      }
-      return payload;
-    }
+    });
 
     // 輔助：建立工具卡片（標題、狀態、內容、操作）
     function createToolCard(name) {
       const card = document.createElement('div');
       card.className = 'tool-card';
-      card.style.border = '1px solid var(--border-color)';
-      card.style.borderRadius = '8px';
-      card.style.padding = '8px';
-      card.style.margin = '8px 0';
 
       const header = document.createElement('div');
       header.className = 'tool-card__header';
@@ -424,17 +407,9 @@
       const clearBtn = document.createElement('button');
       clearBtn.className = 'btn';
       clearBtn.textContent = '清除內容';
-      const rerunBtn = document.createElement('button');
-      rerunBtn.className = 'btn';
-      rerunBtn.textContent = '重執行';
-      const rerunStreamBtn = document.createElement('button');
-      rerunStreamBtn.className = 'btn';
-      rerunStreamBtn.textContent = '串流重執行';
 
       actions.appendChild(collapseBtn);
       actions.appendChild(clearBtn);
-      actions.appendChild(rerunBtn);
-      actions.appendChild(rerunStreamBtn);
 
       header.appendChild(title);
       header.appendChild(status);
@@ -476,75 +451,6 @@
       card.appendChild(progMeta);
       card.appendChild(body);
       const meta = { card, body, status, badge, alert, prog, bar, progMeta, _state: 'running', _progress: 0, _t0: Date.now(), _lastTs: null, _lastProg: 0, _toolName: '', _lastPayload: {}, _convId: '' };
-      // 綁定重執行動作
-      rerunBtn.addEventListener('click', async () => {
-        try {
-          const tool = meta._toolName || (titleText.textContent || '').replace('工具：','').trim();
-          const convId = meta._convId || (document.getElementById('tool-conv')?.value || '');
-          const args = meta._lastPayload || {};
-          if (!tool || !convId) return;
-          setCardStatus(meta, 'running');
-          const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, args);
-          appendFrame(meta.body, res);
-          if (res && res.ok) setCardStatus(meta, 'ok'); else setCardStatus(meta, 'error', (res && res.error) || '執行失敗');
-        } catch (e) {
-          appendFrame(meta.body, { ok: false, error: e.message || '重執行失敗' });
-          setCardStatus(meta, 'error', e.message || '重執行失敗');
-        }
-      });
-      rerunStreamBtn.addEventListener('click', async () => {
-        try {
-          const tool = meta._toolName || (titleText.textContent || '').replace('工具：','').trim();
-          const convId = meta._convId || (document.getElementById('tool-conv')?.value || '');
-          if (!tool || !convId) return;
-          setCardStatus(meta, 'running');
-          const token = localStorage.getItem('auth_token');
-          const resp = await fetch(`/api/conversations/${convId}/tools/${encodeURIComponent(tool)}/stream`, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${token}` },
-          });
-          if (!resp.ok || !resp.body) {
-            appendFrame(meta.body, { ok: false, error: `串流建立失敗：HTTP ${resp.status}` });
-            setCardStatus(meta, 'error', `串流建立失敗：HTTP ${resp.status}`);
-            return;
-          }
-          const reader = resp.body.getReader();
-          const decoder = new TextDecoder('utf-8');
-          let buffer = '';
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let idx;
-            while ((idx = buffer.indexOf('\n\n')) >= 0) {
-              const chunk = buffer.slice(0, idx);
-              buffer = buffer.slice(idx + 2);
-              if (!chunk.startsWith('data: ')) continue;
-              try {
-                const payload = JSON.parse(chunk.replace(/^data:\s*/, ''));
-                if (payload.type === 'progress') {
-                  updateProgress(meta, payload.value, payload.eta_seconds);
-                } else if (payload.type === 'tool') {
-                  appendFrame(meta.body, payload.frame);
-                  if (payload.frame && payload.frame.ok === false) setCardStatus(meta, 'error', payload.frame.error || '執行失敗');
-                  else if (payload.frame && payload.frame.ok === true) setCardStatus(meta, 'ok');
-                } else if (payload.type === 'heartbeat') {
-                  // 保持連線活性提示
-                  if (meta && meta.progMeta && meta._state === 'running') {
-                    const pct = typeof meta._progress === 'number' ? meta._progress : 0;
-                    meta.progMeta.textContent = pct + '% · 仍在處理…';
-                  }
-                } else if (payload.type === 'done') {
-                  if (meta._state === 'running') setCardStatus(meta, 'ok');
-                }
-              } catch {}
-            }
-          }
-        } catch (e) {
-          appendFrame(meta.body, { ok: false, error: e.message || '串流重執行失敗' });
-          setCardStatus(meta, 'error', e.message || '串流重執行失敗');
-        }
-      });
       return meta;
     }
 
@@ -661,31 +567,6 @@
       return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
     }
 
-    function createReactTraceCard() {
-      const wrap = document.createElement('div');
-      wrap.className = 'react-trace';
-      const title = document.createElement('div');
-      title.className = 'react-trace__title';
-      title.textContent = 'ReAct 執行狀態';
-      const list = document.createElement('ol');
-      list.className = 'react-trace__list';
-      wrap.appendChild(title);
-      wrap.appendChild(list);
-      return { wrap, list };
-    }
-
-    function appendReactTrace(traceMeta, payload) {
-      if (!traceMeta || !traceMeta.list || !payload) return;
-      const li = document.createElement('li');
-      const phase = (payload.phase || '').toString();
-      const msg = (payload.message || '').toString() || phase || '執行中';
-      const step = (typeof payload.step === 'number') ? `#${payload.step} ` : '';
-      li.textContent = `${step}${msg}`;
-      if (phase === 'act_result' && payload.ok === false) {
-        li.style.color = 'var(--error-color)';
-      }
-      traceMeta.list.appendChild(li);
-    }
 
     let currentAgentId = null;
     let currentConversationId = null;
@@ -791,51 +672,6 @@
         } else {
           chatMessages.innerHTML = '<p style="text-align: center;">可以開始對話了</p>';
         }
-        // 載入此代理者可用工具清單
-        try {
-          const integ = await api.get(`/agents/${agentId}/integrations`);
-          const skills = Array.isArray(integ.skills) ? integ.skills : [];
-          const mcps = Array.isArray(integ.mcp_config) ? integ.mcp_config : [];
-          const items = [];
-          skills.forEach(s => items.push({ name: s, type: 'skill' }));
-          mcps.filter(c => c && c.enabled).forEach(c => items.push({ name: `mcp:${c.name}`, type: 'mcp' }));
-          // 直接使用 integrations 回傳的 schema（無需 /skills 權限）
-          skillSchemas = (integ && typeof integ.skill_schemas === 'object') ? integ.skill_schemas : {};
-          mcpSchemas = (integ && typeof integ.mcp_schemas === 'object') ? integ.mcp_schemas : {};
-          if (items.length) {
-            toolsList.innerHTML = '';
-            items.forEach(x => {
-              const el = document.createElement('span');
-              el.className = 'tag';
-              el.textContent = x.name;
-              el.style.cursor = 'pointer';
-              el.title = '點擊帶入工具名稱';
-              el.addEventListener('click', () => {
-                toolNameInput.value = x.name;
-                // 若為 skill 且有 schema，切換到表單並渲染；否則切 JSON 並給預設模板
-                if (!x.name.startsWith('mcp:') && skillSchemas[x.name]) {
-                  document.getElementById('tool-form').style.display='block'; document.getElementById('tool-json').style.display='none';
-                  document.getElementById('tool-tab-form').classList.add('btn-secondary'); document.getElementById('tool-tab-json').classList.remove('btn-secondary');
-                  let init=null; try{ const raw=toolPayloadInput.value.trim(); if (raw) init=JSON.parse(raw);}catch{}
-                  renderFormFromSchema('tool-form', skillSchemas[x.name], init);
-                } else if (x.name.startsWith('mcp:') && mcpSchemas[x.name]) {
-                  document.getElementById('tool-form').style.display='block'; document.getElementById('tool-json').style.display='none';
-                  document.getElementById('tool-tab-form').classList.add('btn-secondary'); document.getElementById('tool-tab-json').classList.remove('btn-secondary');
-                  let init=null; try{ const raw=toolPayloadInput.value.trim(); if (raw) init=JSON.parse(raw);}catch{}
-                  renderFormFromSchema('tool-form', mcpSchemas[x.name], init);
-                } else {
-                  document.getElementById('tool-form').style.display='none'; document.getElementById('tool-json').style.display='block';
-                  document.getElementById('tool-tab-json').classList.add('btn-secondary'); document.getElementById('tool-tab-form').classList.remove('btn-secondary');
-                  toolPayloadInput.value = x.type === 'mcp' ? '{"q": "查詢"}' : '{}';
-                }
-              });
-              toolsList.appendChild(el);
-            });
-          } else {
-            toolsList.innerHTML = '<div class="muted">（此代理者未啟用任何工具）</div>';
-          }
-          toolConvInput.value = currentConversationId || '';
-        } catch {}
         // 不在前端進行 LLM 暖機，避免主代理或未配置模型造成噪音錯誤
       } catch (error) {
         chatMessages.innerHTML = '<p style="text-align: center; color: var(--error-color);">載入失敗，請稍後再試</p>';
@@ -947,12 +783,12 @@
     function renderMessagesById(convId) {
       const conv = (currentConversations || []).find(c => c.id === convId);
       if (!conv) return;
-      chatMessages.innerHTML = (conv.messages || []).map(msg => `
-        <div class="message ${msg.role}">
-          <p>${msg.content}</p>
-          <small style="opacity: 0.7;">${msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</small>
-        </div>
-      `).join('');
+      chatMessages.innerHTML = (conv.messages || []).map(msg => {
+        const body = msg.role === 'assistant'
+          ? `<div class="markdown-body">${marked.parse(msg.content || '')}</div>`
+          : `<p>${escapeHTML(msg.content || '')}</p>`;
+        return `<div class="message ${msg.role}">${body}<small style="opacity:0.7;">${msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</small></div>`;
+      }).join('');
       chatMessages.scrollTop = chatMessages.scrollHeight;
 
       // 載入並渲染此對話的工具事件（持久化卡片）
@@ -1022,156 +858,6 @@
       }
     });
 
-    runToolBtn.addEventListener('click', async () => {
-      try {
-        const tool = (toolNameInput.value || '').trim();
-        if (!tool) { toolOutput.textContent = '請輸入工具名稱'; return; }
-        let convId = (toolConvInput.value || '').trim();
-        if (!convId) convId = currentConversationId || '';
-        if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
-        let body = {};
-        if (document.getElementById('tool-json').style.display !== 'none') {
-          if (toolPayloadInput.value.trim()) { try { body = JSON.parse(toolPayloadInput.value); } catch { toolOutput.textContent = 'JSON 參數格式錯誤'; return; } }
-        } else {
-          try { body = collectFormPayload('tool-form'); } catch(e){ toolOutput.textContent = e && e.message ? e.message : '表單驗證失敗'; return; }
-          // 基本前端驗證（若有 schema）
-          try {
-            const tool = (toolNameInput.value || '').trim();
-            const schema = tool.startsWith('mcp:') ? (mcpSchemas[tool] || null) : (skillSchemas[tool] || null);
-            if (schema && schema.type === 'object'){
-              // 簡化驗證：僅檢查 required/type/界線/長度/正則
-              const root = document.getElementById('tool-form'); root.querySelectorAll('.field-error').forEach(n=>n.remove()); root.querySelectorAll('input,select,textarea').forEach(el=> el.style.borderColor='');
-              const req = Array.isArray(schema.required)? schema.required: []; const props = schema.properties||{}; let bad=false;
-              Object.entries(props).forEach(([k, spec])=>{
-                const el = root.querySelector(`[data-key="${k}"]`) || root.querySelector(`[data-type] [data-key="${k}"]`);
-                const v = body[k]; const t=(spec && spec.type)||'string';
-                function addErr(msg){ if (!el) return; const d=document.createElement('div'); d.className='field-error'; d.style.color='var(--danger-color,#c0392b)'; d.style.fontSize='12px'; d.style.marginTop='2px'; d.textContent=String(msg); el.style.borderColor='var(--danger-color,#c0392b)'; el.insertAdjacentElement('afterend', d); bad=true; }
-                if (req.includes(k) && (v===undefined||v===null||v==='')) addErr('必填');
-                if (v===undefined||v===null||v==='') return;
-                if (t==='number' || t==='integer'){
-                  if (typeof v !== 'number' || Number.isNaN(v)) addErr('需為數字');
-                  if (spec && typeof spec.minimum==='number' && v < spec.minimum) addErr(`不可小於 ${spec.minimum}`);
-                  if (spec && typeof spec.maximum==='number' && v > spec.maximum) addErr(`不可大於 ${spec.maximum}`);
-                } else if (t==='string'){
-                  if (typeof v !== 'string') addErr('需為字串');
-                  if (spec && typeof spec.minLength==='number' && v.length < spec.minLength) addErr(`長度不可小於 ${spec.minLength}`);
-                  if (spec && typeof spec.maxLength==='number' && v.length > spec.maxLength) addErr(`長度不可大於 ${spec.maxLength}`);
-                  if (spec && spec.pattern){ try { const re=new RegExp(spec.pattern); if (!re.test(v)) addErr('格式不符合規則'); } catch {} }
-                }
-              });
-              if (bad) { toolOutput.textContent = '表單欄位有誤，請修正紅框標示'; return; }
-            }
-          } catch {}
-        }
-        const holder = document.createElement('div');
-        const meta = createToolCard(tool);
-        meta._toolName = tool;
-        meta._lastPayload = body;
-        meta._convId = convId;
-        holder.appendChild(meta.card);
-        toolOutput.prepend(holder);
-        const res = await api.post(`/conversations/${convId}/tools/${encodeURIComponent(tool)}`, body);
-        appendFrame(meta.body, res);
-        if (res && res.ok) setCardStatus(meta, 'ok'); else {
-          setCardStatus(meta, 'error', (res && res.error) || '執行失敗');
-          // 若有欄位級錯誤，標示於表單
-          if (Array.isArray(res && res.errors) && document.getElementById('tool-form').style.display !== 'none'){
-            const root = document.getElementById('tool-form');
-            root.querySelectorAll('.field-error').forEach(n=>n.remove()); root.querySelectorAll('input,select,textarea').forEach(el=> el.style.borderColor='');
-            res.errors.forEach(e=>{
-              const p = (e && e.path) ? String(e.path) : ''; const key = p.split('.')[0]; if (!key) return;
-              const el = root.querySelector(`[data-key="${key}"]`) || root.querySelector(`[data-type] [data-key="${key}"]`);
-              if (el) { const d=document.createElement('div'); d.className='field-error'; d.style.color='var(--danger-color,#c0392b)'; d.style.fontSize='12px'; d.style.marginTop='2px'; d.textContent= (e && e.message) ? String(e.message) : '不符合結構'; el.style.borderColor='var(--danger-color,#c0392b)'; el.insertAdjacentElement('afterend', d); }
-            });
-          }
-        }
-        toolHistory.unshift({ t: new Date().toISOString(), tool, convId, body, res });
-      } catch (e) {
-        const holder = document.createElement('div');
-        const meta = createToolCard((toolNameInput.value || '').trim() || 'tool');
-        holder.appendChild(meta.card);
-        toolOutput.prepend(holder);
-        appendFrame(meta.body, { ok: false, error: e.message || '執行工具失敗' });
-        setCardStatus(meta, 'error', e.message || '執行工具失敗');
-      }
-    });
-
-    streamToolBtn.addEventListener('click', async () => {
-      try {
-        const tool = (toolNameInput.value || '').trim();
-        if (!tool) { toolOutput.textContent = '請輸入工具名稱'; return; }
-        let convId = (toolConvInput.value || '').trim();
-        if (!convId) convId = currentConversationId || '';
-        if (!convId) { toolOutput.textContent = '請先建立或選擇會話'; return; }
-        const holder = document.createElement('div');
-        const meta = createToolCard(tool);
-        meta._toolName = tool;
-        meta._convId = convId;
-        holder.appendChild(meta.card);
-        toolOutput.prepend(holder);
-        const token = localStorage.getItem('auth_token');
-        // 以 fetch 串流方式讀取 SSE（因 EventSource 無法帶自訂標頭）
-        const resp = await fetch(`/api/conversations/${convId}/tools/${encodeURIComponent(tool)}/stream`, {
-          method: 'GET',
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
-        if (!resp.ok || !resp.body) {
-          appendFrame(meta.body, { ok: false, error: `串流建立失敗：HTTP ${resp.status}` });
-          setCardStatus(meta, 'error', `串流建立失敗：HTTP ${resp.status}`);
-          return;
-        }
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = buffer.indexOf('\n\n')) >= 0) {
-            const chunk = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            if (chunk.startsWith('data: ')) {
-              try {
-                const jsonStr = chunk.replace(/^data:\s*/, '');
-                const obj = JSON.parse(jsonStr);
-                if (obj && obj.type === 'progress') {
-                  updateProgress(meta, obj.value, obj.eta_seconds);
-                } else if (obj && obj.type === 'heartbeat') {
-                  if (meta && meta.progMeta && meta._state === 'running') {
-                    const pct = typeof meta._progress === 'number' ? meta._progress : 0;
-                    meta.progMeta.textContent = pct + '% · 仍在處理…';
-                  }
-                } else if (obj && obj.type === 'tool') {
-                  appendFrame(meta.body, obj.frame);
-                  if (obj.frame && obj.frame.ok === false) setCardStatus(meta, 'error', obj.frame.error || '執行失敗');
-                  else if (obj.frame && obj.frame.ok === true) setCardStatus(meta, 'ok');
-                  // 嘗試讀取進度欄位（progress/percent/value）
-                  const f = obj.frame || {};
-                  const cand = (typeof f.progress === 'number' ? f.progress
-                    : (typeof f.percent === 'number' ? f.percent
-                    : (typeof f.value === 'number' ? f.value : null)));
-                  const eta = (typeof f.eta_seconds === 'number' ? f.eta_seconds
-                    : (typeof f.eta === 'number' ? f.eta
-                    : (typeof f.remaining_ms === 'number' ? f.remaining_ms / 1000 : null)));
-                  if (cand !== null) updateProgress(meta, cand, eta);
-                } else if (obj && obj.type === 'done') {
-                  if (meta._state === 'running') setCardStatus(meta, 'ok');
-                }
-              } catch {}
-            }
-          }
-        }
-      } catch (e) {
-        const holder = document.createElement('div');
-        const meta = createToolCard((toolNameInput.value || '').trim() || 'tool');
-        holder.appendChild(meta.card);
-        toolOutput.prepend(holder);
-        appendFrame(meta.body, { ok: false, error: e.message || '串流執行錯誤' });
-        setCardStatus(meta, 'error', e.message || '串流執行錯誤');
-      }
-    });
-
     newConvBtn.addEventListener('click', async () => {
       if (!currentAgentId) {
         showError(autoRoutingMode ? '目前尚未取得可用代理者，請先送出一則訊息或聯絡管理者' : '請先選擇代理者');
@@ -1209,22 +895,20 @@
       submitBtn.disabled = true;
       const userMsg = document.createElement('div');
       userMsg.className = 'message user';
-      userMsg.innerHTML = `<p>${msg}</p>`;
+      userMsg.innerHTML = `<p>${escapeHTML(msg)}</p>`;
       chatMessages.appendChild(userMsg);
       // 建立助理訊息區塊
       const assistantMsg = document.createElement('div');
       assistantMsg.className = 'message assistant';
       const routeInfo = document.createElement('div');
-      routeInfo.style.fontSize = '12px';
-      routeInfo.style.color = 'var(--text-secondary)';
-      routeInfo.style.marginBottom = '6px';
-      routeInfo.textContent = '本輪由：主代理分派中...';
-      const p = document.createElement('p');
+      routeInfo.className = 'route-info';
+      routeInfo.textContent = '主代理分派中…';
+      const p = document.createElement('div');
+      p.className = 'markdown-body';
       assistantMsg.appendChild(routeInfo);
       assistantMsg.appendChild(p);
-      const reactTrace = createReactTraceCard();
-      assistantMsg.appendChild(reactTrace.wrap);
       chatMessages.appendChild(assistantMsg);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
       // 串流聊天
       try {
         const token = localStorage.getItem('auth_token');
@@ -1265,6 +949,13 @@
         const reader = resp.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
+        // ── 多代理協作 UI 狀態 ──
+        let orchestratorPlanEl = null;      // 任務清單容器
+        const agentTaskBadges = new Map();  // task_index → badge element
+        // ── Markdown 累積 ──
+        let accText = '';                   // 單代理累積文字
+        const agentAccTexts = new Map();    // task_index → 子代理累積文字
+        const agentDivs = new Map();        // task_index → 子代理渲染 div
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -1277,13 +968,13 @@
             try {
               const payload = JSON.parse(chunk.replace(/^data:\s*/, ''));
               if (payload.type === 'text' && typeof payload.delta === 'string') {
-                p.textContent += payload.delta;
+                accText += payload.delta;
                 // 避免把內部工具協議 [[CALL ...]] 顯示給使用者
-                p.textContent = p.textContent.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '').trimStart();
-                p.textContent = p.textContent.replace(/```json\s*\{[\s\S]*?\}\s*```/gi, '').trimStart();
-                p.textContent = p.textContent.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '').trimStart();
-              } else if (payload.type === 'react') {
-                appendReactTrace(reactTrace, payload);
+                accText = accText.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '').trimStart();
+                accText = accText.replace(/```json\s*\{[\s\S]*?\}\s*```/gi, '').trimStart();
+                accText = accText.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '').trimStart();
+                p.innerHTML = marked.parse(accText);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
               } else if (payload.type === 'route.decision') {
                 if (payload.target_agent_name) {
                   routeInfo.textContent = `本輪由：${String(payload.target_agent_name)} 代理者回覆`;
@@ -1296,6 +987,106 @@
                     try { agentSelect.value = String(payload.target_agent_id); } catch {}
                   }
                 }
+              } else if (payload.type === 'orchestrator.thinking') {
+                routeInfo.textContent = payload.message || '多代理分析中…';
+              } else if (payload.type === 'orchestrator.plan') {
+                // 顯示多代理協作任務清單（可折疊）
+                routeInfo.textContent = `多代理協作（第 ${payload.react_step || 1} 輪）`;
+                if (!orchestratorPlanEl) {
+                  orchestratorPlanEl = document.createElement('div');
+                  orchestratorPlanEl.className = 'orchestrator-plan';
+                  assistantMsg.insertBefore(orchestratorPlanEl, p);
+                } else {
+                  orchestratorPlanEl.innerHTML = '';
+                  agentTaskBadges.clear();
+                  agentAccTexts.clear();
+                  agentDivs.clear();
+                }
+                const header = document.createElement('div');
+                header.className = 'orchestrator-plan-header';
+                header.textContent = `📋 協作計畫（${(payload.tasks || []).length} 個任務）`;
+                header.style.cursor = 'pointer';
+                const taskList = document.createElement('ul');
+                taskList.className = 'orchestrator-task-list';
+                header.addEventListener('click', () => {
+                  taskList.style.display = taskList.style.display === 'none' ? '' : 'none';
+                });
+                (payload.tasks || []).forEach((t, i) => {
+                  const li = document.createElement('li');
+                  const badge = document.createElement('span');
+                  badge.className = 'agent-task-badge';
+                  badge.textContent = '待執行';
+                  li.appendChild(badge);
+                  li.append(` [${t.agent_name || t.agent_id || ''}] ${t.task || ''}`);
+                  taskList.appendChild(li);
+                  agentTaskBadges.set(t.task_index != null ? t.task_index : i, badge);
+                });
+                orchestratorPlanEl.appendChild(header);
+                orchestratorPlanEl.appendChild(taskList);
+              } else if (payload.type === 'agent.start') {
+                const badge = agentTaskBadges.get(payload.task_index);
+                if (badge) { badge.textContent = '處理中…'; badge.className = 'agent-task-badge running'; }
+              } else if (payload.type === 'agent.text' && typeof payload.delta === 'string') {
+                const tIdx = payload.task_index;
+                const isSynthesis = (tIdx === -1);
+                if (!agentDivs.has(tIdx)) {
+                  if (isSynthesis) {
+                    // 合成結果：分隔線 + 標題 + 獨立 markdown div
+                    const hr = document.createElement('hr');
+                    hr.className = 'synthesis-divider';
+                    const synLabel = document.createElement('div');
+                    synLabel.className = 'synthesis-label';
+                    synLabel.textContent = '綜合回覆';
+                    const synDiv = document.createElement('div');
+                    synDiv.className = 'markdown-body';
+                    p.appendChild(hr);
+                    p.appendChild(synLabel);
+                    p.appendChild(synDiv);
+                    agentDivs.set(tIdx, synDiv);
+                  } else {
+                    // 子代理：可折疊區塊
+                    const details = document.createElement('details');
+                    details.className = 'agent-detail';
+                    const summary = document.createElement('summary');
+                    summary.className = 'agent-text-label';
+                    summary.textContent = `${payload.agent_name || '代理者'} 的回覆`;
+                    const agentDiv = document.createElement('div');
+                    agentDiv.className = 'markdown-body agent-markdown';
+                    details.appendChild(summary);
+                    details.appendChild(agentDiv);
+                    p.appendChild(details);
+                    agentDivs.set(tIdx, agentDiv);
+                  }
+                  agentAccTexts.set(tIdx, '');
+                }
+                let agentAcc = (agentAccTexts.get(tIdx) || '') + payload.delta;
+                agentAcc = agentAcc.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '').trimStart();
+                agentAccTexts.set(tIdx, agentAcc);
+                agentDivs.get(tIdx).innerHTML = marked.parse(agentAcc);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+              } else if (payload.type === 'agent.done') {
+                const badge = agentTaskBadges.get(payload.task_index);
+                if (badge) { badge.textContent = '✓ 完成'; badge.className = 'agent-task-badge done'; }
+              } else if (payload.type === 'agent.error') {
+                const badge = agentTaskBadges.get(payload.task_index);
+                if (badge) { badge.textContent = '✗ 失敗'; badge.className = 'agent-task-badge error'; }
+              } else if (payload.type === 'orchestrator.synthesizing') {
+                routeInfo.textContent = `Router 合成中（第 ${payload.react_step || 1} 輪）…`;
+              } else if (payload.type === 'orchestrator.retry') {
+                routeInfo.textContent = `重新規劃中（第 ${(payload.react_step || 1) + 1} 輪）…`;
+                // 新輪次清空文字區，準備接收新合成結果
+                accText = '';
+                p.innerHTML = '';
+                agentAccTexts.clear();
+                agentDivs.clear();
+              } else if (payload.type === 'orchestrator.done') {
+                routeInfo.textContent = `多代理協作完成（${payload.completed || 0} 個代理，共 ${payload.react_steps_used || 1} 輪）`;
+                routeInfo.classList.add('orchestrator-done');
+                try {
+                  const refreshed = await api.get(`/agents/${currentAgentId}/conversations`);
+                  currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+                  renderSidebar(currentConversations);
+                } catch {}
               } else if (payload.type === 'tool_start') {
                 const built = createToolCard(payload.name);
                 built._toolName = payload.name;
@@ -1342,17 +1133,20 @@
         }
         clearTimeout(timer);
         messageInput.value = '';
+        messageInput.style.height = 'auto';
       } catch (e) {
         const isTimeout = !!(e && (e.name === 'AbortError' || String(e.message || '').includes('timeout')));
         if (isTimeout) {
-          p.textContent += '\n系統忙碌中，請稍後再試。';
+          accText += '\n\n系統忙碌中，請稍後再試。';
         } else {
-          p.textContent += `\n[錯誤] ${(e && e.message) || '串流錯誤'}`;
+          accText += `\n\n[錯誤] ${(e && e.message) || '串流錯誤'}`;
         }
+        p.innerHTML = marked.parse(accText);
       } finally {
         messageInput.disabled = false;
         submitBtn.disabled = false;
         messageInput.value = '';
+        messageInput.style.height = 'auto';
         messageInput.focus();
       }
     });

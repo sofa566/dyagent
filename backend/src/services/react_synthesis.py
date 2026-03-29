@@ -180,7 +180,8 @@ class ReActSynthesis:
             self._last_trace.append({"step": step_index + 1, "phase": "plan", "result": "invalid_action"})
             return None
 
-        return "__continue__"
+        # 有效的 action step：回傳 None 讓 run() 繼續執行工具呼叫
+        return None
 
     def _record_tool_not_allowed(self, *, step_index: int, tool: str, observations: list[dict[str, Any]]) -> None:
         self._last_trace.append(

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Body
-from typing import Any
+from typing import Any, AsyncGenerator
 import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import ProgrammingError, OperationalError
@@ -14,7 +14,7 @@ from decimal import Decimal
 from datetime import datetime
 
 from src.core.database import get_db
-from src.models import User, Agent, Conversation, Message, LlmTurn
+from src.models import User, Agent, Conversation, Message, LlmTurn, MultiAgentSession, MultiAgentTask
 from src.models.events import EventPart
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
@@ -1202,6 +1202,519 @@ async def chat_stream(
     return StreamingResponse(_gen_hb(), media_type='text/event-stream')
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 多代理 Orchestrator：輔助函式
+# ─────────────────────────────────────────────────────────────────────────────
+
+_COMPOUND_SIGNALS = [
+    '並且', '同時', '另外', '然後', '接著', '以及', '也要', '還要', '順便',
+    'and then', 'also', 'additionally', 'as well',
+]
+
+
+def _classify_routing(*, message: str, workers: list[Agent]) -> str:
+    """目的：三層策略判斷單代理 vs 多代理路徑。
+    為什麼：優先用零成本快路徑，僅必要時才呼叫 LLM，降低延遲與費用。
+    回傳 'single' 或 'multi'。
+    """
+    # 第一層：快速排除（零成本）
+    if len(message.strip()) < 15:
+        return 'single'
+    if len(workers) < 2:
+        return 'single'
+    lower_msg = message.lower()
+    has_compound = any(sig in lower_msg for sig in _COMPOUND_SIGNALS)
+    has_mention = any(f'@{str(w.name or "").lower()}' in lower_msg for w in workers)
+
+    # 直接點名 2 個以上 worker：不需要 embedding，直接走多代理
+    named_workers = [w for w in workers if str(w.name or '').strip() and str(w.name or '').strip() in message]
+    if len(named_workers) >= 2:
+        return 'multi'
+
+    if not has_compound and not has_mention:
+        return 'single'
+
+    # 第二層：Embedding 能力距離（無 LLM 費用）
+    try:
+        msg_vec = embedding_service.embed_one(message)
+        if msg_vec:
+            scores: list[tuple[float, Agent]] = []
+            for w in workers:
+                profile = f"{str(w.name or '').strip()}\n{str(w.description or '').strip()}"
+                wvec = embedding_service.embed_one(profile)
+                scores.append((_cosine_similarity(msg_vec, wvec), w))
+            scores.sort(key=lambda x: x[0], reverse=True)
+            if len(scores) >= 2:
+                top_gap = scores[0][0] - scores[1][0]
+                if top_gap > 0.2:
+                    return 'single'  # 某個 Worker 明顯更適合
+    except Exception:
+        pass
+
+    return 'multi'
+
+
+def _decompose_tasks(*, message: str, workers: list[Agent], router_agent: Agent) -> dict[str, Any] | None:
+    """目的：呼叫 LLM 將訊息分解為子任務並分配給各代理者。
+    為什麼：第三層（有 LLM 費用），只在 embedding 層無法明確判斷時呼叫。
+    回傳 {multi: bool, tasks: [{task, agent_id, depends_on}, ...]} 或 None（失敗時降級）。
+    """
+    candidate_lines = [
+        f"- id={str(w.id)} name={str(w.name or '')} desc={str(w.description or '')[:100]}"
+        for w in workers
+    ]
+    prompt = (
+        "你是任務分解助手。判斷以下使用者請求是否需要多個不同專長的代理者協作完成。\n"
+        "可用代理者（每個有不同專長）：\n"
+        f"{chr(10).join(candidate_lines)}\n\n"
+        "使用者請求：\n"
+        f"{message.strip()}\n\n"
+        "若需要多代理（2個以上不同 agent_id），輸出 JSON：\n"
+        '{"multi": true, "tasks": [{"task": "子任務描述", "agent_id": "uuid", "depends_on": null}, ...]}\n'
+        "若單代理即可，輸出：\n"
+        '{"multi": false, "agent_id": "uuid"}\n'
+        "規則：tasks 最多 3 個；depends_on 為前置任務索引陣列或 null；只輸出 JSON，不要其他說明。"
+    )
+    try:
+        overrides = _build_agent_overrides(router_agent)
+        tier = overrides.get('tier') or 'cloud'
+        llm = LLMClient()
+        llm.init_for_session(session_id='orchestrator-decompose', preferred_tier=tier, overrides=overrides)
+        result = ''.join(list(llm.stream_complete(prompt=prompt, tier=tier)))
+        start = result.find('{')
+        end = result.rfind('}')
+        if start < 0 or end <= start:
+            return None
+        parsed = _json.loads(result[start:end + 1])
+        if not isinstance(parsed, dict):
+            return None
+        return parsed
+    except Exception as e:
+        _log.warning('orchestrator.decompose_failed', error=str(e))
+        return None
+
+
+def _build_execution_waves(tasks: list[MultiAgentTask]) -> list[list[MultiAgentTask]]:
+    """目的：依 depends_on 拓撲排序，產生執行波次（同波次內可並行）。
+    為什麼：支援子任務間的依賴關係，Phase 1 每波次只有一個任務（循序）。
+    """
+    remaining = list(range(len(tasks)))
+    completed: set[int] = set()
+    waves: list[list[MultiAgentTask]] = []
+
+    while remaining:
+        wave_indices = []
+        for i in remaining[:]:
+            deps = tasks[i].depends_on or []
+            if all(d in completed for d in deps):
+                wave_indices.append(i)
+                remaining.remove(i)
+        if not wave_indices:
+            # 循環依賴安全回退：全部循序執行
+            wave_indices = remaining[:]
+            remaining = []
+        waves.append([tasks[i] for i in wave_indices])
+        completed.update(wave_indices)
+
+    return waves
+
+
+def _inject_prior_context(*, task_desc: str, prior_results: list[dict[str, Any]]) -> str:
+    """目的：將前置任務結果以結構化前綴注入當前子任務描述。
+    為什麼：讓後置子代理能閱讀前一步的輸出，實現跨代理上下文傳遞。
+    """
+    if not prior_results:
+        return task_desc
+    ctx_lines = []
+    for r in prior_results:
+        name = str(r.get('agent_name') or '')
+        text = str(r.get('result_text') or '')[:2000]
+        if text.strip():
+            ctx_lines.append(f"[前置任務結果 - {name}]\n{text}")
+    if not ctx_lines:
+        return task_desc
+    ctx_block = '\n\n'.join(ctx_lines)
+    return f"[背景資訊]\n{ctx_block}\n\n[使用者原始需求]\n{task_desc}"
+
+
+async def _run_subtask_stream(
+    *,
+    task_row: MultiAgentTask,
+    enriched_message: str,
+    agent: Agent,
+    db: Session,
+    current_user: User,
+    task_index: int,
+    total_tasks: int,
+    completed_so_far: int,
+) -> AsyncGenerator[str, None]:
+    """目的：執行單個子任務，將現有 chat_stream SSE 轉譯為 agent.* 事件。
+    為什麼：複用既有 ReAct/工具呼叫邏輯，只在包裝層加上 agent 標識與 DB 寫入。
+    """
+    from datetime import datetime as _dt
+
+    agent_id = str(agent.id)
+    agent_name = str(agent.name or agent_id)
+    overall_progress = int(completed_so_far / max(total_tasks, 1) * 100)
+
+    # 子代理開始
+    task_row.status = 'running'
+    task_row.started_at = _dt.utcnow()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    yield f"data: {_json.dumps({'type': 'agent.start', 'agent_id': agent_id, 'agent_name': agent_name, 'task_index': task_index, 'task': enriched_message[:200], 'overall_progress': overall_progress}, ensure_ascii=False)}\n\n"
+
+    # 呼叫現有 chat_stream
+    sub_response = await chat_stream(
+        agent_id=agent_id,
+        message=enriched_message,
+        db=db,
+        current_user=current_user,
+    )
+
+    result_chunks: list[str] = []
+    ok = True
+    error_msg: str | None = None
+
+    async for raw_chunk in sub_response.body_iterator:
+        if not isinstance(raw_chunk, (str, bytes)):
+            continue
+        if isinstance(raw_chunk, bytes):
+            raw_chunk = raw_chunk.decode('utf-8', errors='replace')
+        if not raw_chunk.startswith('data: '):
+            continue
+        try:
+            event_payload = _json.loads(raw_chunk[6:].strip())
+        except Exception:
+            continue
+
+        ptype = (event_payload or {}).get('type')
+
+        if ptype == 'text':
+            delta = event_payload.get('delta', '')
+            if delta:
+                result_chunks.append(delta)
+            yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': agent_id, 'agent_name': agent_name, 'task_index': task_index, 'delta': delta}, ensure_ascii=False)}\n\n"
+        elif ptype == 'done':
+            pass  # 由 orchestrator 統一發 done
+        elif ptype == 'error':
+            ok = False
+            error_msg = event_payload.get('message') or 'subtask_error'
+        elif ptype in ('react', 'tool_start', 'tool', 'progress', 'heartbeat'):
+            # route.decision 屬子代理內部路由，不對外轉發（避免覆蓋 orchestrator.plan UI）
+            event_payload['agent_id'] = agent_id
+            event_payload['agent_name'] = agent_name
+            event_payload['task_index'] = task_index
+            yield f"data: {_json.dumps(event_payload, ensure_ascii=False)}\n\n"
+
+    # 寫入結果
+    task_row.result_text = ''.join(result_chunks)
+    task_row.finished_at = _dt.utcnow()
+    new_progress = int((completed_so_far + 1) / max(total_tasks, 1) * 100)
+
+    if ok:
+        task_row.status = 'done'
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        yield f"data: {_json.dumps({'type': 'agent.done', 'agent_id': agent_id, 'agent_name': agent_name, 'task_index': task_index, 'ok': True, 'result_preview': task_row.result_text[:300], 'overall_progress': new_progress}, ensure_ascii=False)}\n\n"
+    else:
+        task_row.status = 'failed'
+        task_row.error = error_msg
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        yield f"data: {_json.dumps({'type': 'agent.error', 'agent_id': agent_id, 'agent_name': agent_name, 'task_index': task_index, 'error': error_msg, 'degradation': 'skip', 'overall_progress': new_progress}, ensure_ascii=False)}\n\n"
+
+
+async def _synthesize_and_evaluate(
+    *,
+    original_message: str,
+    task_rows: list[MultiAgentTask],
+    router_agent: Agent,
+    overrides: dict[str, Any],
+) -> tuple[str, bool, str]:
+    """目的：Router LLM 合成所有子代理結果，再自評是否滿足需求。
+    為什麼：合成確保回覆完整一致；自評是 Orchestrator ReAct 的 Observe 步驟，決定是否重試。
+    回傳 (synthesis_text, eval_ok, eval_reason)。
+    """
+    # 收集子代理結果
+    results_block_lines: list[str] = []
+    for t in task_rows:
+        if t.status in ('done',) and t.result_text:
+            results_block_lines.append(f"[{str(t.task_desc or '')[:80]}]\n{str(t.result_text or '')[:2000]}")
+        elif t.status in ('failed', 'skipped'):
+            results_block_lines.append(f"[{str(t.task_desc or '')[:80]}]\n（此子任務未完成：{str(t.error or t.status)}）")
+
+    results_block = '\n\n'.join(results_block_lines) if results_block_lines else '（無可用子代理結果）'
+
+    synth_prompt = (
+        f"你是協調助理，負責整合多個子代理的工作成果並回覆使用者。\n\n"
+        f"[使用者原始需求]\n{original_message.strip()}\n\n"
+        f"[子代理工作結果]\n{results_block}\n\n"
+        "請根據以上資訊，整合成一份完整、清晰的回覆給使用者。"
+        "若有子任務未完成，請說明原因並提供已完成的部分。"
+    )
+
+    llm = LLMClient()
+    try:
+        llm.init_for_session(
+            session_id='orchestrator-synthesize',
+            preferred_tier=overrides.get('tier'),
+            overrides=overrides,
+        )
+    except TypeError:
+        llm.init_for_session(
+            session_id='orchestrator-synthesize',
+            preferred_tier=overrides.get('tier'),
+        )
+
+    synthesis_chunks: list[str] = []
+    try:
+        async for delta in _stream_complete_async(llm, prompt=synth_prompt, tier=overrides.get('tier')):
+            if isinstance(delta, str) and delta:
+                synthesis_chunks.append(delta)
+    except Exception as e:
+        _log.warning('orchestrator.synthesize_failed', error=str(e))
+
+    synthesis = ''.join(synthesis_chunks).strip()
+    if not synthesis:
+        synthesis = '抱歉，合成回覆時發生問題，以下為各子代理的原始結果：\n' + results_block
+
+    # 自評
+    eval_prompt = (
+        "請判斷以下回覆是否完整回應了使用者的需求。\n\n"
+        f"[使用者原始需求]\n{original_message.strip()}\n\n"
+        f"[回覆內容]\n{synthesis[:3000]}\n\n"
+        "只輸出 JSON，不要其他說明：\n"
+        '{"ok": true/false, "reason": "簡短說明"}'
+    )
+
+    eval_ok = True
+    eval_reason = ''
+    try:
+        eval_llm = LLMClient()
+        eval_llm.init_for_session(
+            session_id='orchestrator-evaluate',
+            preferred_tier='cloud',
+            overrides={'tier': 'cloud'},
+        )
+        import asyncio as _asyncio
+        eval_result = await _asyncio.to_thread(
+            lambda: ''.join(list(eval_llm.stream_complete(prompt=eval_prompt, tier='cloud')))
+        )
+        s = eval_result.find('{')
+        e = eval_result.rfind('}')
+        if s >= 0 and e > s:
+            obj = _json.loads(eval_result[s:e + 1])
+            eval_ok = bool(obj.get('ok', True))
+            eval_reason = str(obj.get('reason') or '')
+    except Exception as ex:
+        _log.warning('orchestrator.evaluate_failed', error=str(ex))
+        eval_ok = True  # 自評失敗時預設通過，避免無限重試
+
+    return synthesis, eval_ok, eval_reason
+
+
+async def _multi_agent_orchestrator(
+    *,
+    message: str,
+    plan: dict[str, Any],
+    workers: list[Agent],
+    db: Session,
+    current_user: User,
+    router_agent: Agent,
+    conversation: Conversation,
+) -> AsyncGenerator[str, None]:
+    """目的：Orchestrator ReAct 主循環：分解 → 執行子代理 → 合成 → 自評 → 必要時重試。
+    為什麼：單一協調點確保任務可重試、結果可觀測、SSE 流統一。
+    """
+    from datetime import datetime as _dt
+
+    overrides = _build_agent_overrides(router_agent)
+    max_steps = int(getattr(settings, 'ORCHESTRATOR_MAX_STEPS', 3) or 3)
+
+    # 建立 MultiAgentSession
+    session = MultiAgentSession(
+        conversation_id=conversation.id,
+        router_agent_id=router_agent.id,
+        user_message=message,
+        status='planning',
+        react_step=0,
+        max_steps=max_steps,
+        plan_json=plan,
+    )
+    db.add(session)
+    try:
+        db.commit()
+        db.refresh(session)
+    except Exception:
+        db.rollback()
+
+    current_plan = plan
+    completed_so_far = 0
+
+    for step in range(max_steps):
+        session.react_step = step + 1
+        session.status = 'running'
+        session.plan_json = current_plan
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        # 建立本輪子任務列
+        raw_tasks: list[dict[str, Any]] = (current_plan or {}).get('tasks') or []
+        # 找出各 agent 物件
+        worker_map: dict[str, Agent] = {str(w.id): w for w in workers}
+        task_rows: list[MultiAgentTask] = []
+        for idx, t in enumerate(raw_tasks):
+            agent_id_str = str(t.get('agent_id') or '')
+            target_agent = worker_map.get(agent_id_str)
+            if target_agent is None:
+                continue
+            tr = MultiAgentTask(
+                session_id=session.id,
+                task_index=idx,
+                agent_id=target_agent.id,
+                task_desc=str(t.get('task') or message),
+                depends_on=t.get('depends_on') or [],
+                status='pending',
+            )
+            db.add(tr)
+            task_rows.append(tr)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        if not task_rows:
+            break
+
+        # 發出計畫事件
+        plan_event = {
+            'type': 'orchestrator.plan',
+            'react_step': step + 1,
+            'total_tasks': len(task_rows),
+            'tasks': [
+                {
+                    'index': tr.task_index,
+                    'task': str(tr.task_desc or '')[:200],
+                    'agent_id': str(tr.agent_id),
+                    'agent_name': str(worker_map.get(str(tr.agent_id), router_agent).name or ''),
+                    'depends_on': tr.depends_on or [],
+                }
+                for tr in task_rows
+            ],
+        }
+        yield f"data: {_json.dumps(plan_event, ensure_ascii=False)}\n\n"
+
+        # 執行各波次（Phase 1：循序）
+        waves = _build_execution_waves(task_rows)
+        prior_results: dict[int, dict[str, Any]] = {}
+
+        for wave in waves:
+            for task_row in wave:
+                idx = task_row.task_index
+                target_agent = worker_map.get(str(task_row.agent_id))
+                if target_agent is None:
+                    task_row.status = 'skipped'
+                    task_row.error = 'agent_not_found'
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                    continue
+
+                # 注入前置任務結果
+                deps = task_row.depends_on or []
+                prior_list = [prior_results[d] for d in deps if d in prior_results]
+                enriched = _inject_prior_context(task_desc=str(task_row.task_desc), prior_results=prior_list)
+
+                async for event_str in _run_subtask_stream(
+                    task_row=task_row,
+                    enriched_message=enriched,
+                    agent=target_agent,
+                    db=db,
+                    current_user=current_user,
+                    task_index=idx,
+                    total_tasks=len(task_rows),
+                    completed_so_far=completed_so_far,
+                ):
+                    yield event_str
+
+                prior_results[idx] = {
+                    'agent_name': str(target_agent.name or ''),
+                    'result_text': str(task_row.result_text or ''),
+                    'ok': task_row.status == 'done',
+                }
+                if task_row.status == 'done':
+                    completed_so_far += 1
+
+        # 合成階段
+        session.status = 'synthesizing'
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        yield f"data: {_json.dumps({'type': 'orchestrator.synthesizing', 'react_step': step + 1}, ensure_ascii=False)}\n\n"
+
+        synthesis, eval_ok, eval_reason = await _synthesize_and_evaluate(
+            original_message=message,
+            task_rows=task_rows,
+            router_agent=router_agent,
+            overrides=overrides,
+        )
+
+        # 串流合成文字
+        yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': synthesis}, ensure_ascii=False)}\n\n"
+
+        session.synthesis = synthesis
+        session.eval_ok = eval_ok
+        session.status = 'evaluating'
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        if eval_ok:
+            session.status = 'done'
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+            yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': str(conversation.id), 'completed': completed_so_far, 'failed': sum(1 for t in task_rows if t.status == 'failed'), 'react_steps_used': step + 1}, ensure_ascii=False)}\n\n"
+            return
+
+        # 不滿足 → 重新規劃
+        yield f"data: {_json.dumps({'type': 'orchestrator.retry', 'react_step': step + 1, 'reason': eval_reason}, ensure_ascii=False)}\n\n"
+        new_plan = _decompose_tasks(message=message, workers=workers, router_agent=router_agent)
+        if not new_plan or not new_plan.get('multi'):
+            break
+        current_plan = new_plan
+        completed_so_far = 0
+
+    # 超過步驟上限 or 分解失敗
+    session.status = 'failed'
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # 以最後合成結果（若有）作為保底回覆
+    if not session.synthesis:
+        session.synthesis = await _fallback_general_answer('多代理任務未能完成')
+        yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': session.synthesis}, ensure_ascii=False)}\n\n"
+
+    yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': str(conversation.id), 'completed': completed_so_far, 'failed': 0, 'react_steps_used': max_steps, 'max_steps_reached': True}, ensure_ascii=False)}\n\n"
+
+
 @router.post('/chat')
 async def chat_entry_router(
     payload: dict = Body(...),
@@ -1219,6 +1732,61 @@ async def chat_entry_router(
         router_agent = db.query(Agent).first()
     if router_agent is None:
         raise validation_error('尚未建立可用代理者')
+
+    # ── 多代理協作路徑（三層判斷後交 Orchestrator 處理）──
+    workers = db.query(Agent).filter(Agent.id != router_agent.id).all()
+    routing = _classify_routing(message=message, workers=workers)
+    if routing == 'multi':
+        import asyncio as _asyncio
+        import functools as _functools
+
+        conversation = _query_latest_conversation_with_fallback(
+            db=db, agent_id=str(router_agent.id), user_id=current_user.id
+        )
+        if conversation is None:
+            conversation = _create_conversation_with_fallback(
+                db=db, agent_id=str(router_agent.id), user_id=current_user.id
+            )
+
+        async def _orchestrate_stream() -> AsyncGenerator[str, None]:
+            # 立即發送第一個事件，讓前端知道已進入多代理模式
+            yield f"data: {_json.dumps({'type': 'orchestrator.thinking', 'message': '正在分析任務分派…'}, ensure_ascii=False)}\n\n"
+            # 在 thread 裡做 LLM decompose，不阻塞 event loop
+            try:
+                plan = await _asyncio.wait_for(
+                    _asyncio.to_thread(
+                        _functools.partial(_decompose_tasks, message=message, workers=workers, router_agent=router_agent)
+                    ),
+                    timeout=30.0,
+                )
+            except _asyncio.TimeoutError:
+                plan = None
+            if plan and plan.get('multi') and len(plan.get('tasks', [])) >= 2:
+                async for event in _multi_agent_orchestrator(
+                    message=message,
+                    plan=plan,
+                    workers=workers,
+                    db=db,
+                    current_user=current_user,
+                    router_agent=router_agent,
+                    conversation=conversation,
+                ):
+                    yield event
+            else:
+                # decompose 失敗或降級 → 走單代理，直接透過原 chat_stream
+                yield f"data: {_json.dumps({'type': 'route.decision', 'target_agent_name': str(router_agent.name or ''), 'degraded': True}, ensure_ascii=False)}\n\n"
+                async for event in chat_stream(
+                    agent_id=str(router_agent.id),
+                    message=message,
+                    conversation_id=str(conversation.id) if conversation else None,
+                    db=db,
+                    current_user=current_user,
+                ):
+                    yield event
+
+        return StreamingResponse(_orchestrate_stream(), media_type='text/event-stream')
+
+    # ── 單代理路徑（原有邏輯不變）──
 
     worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=message)
     is_fallback = False

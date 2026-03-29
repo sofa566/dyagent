@@ -253,6 +253,55 @@ class RagDataset(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# 多代理協作 Session（Orchestrator ReAct 生命週期）
+class MultiAgentSession(Base):
+    """職責：記錄一次多代理協作的完整生命週期，包含分解計畫、ReAct 步驟、合成結果與自評。
+    存在原因：與單代理 Conversation 分開，避免污染既有訊息層，並支援重試與可觀測性。
+    """
+    __tablename__ = 'multi_agent_sessions'
+    __table_args__ = {'extend_existing': True}
+
+    id              = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=False)
+    router_agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=False)
+    user_message    = Column(Text, nullable=False)
+    status          = Column(
+                        Enum('planning', 'running', 'synthesizing', 'evaluating', 'done', 'failed',
+                             name='mas_status'),
+                        nullable=False, default='planning')
+    react_step      = Column(Integer, nullable=False, default=0)
+    max_steps       = Column(Integer, nullable=False, default=3)
+    plan_json       = Column(JSON, default=dict)    # 本輪 LLM 分解計畫（每次重試覆寫）
+    synthesis       = Column(Text, nullable=True)   # 最終合成回覆
+    eval_ok         = Column(Boolean, nullable=True)  # 最後一次自評結果
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# 多代理協作子任務（每個 Session 可有多個 Task）
+class MultiAgentTask(Base):
+    """職責：記錄 Orchestrator 分配給單一子代理的任務描述、執行狀態與輸出結果。
+    存在原因：正規化子任務資料，支援依賴關係、失敗追蹤與合成輸入。
+    """
+    __tablename__ = 'multi_agent_tasks'
+    __table_args__ = {'extend_existing': True}
+
+    id          = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    session_id  = Column(GUID(), ForeignKey('multi_agent_sessions.id'), nullable=False)
+    task_index  = Column(Integer, nullable=False)     # 本輪中的序號（0-based）
+    agent_id    = Column(GUID(), ForeignKey('agents.id'), nullable=False)
+    task_desc   = Column(Text, nullable=False)         # 注入前置背景後的任務描述
+    depends_on  = Column(JSON, default=list)           # [task_index, ...] 前置依賴
+    status      = Column(
+                    Enum('pending', 'running', 'done', 'failed', 'skipped',
+                         name='mat_status'),
+                    nullable=False, default='pending')
+    result_text = Column(Text, nullable=True)          # 子代理完整輸出文字
+    error       = Column(Text, nullable=True)
+    started_at  = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
 # LLM 每輪審計紀錄
 class LlmTurn(Base):
     __tablename__ = 'llm_turns'
