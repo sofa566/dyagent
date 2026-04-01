@@ -354,44 +354,67 @@
     }
 
     // ========== 儲存 ==========
+    function parseJsonArrayField(fieldId, fieldLabel) {
+      const rawValue = ($(fieldId).value || '').trim();
+      if (!rawValue) return [];
+      let parsed;
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch {
+        throw new Error(`${fieldLabel} 需為合法 JSON 陣列`);
+      }
+      if (!Array.isArray(parsed)) {
+        throw new Error(`${fieldLabel} 需為 JSON 陣列`);
+      }
+      return parsed;
+    }
+
+    function parseJsonObjectField(fieldId, fieldLabel) {
+      const rawValue = ($(fieldId).value || '').trim();
+      if (!rawValue) return {};
+      let parsed;
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch {
+        throw new Error(`${fieldLabel} 需為合法 JSON 物件`);
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`${fieldLabel} 需為 JSON 物件`);
+      }
+      return parsed;
+    }
+
     async function save() {
       try {
+        const transport = $('transport').value;
+        const commandValue = $('command').value.trim();
+        if (transport === 'stdio' && !commandValue) {
+          showError('stdio 模式必須填寫 Command');
+          return;
+        }
+        if (commandValue.startsWith('[')) {
+          showError('Command 需為單一字串，例如：python');
+          return;
+        }
+
         const body = {
           name: $('name').value.trim(),
           enabled: $('enabled').checked,
-          transport: $('transport').value,
+          transport,
           base_url: $('base_url').value.trim(),
           progress_field: $('progress_field').value.trim(),
           eta_field: $('eta_field').value.trim(),
+          auth: {},
+          command: commandValue,
+          args: [],
+          env: {},
+          input_schema: {},
         };
 
-        // 解析 JSON 欄位
-        const authJson = $('auth_json').value.trim();
-        if (authJson) {
-          try { body.auth = JSON.parse(authJson); }
-          catch { showError('Auth 需為合法 JSON'); return; }
-        }
-
-        const cmd = $('command').value.trim();
-        if (cmd) body.command = cmd;
-
-        const argsVal = $('args').value.trim();
-        if (argsVal) {
-          try { body.args = JSON.parse(argsVal); }
-          catch { showError('Args 需為合法 JSON 陣列'); return; }
-        }
-
-        const envVal = $('env').value.trim();
-        if (envVal) {
-          try { body.env = JSON.parse(envVal); }
-          catch { showError('Env 需為合法 JSON 物件'); return; }
-        }
-
-        const schemaVal = $('input_schema').value.trim();
-        if (schemaVal) {
-          try { body.input_schema = JSON.parse(schemaVal); }
-          catch { showError('input_schema 需為合法 JSON'); return; }
-        }
+        body.auth = parseJsonObjectField('auth_json', 'Auth');
+        body.args = parseJsonArrayField('args', 'Args');
+        body.env = parseJsonObjectField('env', 'Env');
+        body.input_schema = parseJsonObjectField('input_schema', 'input_schema');
 
         if (id) {
           await api.put(`/mcps/${id}`, body);

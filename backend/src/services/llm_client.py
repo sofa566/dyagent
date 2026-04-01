@@ -91,6 +91,34 @@ class LLMClient:
             return self.onprem_default(prompt=prompt)
         return self.cloud_default(prompt=prompt)
 
+    def _extract_stream_text(self, chunk) -> str:
+        content = getattr(chunk, "content", None)
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, dict):
+                    item_text = item.get("text")
+                    if isinstance(item_text, str) and item_text:
+                        text_parts.append(item_text)
+            merged = "".join(text_parts)
+            if merged:
+                return merged
+        include_reasoning = bool(getattr(settings, "LLM_STREAM_INCLUDE_REASONING", False))
+        if include_reasoning:
+            reasoning_content = getattr(chunk, "reasoning_content", None)
+            if isinstance(reasoning_content, str) and reasoning_content:
+                return reasoning_content
+            additional_kwargs = getattr(chunk, "additional_kwargs", None)
+            if isinstance(additional_kwargs, dict):
+                maybe_reasoning = additional_kwargs.get("reasoning_content")
+                if isinstance(maybe_reasoning, str) and maybe_reasoning:
+                    return maybe_reasoning
+        return ""
+
     # T007/T008：簡化的串流封裝 + 重試/逾時 + 結構化日誌（start/finish/tokens/cost）
     def stream_complete(self, *, prompt: str, tier: Optional[str] = None, max_retries: int = 2) -> Generator[str, None, None]:
         """以簡化方式產生串流輸出（骨架）。
@@ -203,14 +231,9 @@ class LLMClient:
                     llm = ChatOpenAI(**kwargs)
                     self._last_route = {"tier": "cloud", "provider": "openai", "model": kwargs.get("model")}
                     for chunk in llm.stream([HumanMessage(content=prompt)]):
-                        content = getattr(chunk, "content", None)
-                        # 正規化內容：部分供應商回傳 list 片段
-                        if isinstance(content, list):
-                            text = "".join(x for x in content if isinstance(x, str))
-                            if text:
-                                yield text
-                        elif isinstance(content, str) and content:
-                            yield content
+                        text = self._extract_stream_text(chunk)
+                        if text:
+                            yield text
                     return
                 elif provider == "anthropic":
                     from langchain_anthropic import ChatAnthropic
@@ -221,13 +244,9 @@ class LLMClient:
                     llm = ChatAnthropic(**kwargs)
                     self._last_route = {"tier": "cloud", "provider": "anthropic", "model": kwargs.get("model")}
                     for chunk in llm.stream([HumanMessage(content=prompt)]):
-                        content = getattr(chunk, "content", None)
-                        if isinstance(content, list):
-                            text = "".join(x for x in content if isinstance(x, str))
-                            if text:
-                                yield text
-                        elif isinstance(content, str) and content:
-                            yield content
+                        text = self._extract_stream_text(chunk)
+                        if text:
+                            yield text
                     return
                 elif provider in {"google", "gemini", "google-gemini"}:
                     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -238,13 +257,9 @@ class LLMClient:
                     llm = ChatGoogleGenerativeAI(**kwargs)
                     self._last_route = {"tier": "cloud", "provider": "gemini", "model": kwargs.get("model")}
                     for chunk in llm.stream([HumanMessage(content=prompt)]):
-                        content = getattr(chunk, "content", None)
-                        if isinstance(content, list):
-                            text = "".join(x for x in content if isinstance(x, str))
-                            if text:
-                                yield text
-                        elif isinstance(content, str) and content:
-                            yield content
+                        text = self._extract_stream_text(chunk)
+                        if text:
+                            yield text
                     return
                 elif provider in {"azure", "azure-openai"}:
                     from langchain_openai import AzureChatOpenAI
@@ -259,13 +274,9 @@ class LLMClient:
                     )
                     self._last_route = {"tier": "cloud", "provider": "azure", "deployment": settings.AZURE_OPENAI_DEPLOYMENT}
                     for chunk in llm.stream([HumanMessage(content=prompt)]):
-                        content = getattr(chunk, "content", None)
-                        if isinstance(content, list):
-                            text = "".join(x for x in content if isinstance(x, str))
-                            if text:
-                                yield text
-                        elif isinstance(content, str) and content:
-                            yield content
+                        text = self._extract_stream_text(chunk)
+                        if text:
+                            yield text
                     return
                 elif provider == "openrouter":
                     from langchain_litellm import ChatLiteLLM
@@ -277,13 +288,9 @@ class LLMClient:
                         llm = ChatLiteLLM(model=settings.OPENROUTER_MODEL)
                         self._last_route = {"tier": "cloud", "provider": "openrouter", "model": settings.OPENROUTER_MODEL}
                         for chunk in llm.stream([HumanMessage(content=prompt)]):
-                            content = getattr(chunk, "content", None)
-                            if isinstance(content, list):
-                                text = "".join(x for x in content if isinstance(x, str))
-                                if text:
-                                    yield text
-                            elif isinstance(content, str) and content:
-                                yield content
+                            text = self._extract_stream_text(chunk)
+                            if text:
+                                yield text
                     return
                 elif provider in {"xai", "grok"}:
                     # Grok 走 ChatLiteLLM（需 XAI_API_KEY），用 temp_env 限縮作用域
@@ -295,13 +302,9 @@ class LLMClient:
                         llm = ChatLiteLLM(model=settings.GROK_MODEL)
                         self._last_route = {"tier": "cloud", "provider": "grok", "model": settings.GROK_MODEL}
                         for chunk in llm.stream([HumanMessage(content=prompt)]):
-                            content = getattr(chunk, "content", None)
-                            if isinstance(content, list):
-                                text = "".join(x for x in content if isinstance(x, str))
-                                if text:
-                                    yield text
-                            elif isinstance(content, str) and content:
-                                yield content
+                            text = self._extract_stream_text(chunk)
+                            if text:
+                                yield text
                     return
             except Exception as e:
                 self._log.warning("lc.cloud.stream.fallback", error=str(e), provider=provider)
@@ -331,13 +334,9 @@ class LLMClient:
                 llm = ChatLiteLLM(model=prefixed_model)
                 self._last_route = {"tier": "onprem", "provider": (self._session_overrides.get("onprem_provider") or settings.ONPREM_PROVIDER or ""), "model": prefixed_model, "base_hint": self._safe_base_hint(base or "")}
                 for chunk in llm.stream([HumanMessage(content=prompt)]):
-                    content = getattr(chunk, "content", None)
-                    if isinstance(content, list):
-                        text = "".join(x for x in content if isinstance(x, str))
-                        if text:
-                            yield text
-                    elif isinstance(content, str) and content:
-                        yield content
+                    text = self._extract_stream_text(chunk)
+                    if text:
+                        yield text
             return
         except Exception as e:
             # 讓上層的重試/降級處理（將回退到本地切片策略）

@@ -358,6 +358,7 @@
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
     const submitBtn = chatForm.querySelector('button');
+    const SHOW_PERSISTED_TOOL_EVENTS = false;
 
     // 追蹤目前串流中的工具卡片（需預先宣告，避免在 module 嚴格模式下 ReferenceError）
     let activeToolCard = null;
@@ -569,6 +570,7 @@
 
 
     let currentAgentId = null;
+    let routerAgentId = null;   // 主代理 ID，orchestrator 完成後需用此 ID 重新整理側欄
     let currentConversationId = null;
     let currentConversations = [];
     let agentRegistry = [];
@@ -634,6 +636,7 @@
           const initial = (router && router.id) ? router.id : ((agents[0] && agents[0].id) || '');
           if (initial) {
             currentAgentId = initial;
+            routerAgentId = initial;   // 記住主代理 ID
             await selectAgent(initial);
           } else {
             chatMessages.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">目前沒有可用代理者，請聯絡管理者。</p>';
@@ -660,7 +663,9 @@
         // 側欄載入中狀態
         convEmpty.style.display = 'none';
         convList.innerHTML = '<li class="conv-item"><div class="conv-meta">載入中…</div></li>';
-        const response = await api.get(`/agents/${agentId}/conversations`);
+        // auto-routing 模式取得全部對話（跨 agent），非 auto-routing 取得指定 agent 的對話
+        const convUrl = autoRoutingMode ? '/conversations' : `/agents/${agentId}/conversations`;
+        const response = await api.get(convUrl);
         currentConversations = Array.isArray(response.conversations) ? response.conversations : [];
         renderSidebar(currentConversations);
         if (currentConversations.length > 0) {
@@ -780,19 +785,39 @@
       closeAllConversationMenus();
     });
 
-    function renderMessagesById(convId) {
+    async function renderMessagesById(convId) {
       const conv = (currentConversations || []).find(c => c.id === convId);
       if (!conv) return;
+      let routeLabels = [];
+      try {
+        const routeRes = await api.get(`/conversations/${convId}/events?types=route.decision`);
+        const routeEvents = Array.isArray(routeRes.events) ? routeRes.events : [];
+        routeLabels = routeEvents.map((e) => {
+          const payload = (e && e.payload) || {};
+          if (payload.target_agent_name) return `本輪由：${String(payload.target_agent_name)} 代理者回覆`;
+          if (payload.target_agent_id) return `本輪由：${String(payload.target_agent_id)} 代理者回覆`;
+          return '';
+        }).filter(Boolean);
+      } catch {}
+
+      let assistantTurnIndex = 0;
       chatMessages.innerHTML = (conv.messages || []).map(msg => {
-        const body = msg.role === 'assistant'
-          ? `<div class="markdown-body">${marked.parse(msg.content || '')}</div>`
-          : `<p>${escapeHTML(msg.content || '')}</p>`;
+        let body = `<p>${escapeHTML(msg.content || '')}</p>`;
+        if (msg.role === 'assistant') {
+          const routeLabel = routeLabels[assistantTurnIndex] || '';
+          assistantTurnIndex += 1;
+          const routeBanner = routeLabel
+            ? `<div class="route-info">${escapeHTML(routeLabel)}</div>`
+            : '';
+          body = `${routeBanner}<div class="markdown-body">${marked.parse(msg.content || '')}</div>`;
+        }
         return `<div class="message ${msg.role}">${body}<small style="opacity:0.7;">${msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</small></div>`;
       }).join('');
       chatMessages.scrollTop = chatMessages.scrollHeight;
 
       // 載入並渲染此對話的工具事件（持久化卡片）
       (async () => {
+        if (!SHOW_PERSISTED_TOOL_EVENTS) return;
         try {
           const ev = await api.get(`/conversations/${convId}/events?types=tool_input,tool_result,tool_error`);
           const list = Array.isArray(ev.events) ? ev.events : [];
@@ -909,6 +934,25 @@
       assistantMsg.appendChild(p);
       chatMessages.appendChild(assistantMsg);
       chatMessages.scrollTop = chatMessages.scrollHeight;
+      // ── Markdown 累積（宣告在 try 外，catch 也能存取）──
+      let accText = '';                   // 單代理累積文字
+      const agentAccTexts = new Map();    // task_index → 子代理累積文字
+      const agentDivs = new Map();        // task_index → 子代理渲染 div
+      let orchestratorPlanEl = null;      // 任務清單容器
+      const agentTaskBadges = new Map();  // task_index → badge element
+      let hidingToolProtocol = false;
+      function stripToolProtocolText(text) {
+        let cleaned = String(text || '');
+        cleaned = cleaned.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '');
+        cleaned = cleaned.replace(/\[\[CALL[\s\S]*$/g, '');
+        cleaned = cleaned.replace(/(?:^|\s)tool\s*=\s*[a-zA-Z0-9:_\-./]+/g, ' ');
+        cleaned = cleaned.replace(/^\s*(?:tool\s*=\s*)?(?:mcp|cp):[a-zA-Z0-9_\-./]+\s*/i, '');
+        cleaned = cleaned.replace(/```json\s*\{[\s\S]*?\}\s*```/gi, '');
+        cleaned = cleaned.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '');
+        cleaned = cleaned.replace(/^\s*[:：,，\-]+\s*/g, '');
+        return cleaned.trimStart();
+      }
+
       // 串流聊天
       try {
         const token = localStorage.getItem('auth_token');
@@ -918,7 +962,9 @@
           ? '/api/chat'
           : (`/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: msg }));
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort('timeout'), STREAM_TIMEOUT_MS);
+        // timer 改為「每收到事件就重置」：從最後一個事件起算 STREAM_TIMEOUT_MS
+        let timer = setTimeout(() => controller.abort('timeout'), STREAM_TIMEOUT_MS);
+        const resetTimer = () => { clearTimeout(timer); timer = setTimeout(() => controller.abort('timeout'), STREAM_TIMEOUT_MS); };
         let resp = await fetch(url, {
           method: useUnifiedEntry ? 'POST' : 'GET',
           headers: {
@@ -949,13 +995,6 @@
         const reader = resp.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
-        // ── 多代理協作 UI 狀態 ──
-        let orchestratorPlanEl = null;      // 任務清單容器
-        const agentTaskBadges = new Map();  // task_index → badge element
-        // ── Markdown 累積 ──
-        let accText = '';                   // 單代理累積文字
-        const agentAccTexts = new Map();    // task_index → 子代理累積文字
-        const agentDivs = new Map();        // task_index → 子代理渲染 div
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -965,14 +1004,27 @@
             const chunk = buffer.slice(0, idx);
             buffer = buffer.slice(idx + 2);
             if (!chunk.startsWith('data: ')) continue;
+            resetTimer(); // 每收到一個事件就重置逾時計時器
             try {
               const payload = JSON.parse(chunk.replace(/^data:\s*/, ''));
+              if (!['heartbeat','text'].includes(payload.type)) console.log('[SSE]', payload.type, JSON.stringify(payload).slice(0,120));
               if (payload.type === 'text' && typeof payload.delta === 'string') {
-                accText += payload.delta;
-                // 避免把內部工具協議 [[CALL ...]] 顯示給使用者
-                accText = accText.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '').trimStart();
-                accText = accText.replace(/```json\s*\{[\s\S]*?\}\s*```/gi, '').trimStart();
-                accText = accText.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '').trimStart();
+                const deltaText = payload.delta;
+                if (hidingToolProtocol) {
+                  if (deltaText.includes(']]')) {
+                    hidingToolProtocol = false;
+                  }
+                  continue;
+                }
+                const callIndex = deltaText.indexOf('[[CALL');
+                if (callIndex >= 0) {
+                  const visiblePart = deltaText.slice(0, callIndex);
+                  if (visiblePart) accText += visiblePart;
+                  hidingToolProtocol = true;
+                } else {
+                  accText += deltaText;
+                }
+                accText = stripToolProtocolText(accText);
                 p.innerHTML = marked.parse(accText);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
               } else if (payload.type === 'route.decision') {
@@ -1060,7 +1112,7 @@
                   agentAccTexts.set(tIdx, '');
                 }
                 let agentAcc = (agentAccTexts.get(tIdx) || '') + payload.delta;
-                agentAcc = agentAcc.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '').trimStart();
+                agentAcc = stripToolProtocolText(agentAcc);
                 agentAccTexts.set(tIdx, agentAcc);
                 agentDivs.get(tIdx).innerHTML = marked.parse(agentAcc);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -1083,11 +1135,15 @@
                 routeInfo.textContent = `多代理協作完成（${payload.completed || 0} 個代理，共 ${payload.react_steps_used || 1} 輪）`;
                 routeInfo.classList.add('orchestrator-done');
                 try {
-                  const refreshed = await api.get(`/agents/${currentAgentId}/conversations`);
+                  const refreshUrl = autoRoutingMode ? '/conversations' : `/agents/${currentAgentId}/conversations`;
+                  const refreshed = await api.get(refreshUrl);
                   currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
                   renderSidebar(currentConversations);
                 } catch {}
               } else if (payload.type === 'tool_start') {
+                hidingToolProtocol = false;
+                accText = '';
+                p.innerHTML = '';
                 const built = createToolCard(payload.name);
                 built._toolName = payload.name;
                 built._lastPayload = (payload.args && typeof payload.args === 'object') ? payload.args : {};
@@ -1117,13 +1173,18 @@
                     : (typeof f.remaining_ms === 'number' ? f.remaining_ms / 1000 : null)));
                   if (cand !== null) updateProgress(activeToolCard, cand, eta);
                 }
+              } else if (payload.type === 'text_clear_tool') {
+                hidingToolProtocol = false;
+                accText = '';
+                if (p) p.innerHTML = marked.parse(accText);
               } else if (payload.type === 'done') {
                 // 完成
                 if (activeToolCard && activeToolCard._state === 'running') setCardStatus(activeToolCard, 'ok');
                 if (activeToolCard && (!activeToolCard._convId) && payload.conversation_id) activeToolCard._convId = payload.conversation_id;
                 // 串流完成後，刷新側欄會話清單以更新最後互動時間與新會話
                 try {
-                  const refreshed = await api.get(`/agents/${currentAgentId}/conversations`);
+                  const refreshUrl = autoRoutingMode ? '/conversations' : `/agents/${currentAgentId}/conversations`;
+                  const refreshed = await api.get(refreshUrl);
                   currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
                   renderSidebar(currentConversations);
                 } catch {}

@@ -16,6 +16,7 @@ from src.core.config import settings
 from urllib.parse import urlparse, urlunparse
 import subprocess
 import os
+import sys
 import json as _json
 import threading
 import queue
@@ -56,6 +57,12 @@ class MCPClient:
                 if isinstance(k, str) and isinstance(v, str):
                     headers[k] = v
         return headers
+
+    def _resolve_stdio_command(self, command: str) -> str:
+        normalized = str(command or '').strip()
+        if normalized in {'python', 'python3'}:
+            return sys.executable
+        return normalized
 
     def _classify_error(self, err: Exception, status: int | None = None) -> str:
         msg = str(err).lower()
@@ -160,6 +167,7 @@ class MCPClient:
         """以 stdio 啟動正式 MCP server，完成 initialize 後嘗試 tools/list。"""
         if not command or not isinstance(command, str):
             return []
+        command = self._resolve_stdio_command(command)
         if self._stdio_allowed and (command not in getattr(self, '_stdio_allowed', [])):
             return []
         argv = [command] + (args or [])
@@ -303,7 +311,7 @@ class MCPClient:
                     last_error = e
                     continue
         # 嘗試 JSON-RPC 2.0 端點（HTTP）
-        rpc = self.rpc_call(base_url=base_url, method="tools.invoke", params={"tool": name, "arguments": arguments or {}}, auth=auth)
+        rpc = self.rpc_call(base_url=base_url, method="tools/call", params={"name": name, "arguments": arguments or {}}, auth=auth)
         if rpc.get("ok"):
             return {"ok": True, "tool": name, "data": rpc.get("result")}
         # 全部失敗：回傳分類錯誤
@@ -412,9 +420,25 @@ class MCPClient:
         if not command or not isinstance(command, str):
             yield {"ok": False, "error": "invalid_command"}
             return
+        command = self._resolve_stdio_command(command)
         # 安全檢查：白名單
         if self._stdio_allowed and (command not in self._stdio_allowed):
             yield {"ok": False, "error": "command_not_allowed"}
+            return
+
+        # 單次 tools/call 優先走 one-shot，避免部分 server 啟動時 stdout 雜訊造成持久握手阻塞。
+        if method == 'tools/call':
+            result = self.invoke_stdio(
+                command=command,
+                args=args or [],
+                env=env or {},
+                method=method,
+                params=params or {},
+            )
+            if bool(result.get('ok')):
+                yield {'ok': True, 'result': result.get('result')}
+            else:
+                yield {'ok': False, 'error': result.get('error') or 'stdio_invoke_failed'}
             return
         key = self._stdio_key(command, args or [], env or {})
         session = self._stdio_sessions.get(key)
@@ -482,9 +506,7 @@ class MCPClient:
     # ===== STDIO JSON-RPC (local process) =====
     def _write_rpc_stdio(self, stdin, obj: Dict[str, Any]) -> None:
         try:
-            data = _json.dumps(obj, ensure_ascii=False).encode('utf-8')
-            header = f"Content-Length: {len(data)}\r\n\r\n".encode('ascii')
-            stdin.write(header)
+            data = (_json.dumps(obj, ensure_ascii=False) + "\n").encode('utf-8')
             stdin.write(data)
             stdin.flush()
         except Exception as e:
@@ -510,42 +532,36 @@ class MCPClient:
         return item
 
     def _read_rpc_stdio(self, stdout) -> Dict[str, Any]:
-        # 讀取 LSP/MCP 標準的 Content-Length 格式訊息
+        # 優先讀取行分隔 JSON（MCP Python SDK stdio）；若是 Content-Length 也相容。
         try:
-            # 讀 header
-            headers = b""
-            while b"\r\n\r\n" not in headers:
-                chunk = stdout.read(1)
-                if not chunk:
-                    break
-                headers += chunk
-            if b"Content-Length:" not in headers:
-                # 嘗試整行 JSON（容錯）
-                line = headers + stdout.readline()
-                return _json.loads(line.decode('utf-8').strip() or '{}')
-            try:
-                head_text = headers.decode('ascii', errors='ignore')
-                for line in head_text.split("\r\n"):
-                    if line.lower().startswith('content-length:'):
-                        length = int(line.split(':', 1)[1].strip())
-                        break
-                else:
-                    length = 0
-            except Exception:
+            first_line = stdout.readline()
+            if not first_line:
+                raise RuntimeError('stdio_eof')
+            first_text = first_line.decode('utf-8', errors='replace').strip()
+            if first_text.lower().startswith('content-length:'):
                 length = 0
-            body = stdout.read(length) if length > 0 else b""
-            txt = body.decode('utf-8', errors='replace')
-            return _json.loads(txt or '{}')
+                try:
+                    length = int(first_text.split(':', 1)[1].strip())
+                except Exception:
+                    length = 0
+                while True:
+                    sep = stdout.readline()
+                    if not sep or sep in (b"\n", b"\r\n"):
+                        break
+                body = stdout.read(length) if length > 0 else b""
+                return _json.loads(body.decode('utf-8', errors='replace') or '{}')
+            return _json.loads(first_text or '{}')
         except Exception as e:
             raise RuntimeError(f"stdio_read_failed: {e}")
 
-    def invoke_stdio(self, *, command: str, args: list[str] | None = None, env: Dict[str, Any] | None = None, method: str = 'tools.invoke', params: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def invoke_stdio(self, *, command: str, args: list[str] | None = None, env: Dict[str, Any] | None = None, method: str = 'tools/call', params: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """以 subprocess 啟動本機 MCP Server 並透過 stdio 進行單次 JSON-RPC 呼叫。
 
         注意：此為最小可用版，僅做單次請求/回應；長連線/串流可於後續擴充。
         """
         if not command or not isinstance(command, str):
             return {"ok": False, "error": "invalid_command"}
+        command = self._resolve_stdio_command(command)
         if self._stdio_allowed and (command not in getattr(self, '_stdio_allowed', [])):
             return {"ok": False, "error": "command_not_allowed"}
         argv = [command] + (args or [])
@@ -566,15 +582,37 @@ class MCPClient:
             return {"ok": False, "error": f"spawn_failed: {e}"}
 
         try:
-            req = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
             assert proc.stdin is not None and proc.stdout is not None
-            self._write_rpc_stdio(proc.stdin, req)
-            # 讀取一個回應（帶逾時，避免永久阻塞）
             try:
                 timeout_sec = float(getattr(settings, 'MCP_TOOL_TIMEOUT_SEC', 30) or 30)
             except Exception:
                 timeout_sec = 30.0
             timeout_sec = max(timeout_sec, self._timeout, 3.0)
+
+            init_req = {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "dyagent", "version": "1.0"},
+                },
+            }
+            self._write_rpc_stdio(proc.stdin, init_req)
+            try:
+                self._read_rpc_stdio_timeout(proc.stdout, timeout_sec=timeout_sec)
+            except Exception:
+                pass
+            self._write_rpc_stdio(proc.stdin, {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            })
+
+            req = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+            self._write_rpc_stdio(proc.stdin, req)
+            # 讀取一個回應（帶逾時，避免永久阻塞）
             resp = self._read_rpc_stdio_timeout(proc.stdout, timeout_sec=timeout_sec)
             # 結束進程（避免殭屍）
             try:
@@ -660,9 +698,38 @@ class _StdioSession:
         if self._stdin is None or self._stdout is None:
             raise RuntimeError("stdio_handles_unavailable")
         self._alive = True
+        # MCP 初始化握手：必須在 reader thread 啟動前同步完成
+        self._mcp_init_handshake()
         self._reader = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader.start()
         self.touch()
+
+    def _mcp_init_handshake(self, timeout_sec: float = 5.0) -> None:
+        """MCP 協議初始化（initialize → notifications/initialized）。
+        為什麼：標準 MCP 伺服器要求客戶端先完成握手才接受 tools/call 請求。
+        """
+        import select as _sel
+        try:
+            init_req = {
+                "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "dyagent", "version": "1.0"},
+                }
+            }
+            self._send(init_req)
+            # 等待 initialize 回應（有 timeout，避免卡住 event loop）
+            readable = _sel.select([self._stdout], [], [], timeout_sec)[0]
+            if readable:
+                self._read_frame()  # 丟棄回應內容（僅確認已收到）
+            # 送出 initialized 通知
+            notif = {
+                "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
+            }
+            self._send(notif)
+        except Exception:
+            pass  # 握手失敗時繼續；後續 tools/call 若也失敗，才向用戶報錯
 
     def _reader_loop(self) -> None:
         try:
@@ -730,35 +797,32 @@ class _StdioSession:
             self._alive = False
 
     def _read_frame(self) -> Optional[Dict[str, Any]]:
-        # 解析 Content-Length 標頭 + JSON 體
+        # 優先讀取行分隔 JSON；若收到 Content-Length 也相容處理。
         assert self._stdout is not None
-        headers = b""
-        # 讀取直到 \r\n\r\n（簡易做法）
-        while b"\r\n\r\n" not in headers:
-            ch = self._stdout.read(1)
-            if not ch:
+        try:
+            first_line = self._stdout.readline()
+            if not first_line:
                 return None
-            headers += ch
-        length = 0
-        try:
-            text = headers.decode('ascii', errors='ignore')
-            for line in text.split("\r\n"):
-                if line.lower().startswith('content-length:'):
-                    length = int(line.split(':', 1)[1].strip())
-                    break
-        except Exception:
-            length = 0
-        body = self._stdout.read(length) if length > 0 else b""
-        try:
-            return _json.loads(body.decode('utf-8', errors='replace') or '{}')
+            first_text = first_line.decode('utf-8', errors='replace').strip()
+            if first_text.lower().startswith('content-length:'):
+                length = 0
+                try:
+                    length = int(first_text.split(':', 1)[1].strip())
+                except Exception:
+                    length = 0
+                while True:
+                    sep = self._stdout.readline()
+                    if not sep or sep in (b"\n", b"\r\n"):
+                        break
+                body = self._stdout.read(length) if length > 0 else b""
+                return _json.loads(body.decode('utf-8', errors='replace') or '{}')
+            return _json.loads(first_text or '{}')
         except Exception:
             return {"ok": False, "error": "invalid_json"}
 
     def _send(self, obj: Dict[str, Any]) -> None:
         assert self._stdin is not None
-        data = _json.dumps(obj, ensure_ascii=False).encode('utf-8')
-        header = f"Content-Length: {len(data)}\r\n\r\n".encode('ascii')
-        self._stdin.write(header)
+        data = (_json.dumps(obj, ensure_ascii=False) + "\n").encode('utf-8')
         self._stdin.write(data)
         self._stdin.flush()
         self.touch()

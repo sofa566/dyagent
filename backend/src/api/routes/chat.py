@@ -545,6 +545,38 @@ def _write_event_part_safe(*, db: Session, conversation_id: str, type_: str, pay
         db.rollback()
 
 
+def _parse_openai_tool_call_block(buffer: str) -> tuple[bool, str, dict[str, Any]]:
+    """目的：解析 LLM 以 OpenAI function-call 格式輸出的工具呼叫 JSON。
+    為什麼：部分模型（如 gpt-5）遵從 prompt 指示，產生 {"tool_calls":[...]} 格式
+    而非 [[CALL tool=...]] 格式，需要相同的偵測與執行路徑。
+    只在 buffer 已含完整 JSON 時回傳 True（找到 "tool_calls" + 外層 } 且可解析）。
+    """
+    if '"tool_calls"' not in buffer or '"function"' not in buffer:
+        return False, '', {}
+    import re as _re2
+    # 找到第一個 {"tool_calls":...} 結構（non-greedy 至外層 }）
+    m = _re2.search(r'\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}', buffer)
+    if not m:
+        return False, '', {}
+    try:
+        data = _json.loads(m.group(0))
+        calls = data.get('tool_calls') or []
+        if not calls:
+            return False, '', {}
+        first = calls[0]
+        fn = first.get('function') or {}
+        name = str(fn.get('name') or '').strip()
+        args = fn.get('arguments') or {}
+        if isinstance(args, str):
+            try:
+                args = _json.loads(args)
+            except Exception:
+                args = {}
+        return bool(name), name, args if isinstance(args, dict) else {}
+    except Exception:
+        return False, '', {}
+
+
 def _parse_tool_call_block(buffer: str) -> tuple[bool, str, dict[str, Any]]:
     """目的：解析 [[CALL tool=...]] 區塊。
     為什麼：避免在串流主迴圈內混入字串解析細節，讓流程更聚焦。
@@ -570,6 +602,34 @@ def _parse_tool_call_block(buffer: str) -> tuple[bool, str, dict[str, Any]]:
         except Exception:
             payload = {}
     return True, tool_name, payload
+
+
+def _apply_tool_payload_defaults(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """目的：補齊常見工具的缺省參數，避免模型遺漏必要欄位導致整輪失敗。
+    為什麼：部分模型會輸出不完整 CALL 區塊（例如未填 timezone），此處提供安全預設值。
+    """
+    normalized_payload = dict(payload or {})
+    if tool_name == 'mcp:get_current_time' and not normalized_payload.get('timezone'):
+        normalized_payload['timezone'] = 'Asia/Taipei'
+    if tool_name in {'mcp:taiwan-weather', 'mcp:get_taiwan_weather_forecast'}:
+        raw_location = str(
+            normalized_payload.get('locationName')
+            or normalized_payload.get('location')
+            or normalized_payload.get('city')
+            or ''
+        ).strip()
+        location_alias_map = {
+            '台北': '臺北市',
+            '台北市': '臺北市',
+            '臺北': '臺北市',
+        }
+        normalized_location = location_alias_map.get(raw_location, raw_location)
+        if not normalized_location:
+            normalized_location = '臺北市'
+        normalized_payload.pop('location', None)
+        normalized_payload.pop('city', None)
+        normalized_payload['locationName'] = normalized_location
+    return normalized_payload
 
 
 def _extract_progress_value(frame: dict[str, Any]) -> float | None:
@@ -694,7 +754,7 @@ async def stream_tool(
                     last_prog_val: float | None = None
                     async for frame in router._mcp.stream_rpc_call_stdio(
                         command=cmd, args=args, env=env,
-                        method='tools.invoke', params={'tool': conn_name, 'arguments': {}},
+                        method='tools/call', params={'name': conn_name, 'arguments': {}},
                     ):
                         try:
                             if isinstance(frame, dict):
@@ -736,8 +796,8 @@ async def stream_tool(
                     last_prog_val: float | None = None
                     async for frame in router._mcp.stream_rpc_call_ws(
                         base_url=base_url,
-                        method='tools.invoke',
-                        params={'tool': conn_name, 'arguments': {}},
+                        method='tools/call',
+                        params={'name': conn_name, 'arguments': {}},
                         auth=auth if isinstance(auth, dict) else None,
                     ):
                         # 標準化進度事件：value (0..100), eta_seconds
@@ -918,15 +978,58 @@ async def chat_stream(
                 pass
             return "目前工具暫時不可用，我先用一般知識回覆：今天台北通常為多雲到晴，實際降雨與溫度請以氣象署最新公告為準。"
 
+        def _normalize_mcp_frame(frame: dict) -> dict:
+            """將標準 JSON-RPC tools/call 回應正規化為 {ok, result, _result_text} 格式。
+            為什麼：MCP 標準回應沒有 ok 欄位，但現有程式碼以 ok 判斷成功/失敗。
+            """
+            if not isinstance(frame, dict) or 'ok' in frame:
+                return frame
+            if 'result' in frame:
+                mcp_result = frame.get('result') or {}
+                content = mcp_result.get('content') if isinstance(mcp_result, dict) else None
+                if isinstance(content, list) and content:
+                    result_text = ' '.join(
+                        c.get('text', '') for c in content
+                        if isinstance(c, dict) and c.get('type') == 'text'
+                    )
+                else:
+                    result_text = _json.dumps(mcp_result, ensure_ascii=False)
+                return {'ok': True, 'result': mcp_result, '_result_text': result_text}
+            if 'error' in frame:
+                err = frame.get('error')
+                err_str = err.get('message') if isinstance(err, dict) else str(err or 'mcp_error')
+                return {'ok': False, 'error': err_str}
+            return frame
+
+        async def _observe_and_answer(tool_nm: str, result_text: str):
+            """工具執行成功後：以工具結果呼叫 LLM 產生最終回答。
+            為什麼：ReAct 循環的 Observe 步驟，必須把工具輸出注回 LLM 才能形成完整答案。
+            """
+            observe_prompt = (
+                f"工具 {tool_nm} 已回傳以下資訊：\n{result_text}\n\n"
+                f"請根據此資訊，直接用繁體中文回答使用者：{message}\n"
+                "規則：\n"
+                "1) 只輸出最終答案，不可輸出中間推理、規劃、檢查過程。\n"
+                "2) 不可輸出 JSON、程式碼區塊、或任何工具協定文字。\n"
+                "3) 不可再呼叫任何工具。\n"
+                "4) 請以簡單、重點式方式回答。"
+            )
+            async for obs_delta in _stream_complete_async(router._llm, prompt=observe_prompt, tier=overrides.get('tier')):
+                if isinstance(obs_delta, str) and obs_delta:
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(obs_delta, ensure_ascii=False)} }}\n\n"
+
         async for delta in _stream_complete_async(router._llm, prompt=composed_user_message, tier=overrides.get('tier')):
             if not isinstance(delta, str):
                 continue
             buffer += delta
             if not detected_tool:
                 has_call, parsed_tool_name, parsed_payload = _parse_tool_call_block(buffer)
+                # 若 [[CALL tool=...]] 未偵測到，嘗試 OpenAI function-call JSON 格式
+                if not has_call:
+                    has_call, parsed_tool_name, parsed_payload = _parse_openai_tool_call_block(buffer)
                 if has_call:
                     tool_name = parsed_tool_name
-                    tool_payload = parsed_payload
+                    tool_payload = _apply_tool_payload_defaults(parsed_tool_name, parsed_payload)
                     detected_tool = True
                     react_step += 1
                     if react_step > max_steps:
@@ -946,6 +1049,7 @@ async def chat_stream(
 
             if detected_tool:
                 detected_tool = False
+                yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                 yield _react_event(
                     phase="act_start",
                     message=f"開始執行工具 {tool_name}",
@@ -955,21 +1059,32 @@ async def chat_stream(
                 start_payload = {"type": "tool_start", "name": tool_name, "args": tool_payload or {}}
                 yield f"data: {_json.dumps(start_payload, ensure_ascii=False)}\n\n"
                 if tool_name.startswith('mcp:') and hasattr(router, '_mcp'):
-                    conn = getattr(router, '_mcp_map', {}).get(tool_name.split(':',1)[1])
+                    conn_name = tool_name.split(':', 1)[1]
+                    conn = getattr(router, '_mcp_map', {}).get(conn_name)
+                    resolved_tool_name = conn_name
+                    try:
+                        resolver = getattr(router, '_resolve_mcp_tool_name', None)
+                        if callable(resolver) and isinstance(conn, dict):
+                            maybe_name = resolver(conn_name=conn_name, conn=conn)
+                            if isinstance(maybe_name, str) and maybe_name.strip():
+                                resolved_tool_name = maybe_name.strip()
+                    except Exception:
+                        resolved_tool_name = conn_name
                     # stdio 模式：持久 stdio 串流
                     if conn and str(conn.get('transport') or '').strip() == 'stdio':
                         cmd = str(conn.get('command') or '').strip()
                         args = conn.get('args') if isinstance(conn.get('args'), list) else []
                         env = conn.get('env') if isinstance(conn.get('env'), dict) else {}
                         tool_timeout_s = float(getattr(settings, 'MCP_TOOL_TIMEOUT_SEC', 30) or 30)
+                        successful_result_text: str | None = None
                         try:
                             async with asyncio.timeout(tool_timeout_s):
                                 async for frame in router._mcp.stream_rpc_call_stdio(
                                     command=cmd,
                                     args=args,
                                     env=env,
-                                    method='tools.invoke',
-                                    params={'tool': tool_name.split(':',1)[1], 'arguments': tool_payload or {}},
+                                    method='tools/call',
+                                    params={'name': resolved_tool_name, 'arguments': tool_payload or {}},
                                 ):
                                     # 嘗試發出進度（若回傳內含進度欄位）
                                     try:
@@ -980,10 +1095,13 @@ async def chat_stream(
                                                 yield f"data: {_json.dumps(prog_payload, ensure_ascii=False)}\n\n"
                                     except Exception:
                                         pass
-                                    yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(frame, ensure_ascii=False)} }}\n\n"
+                                    frame = _normalize_mcp_frame(frame)
+                                    _display_frame = {k: v for k, v in frame.items() if k != '_result_text'} if isinstance(frame, dict) else frame
+                                    yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(_display_frame, ensure_ascii=False)} }}\n\n"
                                     ok = frame.get('ok') if isinstance(frame, dict) else None
                                     if ok is True:
-                                        yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
+                                        successful_result_text = frame.get('_result_text') or _json.dumps(frame.get('result', {}), ensure_ascii=False)
+                                        break
                                     elif ok is False:
                                         turn_status = 'tool_error'
                                         turn_error = str(frame.get('error') if isinstance(frame, dict) else 'tool_error')
@@ -993,6 +1111,13 @@ async def chat_stream(
                                         yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
                                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                         return
+                            if successful_result_text is not None:
+                                yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
+                                yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                                async for evt in _observe_and_answer(tool_name, successful_result_text):
+                                    yield evt
+                                yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                                return
                         except TimeoutError:
                             turn_status = 'timeout'
                             turn_error = f'mcp_tool_timeout_{int(tool_timeout_s)}s'
@@ -1007,17 +1132,26 @@ async def chat_stream(
                         except Exception:
                             res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                             yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
-                            yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": bool((res or {}).get('ok', True))})
+                            ok_flag = bool((res or {}).get('ok', False))
+                            yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
+                            if ok_flag:
+                                result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
+                                yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                                async for evt in _observe_and_answer(tool_name, result_text):
+                                    yield evt
+                                yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                                return
                     elif conn and conn.get('base_url'):
                         base_url = str(conn.get('base_url') or '').strip()
                         auth = conn.get('auth') if isinstance(conn, dict) else None
                         tool_timeout_s = float(getattr(settings, 'MCP_TOOL_TIMEOUT_SEC', 30) or 30)
+                        successful_result_text: str | None = None
                         try:
                             async with asyncio.timeout(tool_timeout_s):
                                 async for frame in router._mcp.stream_rpc_call_ws(
                                     base_url=base_url,
-                                    method='tools.invoke',
-                                    params={'tool': tool_name.split(':',1)[1], 'arguments': tool_payload or {}},
+                                    method='tools/call',
+                                    params={'name': resolved_tool_name, 'arguments': tool_payload or {}},
                                     auth=auth if isinstance(auth, dict) else None,
                                 ):
                                     # 標準化進度事件
@@ -1032,10 +1166,13 @@ async def chat_stream(
                                                 yield f"data: {_json.dumps(prog_payload, ensure_ascii=False)}\n\n"
                                     except Exception:
                                         pass
-                                    yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(frame, ensure_ascii=False)} }}\n\n"
+                                    frame = _normalize_mcp_frame(frame)
+                                    _display_frame = {k: v for k, v in frame.items() if k != '_result_text'} if isinstance(frame, dict) else frame
+                                    yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(_display_frame, ensure_ascii=False)} }}\n\n"
                                     ok = frame.get('ok') if isinstance(frame, dict) else None
                                     if ok is True:
-                                        yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
+                                        successful_result_text = frame.get('_result_text') or _json.dumps(frame.get('result', {}), ensure_ascii=False)
+                                        break
                                     elif ok is False:
                                         turn_status = 'tool_error'
                                         turn_error = str(frame.get('error') if isinstance(frame, dict) else 'tool_error')
@@ -1045,6 +1182,13 @@ async def chat_stream(
                                         yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
                                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                         return
+                            if successful_result_text is not None:
+                                yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
+                                yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                                async for evt in _observe_and_answer(tool_name, successful_result_text):
+                                    yield evt
+                                yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                                return
                         except TimeoutError:
                             turn_status = 'timeout'
                             turn_error = f'mcp_tool_timeout_{int(tool_timeout_s)}s'
@@ -1059,15 +1203,48 @@ async def chat_stream(
                         except Exception:
                             res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                             yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
-                            yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": bool((res or {}).get('ok', True))})
+                            ok_flag = bool((res or {}).get('ok', False))
+                            yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
+                            if ok_flag:
+                                result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
+                                yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                                async for evt in _observe_and_answer(tool_name, result_text):
+                                    yield evt
+                                yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                                return
+                    else:
+                        # conn 為 None 或沒有有效的 transport/URL — 工具連線未設定
+                        err_msg = f'mcp_connection_not_found:{tool_name}'
+                        yield _react_event("act_result", f"找不到 MCP 工具 {tool_name} 的連線設定，改為一般回覆", {"step": react_step, "tool": tool_name, "ok": False, "error": err_msg})
+                        yield _react_event("reroute", "MCP 工具不可用，改為一般回覆模式", {"reason_code": "mcp.not_found", "from": tool_name, "to": "llm_fallback"})
+                        # 通知前端清除已累積的工具呼叫語法，再輸出降級回覆
+                        yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                        fb = await _fallback_general_answer(err_msg)
+                        yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
+                        yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                        return
                 else:
                     res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                     yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
-                    yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": bool((res or {}).get('ok', True))})
-                    if not bool((res or {}).get('ok', True)):
+                    ok_flag = bool((res or {}).get('ok', False))
+                    yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
+                    if ok_flag:
+                        result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
+                        yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                        async for evt in _observe_and_answer(tool_name, result_text):
+                            yield evt
+                        yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                        return
+                    if not ok_flag:
                         turn_status = 'tool_error'
                         turn_error = str((res or {}).get('error') or 'tool_error')
 
+        # 若 buffer 含未關閉/未執行的工具呼叫（[[CALL 或 tool_calls JSON），清除語法並補上降級回覆
+        _has_unhandled = ('[[CALL tool=' in buffer or ('"tool_calls"' in buffer and '"function"' in buffer))
+        if _has_unhandled and react_step == 0:
+            yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+            fb = await _fallback_general_answer('incomplete_tool_call')
+            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
         yield _react_event("finish", "本輪 ReAct 執行完成", {"steps": react_step})
         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
 
@@ -1536,6 +1713,15 @@ async def _multi_agent_orchestrator(
     """
     from datetime import datetime as _dt
 
+    def _sanitize(text: str) -> str:
+        """移除 LLM 工具呼叫協議殘留，避免存入 DB 的訊息含內部標記。"""
+        import re as _re
+        out = str(text or '')
+        out = _re.sub(r"\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?", "", out)
+        out = _re.sub(r"```json\s*\{[\s\S]*?\}\s*```", "", out, flags=_re.IGNORECASE)
+        out = _re.sub(r"\{\s*\"tool_calls\"\s*:\s*\[[\s\S]*?\]\s*\}", "", out)
+        return out.strip()
+
     overrides = _build_agent_overrides(router_agent)
     max_steps = int(getattr(settings, 'ORCHESTRATOR_MAX_STEPS', 3) or 3)
 
@@ -1556,14 +1742,19 @@ async def _multi_agent_orchestrator(
     except Exception:
         db.rollback()
 
+    # 快取純 Python 值，後續 raw SQL 不再碰 ORM 物件（避免 expired 問題）
+    from sqlalchemy import text as _sa_text
+    _session_id = str(session.id)
+    _conv_id = str(conversation.id)
+
     current_plan = plan
     completed_so_far = 0
 
     for step in range(max_steps):
-        session.react_step = step + 1
-        session.status = 'running'
-        session.plan_json = current_plan
         try:
+            db.execute(_sa_text(
+                "UPDATE multi_agent_sessions SET react_step=:s, status='running', plan_json=:p WHERE id=:sid"
+            ), {"s": step + 1, "p": _json.dumps(current_plan), "sid": _session_id})
             db.commit()
         except Exception:
             db.rollback()
@@ -1579,7 +1770,7 @@ async def _multi_agent_orchestrator(
             if target_agent is None:
                 continue
             tr = MultiAgentTask(
-                session_id=session.id,
+                session_id=_session_id,
                 task_index=idx,
                 agent_id=target_agent.id,
                 task_desc=str(t.get('task') or message),
@@ -1657,8 +1848,10 @@ async def _multi_agent_orchestrator(
                     completed_so_far += 1
 
         # 合成階段
-        session.status = 'synthesizing'
         try:
+            db.execute(_sa_text(
+                "UPDATE multi_agent_sessions SET status='synthesizing' WHERE id=:sid"
+            ), {"sid": _session_id})
             db.commit()
         except Exception:
             db.rollback()
@@ -1675,25 +1868,37 @@ async def _multi_agent_orchestrator(
         # 串流合成文字
         yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': synthesis}, ensure_ascii=False)}\n\n"
 
-        session.synthesis = synthesis
-        session.eval_ok = eval_ok
-        session.status = 'evaluating'
         try:
+            db.execute(_sa_text(
+                "UPDATE multi_agent_sessions SET synthesis=:syn, eval_ok=:ok, status='evaluating' WHERE id=:sid"
+            ), {"syn": synthesis, "ok": eval_ok, "sid": _session_id})
             db.commit()
         except Exception:
             db.rollback()
 
         if eval_ok:
-            session.status = 'done'
+            # 全用 raw SQL，不碰任何可能 expired 的 ORM 物件
             try:
-                if synthesis:
-                    asst_msg = Message(conversation_id=conversation.id, role='assistant', content=_sanitize_text(synthesis), timestamp=datetime.utcnow())
-                    db.add(asst_msg)
-                    conversation.last_interacted_at = datetime.utcnow()
+                _sanitized = _sanitize(synthesis)
+                db.execute(_sa_text(
+                    "UPDATE multi_agent_sessions SET status='done', synthesis=:syn, eval_ok=TRUE "
+                    "WHERE id=:sid"
+                ), {"syn": synthesis, "sid": _session_id})
+                if _sanitized:
+                    import uuid as _uuid_mod
+                    db.execute(_sa_text(
+                        "INSERT INTO messages (id, conversation_id, role, content, timestamp) "
+                        "VALUES (:id, :cid, 'assistant', :content, NOW())"
+                    ), {"id": str(_uuid_mod.uuid4()), "cid": _conv_id, "content": _sanitized})
+                db.execute(_sa_text(
+                    "UPDATE conversations SET last_interacted_at=NOW() WHERE id=:cid"
+                ), {"cid": _conv_id})
                 db.commit()
-            except Exception:
+                _log.info('orchestrator.save_synthesis_ok', conversation_id=_conv_id)
+            except Exception as _save_err:
+                _log.error('orchestrator.save_synthesis_failed', error=str(_save_err), conversation_id=_conv_id)
                 db.rollback()
-            yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': str(conversation.id), 'completed': completed_so_far, 'failed': sum(1 for t in task_rows if t.status == 'failed'), 'react_steps_used': step + 1}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': _conv_id, 'completed': completed_so_far, 'failed': sum(1 for t in task_rows if t.status == 'failed'), 'react_steps_used': step + 1}, ensure_ascii=False)}\n\n"
             return
 
         # 不滿足 → 重新規劃
@@ -1704,29 +1909,39 @@ async def _multi_agent_orchestrator(
         current_plan = new_plan
         completed_so_far = 0
 
-    # 超過步驟上限 or 分解失敗
-    session.status = 'failed'
+    # 超過步驟上限 or 分解失敗 — 全用 raw SQL
+    _fallback_text = '抱歉，多代理協作未能在步驟上限內完成，請稍後再試或簡化問題。'
     try:
+        # 先查 synthesis 欄位（避免碰 expired ORM）
+        _row = db.execute(_sa_text(
+            "SELECT synthesis FROM multi_agent_sessions WHERE id=:sid"
+        ), {"sid": _session_id}).fetchone()
+        _saved_synthesis = (_row[0] if _row else None) or ''
+    except Exception:
+        _saved_synthesis = ''
+
+    if not _saved_synthesis:
+        _saved_synthesis = _fallback_text
+        yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': _fallback_text}, ensure_ascii=False)}\n\n"
+
+    try:
+        import uuid as _uuid_mod
+        db.execute(_sa_text(
+            "UPDATE multi_agent_sessions SET status='failed' WHERE id=:sid"
+        ), {"sid": _session_id})
+        db.execute(_sa_text(
+            "INSERT INTO messages (id, conversation_id, role, content, timestamp) "
+            "VALUES (:id, :cid, 'assistant', :content, NOW())"
+        ), {"id": str(_uuid_mod.uuid4()), "cid": _conv_id, "content": _sanitize(_saved_synthesis)})
+        db.execute(_sa_text(
+            "UPDATE conversations SET last_interacted_at=NOW() WHERE id=:cid"
+        ), {"cid": _conv_id})
         db.commit()
-    except Exception:
+    except Exception as _fe:
+        _log.error('orchestrator.save_fallback_failed', error=str(_fe))
         db.rollback()
 
-    # 以最後合成結果（若有）作為保底回覆
-    if not session.synthesis:
-        session.synthesis = '抱歉，多代理協作未能在步驟上限內完成，請稍後再試或簡化問題。'
-        yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': str(router_agent.id), 'agent_name': str(router_agent.name or 'Router'), 'task_index': -1, 'delta': session.synthesis}, ensure_ascii=False)}\n\n"
-
-    # 儲存助理訊息（失敗路徑）
-    try:
-        if session.synthesis:
-            asst_msg = Message(conversation_id=conversation.id, role='assistant', content=_sanitize_text(session.synthesis), timestamp=datetime.utcnow())
-            db.add(asst_msg)
-            conversation.last_interacted_at = datetime.utcnow()
-            db.commit()
-    except Exception:
-        db.rollback()
-
-    yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': str(conversation.id), 'completed': completed_so_far, 'failed': 0, 'react_steps_used': max_steps, 'max_steps_reached': True}, ensure_ascii=False)}\n\n"
+    yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': _conv_id, 'completed': completed_so_far, 'failed': 0, 'react_steps_used': max_steps, 'max_steps_reached': True}, ensure_ascii=False)}\n\n"
 
 
 @router.post('/chat')
@@ -1866,6 +2081,44 @@ async def chat_entry_router(
             yield chunk
 
     return StreamingResponse(_with_route_event(), media_type='text/event-stream')
+
+
+@router.get('/conversations')
+async def get_all_conversations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """回傳目前使用者的所有對話（不限 agent），供 auto-routing 模式側欄使用。"""
+    _require_chat_permission(current_user)
+    try:
+        conversations = db.query(Conversation).filter(
+            Conversation.user_id == current_user.id
+        ).order_by(Conversation.last_interacted_at.desc()).all()
+    except (ProgrammingError, OperationalError):
+        conversations = db.query(Conversation).order_by(Conversation.created_at.desc()).all()
+
+    result = []
+    for conv in conversations:
+        messages = db.query(Message).filter(
+            Message.conversation_id == conv.id
+        ).order_by(Message.timestamp).all()
+        result.append({
+            'id': str(conv.id),
+            'agent_id': str(conv.agent_id),
+            'title': (conv.title or ''),
+            'messages': [
+                {
+                    'id': str(m.id),
+                    'role': m.role,
+                    'content': m.content,
+                    'timestamp': m.timestamp.isoformat() if m.timestamp else None,
+                }
+                for m in messages
+            ],
+            'created_at': conv.created_at.isoformat() if conv.created_at else None,
+            'last_interacted_at': conv.last_interacted_at.isoformat() if getattr(conv, 'last_interacted_at', None) else None,
+        })
+    return {'conversations': result}
 
 
 @router.get('/conversations/{conversation_id}/events')
@@ -2084,6 +2337,15 @@ async def delete_conversation(
         raise not_found_error('Conversation', conversation_id)
 
     try:
+        # 依 FK 依賴順序刪除：tasks → sessions → llm_turns → event_parts → messages → conversation
+        session_ids = [
+            r[0] for r in db.query(MultiAgentSession.id)
+            .filter(MultiAgentSession.conversation_id == conv.id).all()
+        ]
+        if session_ids:
+            db.query(MultiAgentTask).filter(MultiAgentTask.session_id.in_(session_ids)).delete(synchronize_session=False)
+        db.query(MultiAgentSession).filter(MultiAgentSession.conversation_id == conv.id).delete(synchronize_session=False)
+        db.query(LlmTurn).filter(LlmTurn.conversation_id == conv.id).delete(synchronize_session=False)
         db.query(EventPart).filter(EventPart.conversation_id == conv.id).delete(synchronize_session=False)
         db.query(Message).filter(Message.conversation_id == conv.id).delete(synchronize_session=False)
         db.delete(conv)

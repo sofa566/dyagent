@@ -47,9 +47,48 @@ class ChatRouter:
         self._mcp = MCPClient()
         # 記錄工具開始時間以計算耗時
         self._tool_start_times: dict[tuple[str, str], datetime] = {}
+        self._mcp_tool_name_cache: dict[str, str] = {}
         # 每回合可覆蓋的工具呼叫協定模板
         self._custom_toolcall_guide: Optional[str] = None
         self._function_profile_template: Optional[str] = None
+
+    def _resolve_mcp_tool_name(self, *, conn_name: str, conn: dict[str, Any]) -> str:
+        """目的：解析 MCP 連線名稱對應的實際工具名稱。
+        為什麼：部分 MCP server 的工具名稱不等於連線名稱，若直接以連線名稱呼叫會出現 Unknown tool。
+        """
+        normalized_conn_name = str(conn_name or "").strip()
+        if not normalized_conn_name:
+            return normalized_conn_name
+        cached_name = self._mcp_tool_name_cache.get(normalized_conn_name)
+        if isinstance(cached_name, str) and cached_name.strip():
+            return cached_name.strip()
+
+        resolved_name = normalized_conn_name
+        transport = str((conn or {}).get("transport") or "remote").strip() or "remote"
+        try:
+            discovered_tools: list[dict[str, Any]] = []
+            if transport == "stdio":
+                command = str((conn or {}).get("command") or "").strip()
+                args = (conn or {}).get("args") if isinstance((conn or {}).get("args"), list) else []
+                env = (conn or {}).get("env") if isinstance((conn or {}).get("env"), dict) else {}
+                discovered_tools = self._mcp.discover_tools_stdio(command=command, args=args, env=env)
+            else:
+                base_url = str((conn or {}).get("base_url") or "").strip()
+                auth = (conn or {}).get("auth") if isinstance((conn or {}).get("auth"), dict) else None
+                if base_url:
+                    discovered_tools = self._mcp.list_tools(base_url=base_url, auth=auth)
+
+            if discovered_tools:
+                selected_tool = self._mcp.select_tool_schema(tools=discovered_tools, preferred_name=normalized_conn_name)
+                selected_entry = (selected_tool or {}).get("tool") if isinstance(selected_tool, dict) else None
+                selected_tool_name = str((selected_entry or {}).get("name") or "").strip()
+                if selected_tool_name:
+                    resolved_name = selected_tool_name
+        except Exception as error:
+            self._log.warning("mcp.resolve_tool_name.failed", conn_name=normalized_conn_name, error=str(error))
+
+        self._mcp_tool_name_cache[normalized_conn_name] = resolved_name
+        return resolved_name
 
     def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: Optional[str] = None, db: Optional[Session] = None, llm_overrides: Optional[dict] = None) -> str:
         """執行單輪回合並回傳助理文字。
@@ -489,7 +528,10 @@ class ChatRouter:
             # 使用說明（繁中）
             hints = (
                 "[使用說明]\n"
+                "- 回覆語言一律使用繁體中文。\n"
+                "- 不可輸出任何中間推理、規劃、檢查或自我對話內容。\n"
                 "- 僅在確定需要呼叫工具時再輸出 CALL 區塊；否則請以自然語言作答。\n"
+                "- 一旦輸出 CALL 區塊，前後不可夾帶其他說明文字。\n"
                 "- MCP 工具名稱請使用 'mcp:<name>' 的精確字串。\n"
                 "- 參數務必為合法 JSON（鍵為字串、無註解、逗號位置正確）。\n"
                 "- 僅可使用上方允許清單中的工具名稱。\n"
@@ -525,6 +567,7 @@ class ChatRouter:
                 self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_connection_not_found")
                 return {"ok": False, "error": "mcp_connection_not_found"}
             transport = str(conn.get("transport") or "remote").strip() or "remote"
+            target_tool_name = self._resolve_mcp_tool_name(conn_name=conn_name, conn=conn)
             if transport == "stdio":
                 # stdio：走持久會話串流（含 initialize），避免單次 invoke 缺少握手造成 timeout
                 try:
@@ -535,8 +578,8 @@ class ChatRouter:
                         command=cmd,
                         args=args,
                         env=env,
-                        method="tools.invoke",
-                        params={"tool": conn_name, "arguments": payload or {}},
+                        method="tools/call",
+                        params={"name": target_tool_name, "arguments": payload or {}},
                     ):
                         if isinstance(frame, dict) and frame.get("ok") is True:
                             self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -556,7 +599,7 @@ class ChatRouter:
                 return {"ok": False, "error": "mcp_invalid_base_url"}
             # 嘗試 WS 串流呼叫
             try:
-                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools.invoke", params={"tool": conn_name, "arguments": payload or {}}, auth=auth if isinstance(auth, dict) else None):
+                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": payload or {}}, auth=auth if isinstance(auth, dict) else None):
                     # 可在此寫入逐段事件，先保留最小行為：若拿到 result 即成功
                     if isinstance(frame, dict) and ("result" in frame or frame.get("ok") is True):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -676,6 +719,7 @@ class ChatRouter:
                 self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_connection_not_found")
                 return {"ok": False, "error": "mcp_connection_not_found"}
             transport = str(conn.get("transport") or "remote").strip() or "remote"
+            target_tool_name = self._resolve_mcp_tool_name(conn_name=conn_name, conn=conn)
             if transport == "stdio":
                 try:
                     cmd = str(conn.get("command") or "").strip()
@@ -685,8 +729,8 @@ class ChatRouter:
                         command=cmd,
                         args=args,
                         env=env,
-                        method="tools.invoke",
-                        params={"tool": conn_name, "arguments": payload or {}},
+                        method="tools/call",
+                        params={"name": target_tool_name, "arguments": payload or {}},
                     )
                     if res.get("ok"):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=res)
@@ -702,7 +746,7 @@ class ChatRouter:
                     self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
                     return {"ok": False, "error": "mcp_invalid_base_url"}
                 try:
-                    res = self._mcp.invoke(base_url=base_url, name=conn_name, arguments=payload or {})
+                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=payload or {})
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                     return {"ok": True, "result": res}
                 except Exception as e:
