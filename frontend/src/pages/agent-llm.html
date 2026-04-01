@@ -20,6 +20,9 @@
   </nav>
   <main class="container">
     <h2>LLM 設定</h2>
+    <div id="agent-meta" style="color: var(--text-secondary); margin-top: 4px;">
+      代理者：<strong id="agent-name">—</strong>
+    </div>
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
 
@@ -252,6 +255,11 @@
     async function loadAgent() {
       try {
         const resp = await api.get(`/agents/${agentId}`);
+        const agentNameEl = document.getElementById('agent-name');
+        if (resp && resp.name && agentNameEl) {
+          agentNameEl.textContent = String(resp.name);
+          document.title = `LLM 設定 - ${String(resp.name)} - dyagent`;
+        }
         const cfg = resp.model_config || {};
         // 填入值（僅在存在時覆蓋）
         if (cfg.tier) document.getElementById('tier').value = cfg.tier;

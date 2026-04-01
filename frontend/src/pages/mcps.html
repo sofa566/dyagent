@@ -5,6 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MCP 管理</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .import-panel {
+      width: 100%;
+      margin-bottom: 12px;
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      background: #fafafa;
+    }
+
+    .import-json {
+      width: min(920px, 100%);
+      min-height: 150px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+  </style>
 </head>
 <body>
   <nav class="navbar">
@@ -19,12 +37,18 @@
   <main class="container">
     <h2>MCP 管理</h2>
     <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
       <button id="btn-new" class="btn btn-primary" type="button">新增連線</button>
-      <label for="mcpservers-json">匯入 mcpServers：</label>
-      <textarea id="mcpservers-json" rows="3" style="min-width:320px;" placeholder='{"mcpServers": {"weather": {"command": "python", "args": ["-m","mcp_weather_server"], "disabled": false}}}'></textarea>
-      <button id="btn-import" class="btn" type="button">匯入</button>
     </div>
+    <section class="import-panel">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <label for="mcpservers-json"><strong>匯入 mcpServers：</strong></label>
+        <button id="btn-format-json" class="btn" type="button">格式化 JSON</button>
+        <button id="btn-import" class="btn btn-primary" type="button">匯入</button>
+      </div>
+      <textarea id="mcpservers-json" class="import-json" rows="8" placeholder='{"mcpServers": {"weather": {"command": "python", "args": ["-m", "mcp_weather_server"], "disabled": false}}}'></textarea>
+    </section>
     <table class="table">
       <thead>
         <tr><th>名稱</th><th>狀態</th><th>健康</th><th>傳輸</th><th>Base URL</th><th>操作</th></tr>
@@ -33,7 +57,7 @@
     </table>
   </main>
   <script type="module">
-    import { api, auth, showError } from '/main.js';
+    import { api, auth, showError, showSuccess } from '/main.js';
     if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
     const user = auth.getUser();
     if (!user || user.role !== 'admin') {
@@ -42,9 +66,18 @@
       throw new Error('forbidden');
     }
     const rows = document.getElementById('rows');
+    const errorMessage = document.getElementById('error-message');
+
+    function clearError() {
+      if (!errorMessage) return;
+      errorMessage.textContent = '';
+      errorMessage.style.display = 'none';
+    }
+
     async function load() {
       try {
         const res = await api.get('/mcps');
+        clearError();
         const list = Array.isArray(res.mcps) ? res.mcps : [];
         rows.innerHTML = list.map(m => {
           return `<tr>
@@ -89,13 +122,35 @@
       }
     });
     document.getElementById('btn-new').addEventListener('click', ()=>{ window.location.href = '/pages/mcp-edit.html'; });
+    document.getElementById('btn-format-json').addEventListener('click', ()=>{
+      const el = document.getElementById('mcpservers-json');
+      const raw = (el.value || '').trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        el.value = JSON.stringify(parsed, null, 2);
+        clearError();
+        showSuccess('JSON 已格式化');
+      } catch (e) {
+        showError(e.message || 'JSON 格式錯誤，無法格式化');
+      }
+    });
+    document.getElementById('mcpservers-json').addEventListener('input', () => {
+      clearError();
+    });
     document.getElementById('btn-import').addEventListener('click', async ()=>{
-      const raw = document.getElementById('mcpservers-json').value.trim();
+      const input = document.getElementById('mcpservers-json');
+      const raw = input.value.trim();
       if (!raw) return;
       try{
         const obj = JSON.parse(raw);
+        input.value = JSON.stringify(obj, null, 2);
         const r = await api.post('/mcps/import-mcpservers', obj);
-        if (r && r.ok) { load(); }
+        if (r && r.ok) {
+          clearError();
+          showSuccess('匯入完成');
+          load();
+        }
       }catch(e){ showError(e.message||'匯入失敗'); }
     });
     load();

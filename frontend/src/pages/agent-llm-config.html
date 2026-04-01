@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>工具設定 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .inline-select {
+      width: auto;
+      padding: 0.75rem;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      background: #fff;
+    }
+
+    .inline-select:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
+  </style>
 </head>
 <body>
   <nav class="navbar">
@@ -29,7 +44,7 @@
         <div style="flex:1;min-width:260px;">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
             <label>從管理清單加入：</label>
-            <select id="mcp-registry-select"><option value="">— 請選擇 —</option></select>
+            <select id="mcp-registry-select" class="inline-select"><option value="">— 請選擇 —</option></select>
             <button id="btn-add-mcp-from-reg" class="btn" type="button">加入</button>
           </div>
           <p class="muted">從全域 MCP 清單挑選，加入後會出現在右側清單，可移除。</p>
@@ -50,7 +65,7 @@
         <div style="flex:1;min-width:260px;">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
             <label>從管理清單加入：</label>
-            <select id="skill-registry-select"><option value="">— 請選擇 —</option></select>
+            <select id="skill-registry-select" class="inline-select"><option value="">— 請選擇 —</option></select>
             <button id="btn-add-skill-from-reg" class="btn" type="button">加入</button>
           </div>
           <div style="margin-top:0.5rem;">
@@ -73,7 +88,7 @@
       <p class="muted">Functions 由管理者在 Functions 管理頁建立；此處僅綁定到目前代理者。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <label for="function-profile-select">Function Profile：</label>
-        <select id="function-profile-select"><option value="">— 不使用（沿用預設）—</option></select>
+        <select id="function-profile-select" class="inline-select"><option value="">— 不使用（沿用預設）—</option></select>
         <button id="btn-refresh-functions" class="btn" type="button">重新載入</button>
       </div>
       <div style="margin-top:6px;color:var(--text-secondary);">
@@ -86,7 +101,7 @@
       <p class="muted">此區為單一代理者的進階覆寫。若留空，會使用上方綁定的 Function Profile 模板。</p>
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
         <label for="toolcall-template">快速套用範本：</label>
-        <select id="toolcall-template">
+        <select id="toolcall-template" class="inline-select">
           <option value="">— 選擇範本 —</option>
           <option value="generic">通用（CALL 方言，嚴格）</option>
           <option value="openai">OpenAI（tool_calls/functions）</option>
@@ -96,7 +111,7 @@
         </select>
         <button id="apply-toolcall-template" class="btn" type="button">套用</button>
         <label for="insert-var">插入變數：</label>
-        <select id="insert-var">
+        <select id="insert-var" class="inline-select">
           <option value="">— 選擇變數 —</option>
           <option value="{{ALLOWED_TOOL_NAMES}}">{{ALLOWED_TOOL_NAMES}}</option>
           <option value="{{SKILL_NAMES}}">{{SKILL_NAMES}}</option>

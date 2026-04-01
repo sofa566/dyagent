@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RAG 設定 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .inline-select {
+      width: auto;
+      padding: 0.75rem;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      background: #fff;
+    }
+
+    .inline-select:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
+  </style>
 </head>
 <body>
   <nav class="navbar">
@@ -32,7 +47,7 @@
         <div style="flex:1;min-width:260px;">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
             <label>從公有資料集加入：</label>
-            <select id="global-dataset-select"><option value="">— 請選擇 —</option></select>
+            <select id="global-dataset-select" class="inline-select"><option value="">— 請選擇 —</option></select>
             <button id="btn-add-global" class="btn btn-primary" type="button">加入</button>
           </div>
           <p style="color:var(--text-secondary);font-size:0.9rem;">從全域 RAG 資料集挑選，加入後會出現在右側清單，可移除。</p>
@@ -82,7 +97,7 @@
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div class="form-group">
             <label for="modal-sensitivity">敏感等級</label>
-            <select id="modal-sensitivity">
+              <select id="modal-sensitivity" class="inline-select">
               <option value="normal">normal</option>
               <option value="confidential">confidential</option>
               <option value="restricted">restricted</option>
