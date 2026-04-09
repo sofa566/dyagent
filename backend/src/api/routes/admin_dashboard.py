@@ -157,57 +157,97 @@ async def _build_overview(db: Session) -> dict:
         bucket['total_tokens'] = int(bucket['total_tokens']) + total_tokens
         bucket['cost_usd'] = float(bucket['cost_usd']) + cost_usd
 
-    agent_llm_breakdown_24h = sorted(
-        list(agent_cost_token_map.values()),
-        key=lambda row: (float(row.get('cost_usd') or 0.0), int(row.get('total_tokens') or 0)),
-        reverse=True,
+    assistant_rows = (
+        db.query(
+            Conversation.agent_id.label('agent_id'),
+            func.count(Message.id).label('assistant_turns'),
+            func.sum(func.length(Message.content)).label('assistant_chars'),
+        )
+        .join(Message, Message.conversation_id == Conversation.id)
+        .filter(
+            and_(
+                Message.role == 'assistant',
+                Message.timestamp >= since_24h,
+            )
+        )
+        .group_by(Conversation.agent_id)
+        .all()
     )
 
-    # 若 llm_turns 寫入缺漏，退化為從對話訊息估算（避免儀表板出現「永遠不增加」的假象）
-    if not agent_llm_breakdown_24h:
-        assistant_rows = (
-            db.query(
-                Conversation.agent_id.label('agent_id'),
-                func.count(Message.id).label('assistant_turns'),
-                func.sum(func.length(Message.content)).label('assistant_chars'),
+    user_rows = (
+        db.query(
+            Conversation.agent_id.label('agent_id'),
+            func.count(Message.id).label('user_turns'),
+            func.sum(func.length(Message.content)).label('user_chars'),
+        )
+        .join(Message, Message.conversation_id == Conversation.id)
+        .filter(
+            and_(
+                Message.role == 'user',
+                Message.timestamp >= since_24h,
             )
-            .join(Message, Message.conversation_id == Conversation.id)
-            .filter(
-                and_(
-                    Message.role == 'assistant',
-                    Message.timestamp >= since_24h,
-                )
-            )
-            .group_by(Conversation.agent_id)
-            .all()
+        )
+        .group_by(Conversation.agent_id)
+        .all()
+    )
+
+    assistant_map: dict[str, tuple[int, int]] = {}
+    for row in assistant_rows:
+        agent_id = str(getattr(row, 'agent_id', '') or '')
+        if not agent_id:
+            continue
+        assistant_turns = int(getattr(row, 'assistant_turns', 0) or 0)
+        assistant_chars = int(getattr(row, 'assistant_chars', 0) or 0)
+        assistant_map[agent_id] = (assistant_turns, assistant_chars)
+
+    user_map: dict[str, tuple[int, int]] = {}
+    for row in user_rows:
+        agent_id = str(getattr(row, 'agent_id', '') or '')
+        if not agent_id:
+            continue
+        user_turns = int(getattr(row, 'user_turns', 0) or 0)
+        user_chars = int(getattr(row, 'user_chars', 0) or 0)
+        user_map[agent_id] = (user_turns, user_chars)
+
+    merged_breakdown: list[dict[str, float | int | str | bool]] = []
+    all_agent_ids = set(list(agent_cost_token_map.keys()) + list(assistant_map.keys()) + list(user_map.keys()))
+    for agent_id in all_agent_ids:
+        llm_row = agent_cost_token_map.get(agent_id) or {}
+        msg_turns, msg_chars = assistant_map.get(agent_id, (0, 0))
+        user_turns, user_chars = user_map.get(agent_id, (0, 0))
+        msg_input_tokens = max(0, user_chars // 4)
+        msg_output_tokens = max(0, msg_chars // 4)
+
+        llm_turns = int(llm_row.get('turns') or 0)
+        llm_input_tokens = int(llm_row.get('input_tokens') or 0)
+        llm_output_tokens = int(llm_row.get('output_tokens') or 0)
+        llm_total_tokens = int(llm_row.get('total_tokens') or (llm_input_tokens + llm_output_tokens))
+        llm_cost_usd = float(llm_row.get('cost_usd') or 0.0)
+
+        turns = max(llm_turns, msg_turns, user_turns)
+        input_tokens = max(llm_input_tokens, msg_input_tokens)
+        output_tokens = max(llm_output_tokens, msg_output_tokens)
+        total_tokens = max(llm_total_tokens, input_tokens + output_tokens)
+        estimated = (msg_turns > llm_turns) or (user_turns > llm_turns)
+
+        merged_breakdown.append(
+            {
+                'agent_id': agent_id,
+                'agent_name': agents_map.get(agent_id) or f'未知代理({agent_id[:8]})',
+                'turns': turns,
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+                'total_tokens': total_tokens,
+                'cost_usd': llm_cost_usd,
+                'estimated': estimated,
+            }
         )
 
-        fallback_rows: list[dict[str, float | int | str]] = []
-        for row in assistant_rows:
-            agent_id = str(getattr(row, 'agent_id', '') or '')
-            if not agent_id:
-                continue
-            assistant_turns = int(getattr(row, 'assistant_turns', 0) or 0)
-            assistant_chars = int(getattr(row, 'assistant_chars', 0) or 0)
-            output_tokens = max(0, assistant_chars // 4)
-            fallback_rows.append(
-                {
-                    'agent_id': agent_id,
-                    'agent_name': agents_map.get(agent_id) or f'未知代理({agent_id[:8]})',
-                    'turns': assistant_turns,
-                    'input_tokens': 0,
-                    'output_tokens': output_tokens,
-                    'total_tokens': output_tokens,
-                    'cost_usd': 0.0,
-                    'estimated': True,
-                }
-            )
-
-        agent_llm_breakdown_24h = sorted(
-            fallback_rows,
-            key=lambda row: int(row.get('total_tokens') or 0),
-            reverse=True,
-        )
+    agent_llm_breakdown_24h = sorted(
+        merged_breakdown,
+        key=lambda row: (int(row.get('total_tokens') or 0), float(row.get('cost_usd') or 0.0)),
+        reverse=True,
+    )
 
     load1, load5, load15 = (0.0, 0.0, 0.0)
     try:

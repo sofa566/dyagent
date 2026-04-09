@@ -45,6 +45,12 @@ def _strip_system_reminder_text(text: str) -> str:
     cleaned = re.sub(r'<system-reminder>[\s\S]*?</system-reminder>', '', raw, flags=re.IGNORECASE)
     cleaned = re.sub(r'</?system-reminder>', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(
+        r'Your operational mode has changed[\s\S]{0,400}?tools as needed\.',
+        '',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
         r'Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.',
         '',
         cleaned,
