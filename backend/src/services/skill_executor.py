@@ -11,10 +11,10 @@
 import os
 import zipfile
 import io
-import tempfile
 import subprocess
 import shutil
 import uuid
+import sys
 from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
@@ -55,7 +55,19 @@ def extract_skill_zip(zip_content: bytes, skill_id: str) -> Path:
 
     try:
         with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zf:
-            zf.extractall(work_dir)
+            for member in zf.infolist():
+                member_name = str(member.filename or '')
+                if not member_name or member_name.endswith('/'):
+                    continue
+                normalized_path = Path(member_name)
+                if normalized_path.is_absolute() or '..' in normalized_path.parts:
+                    raise ValueError(f"ZIP 包含不安全路徑: {member_name}")
+                target_path = (work_dir / normalized_path).resolve()
+                if not str(target_path).startswith(str(work_dir.resolve())):
+                    raise ValueError(f"ZIP 路徑超出工作目錄: {member_name}")
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member, 'r') as src, open(target_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
     except zipfile.BadZipFile as e:
         raise ValueError(f"無效的 ZIP 檔案: {e}")
 
@@ -109,7 +121,7 @@ def _find_skill_md(work_dir: Path) -> Path | None:
 
 
 def execute_script(script_path: Path, work_dir: Path, input_data: dict[str, Any] | None = None,
-                   timeout_seconds: int = 30) -> dict[str, Any]:
+                   timeout_seconds: int = 30, extra_args: list[str] | None = None) -> dict[str, Any]:
     """執行單一腳本。
 
     Args:
@@ -125,18 +137,52 @@ def execute_script(script_path: Path, work_dir: Path, input_data: dict[str, Any]
 
     # 決定執行命令
     if ext == '.py':
-        cmd = ['python', str(script_path)]
+        cmd = [sys.executable, str(script_path)]
+    elif ext in {'.js', '.mjs'}:
+        node_bin = shutil.which('node')
+        if not node_bin:
+            return {
+                'script': script_path.name,
+                'ok': False,
+                'return_code': -1,
+                'stdout': '',
+                'stderr': 'runner_not_found: node',
+            }
+        cmd = [node_bin, str(script_path)]
     elif ext == '.sh':
-        cmd = ['bash', str(script_path)]
+        bash_bin = shutil.which('bash')
+        if not bash_bin:
+            return {
+                'script': script_path.name,
+                'ok': False,
+                'return_code': -1,
+                'stdout': '',
+                'stderr': 'runner_not_found: bash',
+            }
+        cmd = [bash_bin, str(script_path)]
     else:
-        # 嘗試直接執行
-        cmd = [str(script_path)]
+        return {
+            'script': script_path.name,
+            'ok': False,
+            'return_code': -1,
+            'stdout': '',
+            'stderr': f'unsupported_script_extension: {ext}',
+        }
+
+    if isinstance(extra_args, list) and extra_args:
+        cmd.extend([str(x) for x in extra_args])
 
     # 準備環境變數
     env = os.environ.copy()
     if input_data:
         import json
         env['SKILL_INPUT'] = json.dumps(input_data, ensure_ascii=False)
+    runtime_python_path = env.get('PYTHONPATH', '')
+    runtime_python_root = str(work_dir)
+    if runtime_python_path:
+        env['PYTHONPATH'] = f"{runtime_python_root}:{runtime_python_path}"
+    else:
+        env['PYTHONPATH'] = runtime_python_root
 
     try:
         result = subprocess.run(
@@ -145,7 +191,7 @@ def execute_script(script_path: Path, work_dir: Path, input_data: dict[str, Any]
             env=env,
             capture_output=True,
             text=True,
-            timeout=timeout_seconds
+            timeout=timeout_seconds,
         )
         return {
             'script': script_path.name,
@@ -171,6 +217,50 @@ def execute_script(script_path: Path, work_dir: Path, input_data: dict[str, Any]
             'stderr': str(e),
         }
 
+
+def _extract_script_controls(input_data: dict[str, Any] | None) -> tuple[str | None, list[str], dict[str, Any]]:
+    """目的：從輸入資料擷取腳本執行控制參數。
+    為什麼：避免盲目執行所有腳本，改為顯式指定或慣例入口，降低誤觸與參數缺失錯誤。
+    """
+    if not isinstance(input_data, dict):
+        return None, [], {}
+    script_name = input_data.get('_script')
+    script_name_str = str(script_name).strip() if isinstance(script_name, str) and script_name.strip() else None
+    raw_args = input_data.get('_args')
+    args: list[str] = []
+    if isinstance(raw_args, list):
+        args = [str(x) for x in raw_args]
+    payload = {k: v for k, v in input_data.items() if k not in {'_script', '_args'}}
+    return script_name_str, args, payload
+
+
+def _resolve_entry_script(scripts_dir: Path, script_name: str | None) -> Path | None:
+    """目的：解析本輪應執行的入口腳本。
+    為什麼：Claude Skill 的 scripts 多為工具庫，不應全部執行；需入口腳本導向實作流程。
+    """
+    script_files = sorted(
+        [f for f in scripts_dir.iterdir() if f.is_file() and f.suffix.lower() in ('.py', '.js', '.mjs', '.sh')],
+        key=lambda x: x.name,
+    )
+    if not script_files:
+        return None
+
+    if script_name:
+        for f in script_files:
+            if f.name == script_name:
+                return f
+        return None
+
+    preferred = (
+        'main.py', 'main.js', 'main.mjs', 'main.sh',
+        'run.py', 'run.js', 'run.mjs', 'run.sh',
+        'index.py', 'index.js', 'index.mjs', 'index.sh',
+    )
+    for name in preferred:
+        for f in script_files:
+            if f.name == name:
+                return f
+    return None
 
 def execute_skill(
     skill_id: str,
@@ -202,6 +292,8 @@ def execute_skill(
     script_outputs: list[dict[str, Any]] = []
 
     try:
+        script_name, script_args, pure_input_data = _extract_script_controls(input_data)
+
         # 解壓 ZIP（若有）
         if zip_bundle:
             work_dir = extract_skill_zip(zip_bundle, skill_id)
@@ -210,13 +302,22 @@ def execute_skill(
             if execute_scripts:
                 scripts_dir = _find_scripts_dir(work_dir)
                 if scripts_dir:
-                    # 依檔名排序執行
-                    script_files = sorted(
-                        [f for f in scripts_dir.iterdir() if f.is_file() and f.suffix.lower() in ('.py', '.sh')],
-                        key=lambda x: x.name
-                    )
-                    for script_file in script_files:
-                        output = execute_script(script_file, work_dir, input_data, timeout_seconds)
+                    entry_script = _resolve_entry_script(scripts_dir, script_name)
+                    if script_name and entry_script is None:
+                        return SkillExecutionResult(
+                            ok=False,
+                            error=f'script_not_found: {script_name}',
+                            work_dir=str(work_dir) if work_dir else None,
+                        )
+                    if entry_script is not None:
+                        runtime_work_dir = entry_script.parent.parent if entry_script.parent.name == 'scripts' else work_dir
+                        output = execute_script(
+                            entry_script,
+                            runtime_work_dir,
+                            pure_input_data,
+                            timeout_seconds,
+                            extra_args=script_args,
+                        )
                         script_outputs.append(output)
 
         # 組合最終提示詞

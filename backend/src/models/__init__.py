@@ -84,6 +84,8 @@ class Agent(Base):
     description = Column(Text, default='')
     system_prompt = Column(Text, nullable=True)
     model_type = Column(Enum('local', 'cloud', name='model_type'), nullable=False)
+    agent_class = Column(Enum('master', 'public', 'tasked', name='agent_class_enum'), nullable=False, default='tasked')
+    enabled = Column(Boolean, nullable=False, default=True)
     # 代理者是否為主代理（Router）
     is_router = Column(Boolean, nullable=False, default=False)
     model_config = Column(JSON, default=dict)
@@ -203,6 +205,8 @@ class SkillEntry(Base):
     timeout_ms = Column(Integer, nullable=False, default=8000)
     # python handler：package.module:function
     python_handler = Column(String(255), nullable=True)
+    # executable command：例如 uvx/npx/java/python
+    command = Column(Text, nullable=True)
     # 輸入結構（JSON Schema）
     input_schema = Column(JSON, default=dict)
     # Claude Skills 相容欄位

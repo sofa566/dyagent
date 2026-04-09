@@ -39,6 +39,8 @@ class TestAgentsCreate:
         data = response.json()
         assert data['name'] == 'New Agent'
         assert data['description'] == 'A new test agent'
+        assert data['agent_class'] == 'tasked'
+        assert data['enabled'] is True
 
     def test_create_agent_empty_name(self, client, admin_user, admin_token):
         response = client.post(
@@ -58,6 +60,24 @@ class TestAgentsCreate:
             params={'name': 'New Agent'},
         )
         assert response.status_code == 403
+
+    def test_create_public_agent_admin(self, client, admin_user, admin_token):
+        response = client.post(
+            '/api/agents',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            params={
+                'name': 'Public Agent',
+                'description': 'Public fallback agent',
+                'model_type': 'cloud',
+                'agent_class': 'public',
+                'enabled': True,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data['agent_class'] == 'public'
+        assert data['enabled'] is True
+        assert data['is_router'] is False
 
 
 class TestAgentsGet:
@@ -106,6 +126,20 @@ class TestAgentsUpdate:
         data = response.json()
         assert data['name'] == 'Body Updated Agent'
         assert data['model_type'] == 'local'
+
+    def test_update_agent_class_and_enabled(self, client, admin_user, admin_token, agent):
+        response = client.put(
+            f'/api/agents/{agent.id}',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={
+                'agent_class': 'public',
+                'enabled': False,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data['agent_class'] == 'public'
+        assert data['enabled'] is False
 
     def test_update_agent_nonexistent(self, client, admin_user, admin_token):
         response = client.put(

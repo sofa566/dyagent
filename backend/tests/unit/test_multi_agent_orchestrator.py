@@ -18,6 +18,7 @@ from src.api.routes.chat import (
     _build_execution_waves,
     _classify_routing,
     _inject_prior_context,
+    _pick_worker_agent,
 )
 from src.models import Agent, MultiAgentSession, MultiAgentTask, Workspace
 
@@ -217,6 +218,88 @@ class TestInjectPriorContext:
         assert result.count('B') == 2000
 
 
+class TestWorkerClassRouting:
+    """驗證主代理分派遵守 tasked/public 與 enabled 規則。"""
+
+    def test_pick_tasked_when_tasked_matches(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='銷售任務代理', description='處理銷售查詢', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+
+        worker, reason = _pick_worker_agent(db=db, router_agent=router, message='請銷售任務代理處理本月銷售報表')
+        assert worker is not None
+        assert str(worker.id) == str(tasked.id)
+        assert reason.startswith('tasked_')
+
+    def test_fallback_to_public_when_no_tasked(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(public)
+
+        worker, reason = _pick_worker_agent(db=db, router_agent=router, message='今天天氣如何')
+        assert worker is not None
+        assert str(worker.id) == str(public.id)
+        assert reason.startswith('public_')
+
+    def test_disabled_agent_not_selected(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked_disabled = Agent(
+            name='停用任務代理', description='銷售查詢', model_type='cloud',
+            agent_class='tasked', enabled=False, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked_disabled); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(tasked_disabled); db.refresh(public)
+
+        worker, reason = _pick_worker_agent(db=db, router_agent=router, message='請問銷售報表')
+        assert worker is not None
+        assert str(worker.id) == str(public.id)
+        assert reason.startswith('public_') or reason == 'public_default_fallback'
+
+    def test_short_message_falls_back_without_llm_judge(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(public)
+
+        with patch('src.api.routes.chat._pick_worker_by_llm', side_effect=RuntimeError('should_not_call')):
+            worker, reason = _pick_worker_agent(db=db, router_agent=router, message='你是誰？')
+
+        assert worker is not None
+        assert str(worker.id) == str(public.id)
+        assert reason == 'public_default_fallback'
+
+
 # ──────────────────────────────────────────────
 # T073：回歸測試 — 簡單訊息走原有單代理路徑
 # ──────────────────────────────────────────────
@@ -266,6 +349,88 @@ class TestSingleAgentRegression:
         body = response.text
         assert 'orchestrator.plan' not in body
         assert 'orchestrator.done' not in body
+
+    def test_public_not_ready_fallback_to_master(self, client, admin_token, db, workspace):
+        """Given public 代理不可用，When POST /api/chat，Then 轉回 master 代理。"""
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='客服代理人', description='一般問題回覆', model_type='cloud',
+            is_router=False, agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(public)
+
+        with (
+            patch('src.api.routes.chat._pick_worker_agent', return_value=(public, 'public_default_fallback')),
+            patch('src.api.routes.chat._is_agent_ready_for_chat', return_value=False),
+            patch('src.api.routes.chat.chat_stream') as mock_stream,
+        ):
+            async def _fake_stream(*a, **kw):
+                resp = MagicMock()
+                async def _iter():
+                    yield b'data: {"type":"text","delta":"ok"}\n\n'
+                    yield b'data: {"type":"done","conversation_id":"fake"}\n\n'
+                resp.body_iterator = _iter()
+                return resp
+            mock_stream.side_effect = _fake_stream
+
+            response = client.post(
+                '/api/chat',
+                headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
+                json={'message': '你是誰？'},
+            )
+
+        assert response.status_code == 200
+        assert 'public_not_ready_master_fallback' in response.text
+        called_kwargs = mock_stream.call_args.kwargs
+        assert called_kwargs['agent_id'] == str(router.id)
+
+    def test_tasked_not_ready_fallback_to_master(self, client, admin_token, db, workspace):
+        """Given tasked 代理不可用，When POST /api/chat，Then 轉回 master 代理。"""
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='MIS部門', description='內部IT與MIS協助', model_type='cloud',
+            is_router=False, agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router)
+        db.add(tasked)
+        db.commit()
+        db.refresh(router)
+        db.refresh(tasked)
+
+        with (
+            patch('src.api.routes.chat._pick_worker_agent', return_value=(tasked, 'tasked_default_fallback')),
+            patch('src.api.routes.chat._is_agent_ready_for_chat', return_value=False),
+            patch('src.api.routes.chat.chat_stream') as mock_stream,
+        ):
+            async def _fake_stream(*a, **kw):
+                resp = MagicMock()
+                async def _iter():
+                    yield b'data: {"type":"text","delta":"ok"}\n\n'
+                    yield b'data: {"type":"done","conversation_id":"fake"}\n\n'
+                resp.body_iterator = _iter()
+                return resp
+            mock_stream.side_effect = _fake_stream
+
+            response = client.post(
+                '/api/chat',
+                headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
+                json={'message': '你是誰？'},
+            )
+
+        assert response.status_code == 200
+        assert 'tasked_not_ready_master_fallback' in response.text
+        called_kwargs = mock_stream.call_args.kwargs
+        assert called_kwargs['agent_id'] == str(router.id)
 
 
 # ──────────────────────────────────────────────

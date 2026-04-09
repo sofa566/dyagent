@@ -116,6 +116,109 @@
     .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-send:hover:not(:disabled) { opacity: 0.9; }
 
+    .chat-input-left { position: relative; }
+    .btn-plus {
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--border-color);
+      background: #fff;
+      border-radius: 10px;
+      font-size: 1.2rem;
+      line-height: 1;
+      cursor: pointer;
+      color: #334155;
+    }
+    .btn-plus:hover { background: #f8fafc; }
+    .attach-popover {
+      position: absolute;
+      left: 0;
+      bottom: 46px;
+      min-width: 180px;
+      background: #fff;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      box-shadow: var(--shadow-lg);
+      padding: 6px;
+      display: none;
+      z-index: 20;
+    }
+    .attach-popover.open { display: block; }
+    .attach-popover button {
+      width: 100%;
+      border: none;
+      background: transparent;
+      text-align: left;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text-primary);
+      font-size: 0.9rem;
+    }
+    .attach-popover button:hover { background: #f1f5f9; }
+    .chat-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0.25rem 0 0.5rem;
+      min-height: 1px;
+    }
+    .chat-attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #eef2ff;
+      color: #3730a3;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      border: 1px solid #c7d2fe;
+    }
+    .chat-attachment-chip button {
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 0;
+      line-height: 1;
+    }
+    .attach-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.28);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+    }
+    .attach-dialog-backdrop.open { display: flex; }
+    .attach-dialog {
+      width: min(520px, 92vw);
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      box-shadow: var(--shadow-lg);
+      padding: 14px;
+    }
+    .attach-dialog h4 { margin: 0 0 10px; }
+    .attach-dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+    .dataset-list {
+      max-height: 220px;
+      overflow-y: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px;
+      background: #f8fafc;
+    }
+    .dataset-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px;
+      border-radius: 6px;
+    }
+    .dataset-item:hover { background: #e2e8f0; }
+
     .agent-selector {
       margin-bottom: 1rem;
     }
@@ -170,20 +273,20 @@
 
     /* ReAct trace */
     /* ── Markdown 輸出樣式 ── */
-    .markdown-body { line-height: 1.7; font-size: 0.95rem; }
+    .markdown-body { line-height: 1.7; font-size: 0.95rem; overflow-wrap: anywhere; word-break: break-word; }
     .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: 700; margin: 1em 0 0.4em; line-height: 1.3; }
     .markdown-body h1 { font-size: 1.25em; } .markdown-body h2 { font-size: 1.1em; } .markdown-body h3 { font-size: 1em; }
     .markdown-body p { margin: 0.5em 0; }
     .markdown-body ul, .markdown-body ol { padding-left: 1.5em; margin: 0.4em 0; }
     .markdown-body li { margin: 0.25em 0; }
     .markdown-body code { font-family: ui-monospace, 'Courier New', monospace; font-size: 0.88em; background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
-    .markdown-body pre { background: #1e293b; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 0.6em 0; }
+    .markdown-body pre { background: #1e293b; color: #e2e8f0; border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 0.6em 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     .markdown-body pre code { background: transparent; color: inherit; padding: 0; font-size: 0.87em; }
     .markdown-body blockquote { border-left: 3px solid #c7d2fe; margin: 0.5em 0; padding: 4px 12px; color: var(--text-secondary); background: #f8faff; border-radius: 0 6px 6px 0; }
     .markdown-body table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.9em; }
     .markdown-body th, .markdown-body td { border: 1px solid var(--border-color); padding: 6px 10px; }
     .markdown-body th { background: #f1f5f9; font-weight: 600; }
-    .markdown-body a { color: #4f46e5; text-decoration: underline; }
+    .markdown-body a { color: #4f46e5; text-decoration: underline; overflow-wrap: anywhere; word-break: break-all; }
     .markdown-body hr { border: none; border-top: 1px solid var(--border-color); margin: 0.8em 0; }
     .agent-output { margin: 6px 0; }
     .agent-output-label { display: inline-block; font-size: 0.74rem; font-weight: 700; color: #4f46e5; background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-bottom: 4px; }
@@ -293,6 +396,13 @@
       .chat-container { min-height: calc(100vh - 340px); }
       .message { max-width: 92%; }
     }
+    @media (max-width: 600px) {
+      .attach-popover {
+        left: 0;
+        right: auto;
+        bottom: 44px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -329,11 +439,46 @@
         <div id="chat-messages" class="chat-messages">
           <p id="chat-initial-hint" style="text-align: center; color: var(--text-secondary);">請選擇代理者開始對話</p>
         </div>
+        <div id="chat-attachments" class="chat-attachments"></div>
         <form id="chat-form" class="chat-input">
+          <div class="chat-input-left">
+            <button id="attach-trigger" class="btn-plus" type="button" title="加入輸入">＋</button>
+            <div id="attach-popover" class="attach-popover" role="menu" aria-hidden="true">
+              <button id="attach-upload" type="button">上傳檔案</button>
+              <button id="attach-url" type="button">參考網頁</button>
+              <button id="attach-dataset" type="button">使用資料集</button>
+              <button id="attach-google" type="button">加入谷歌雲端檔案</button>
+            </div>
+            <input id="attach-file-input" type="file" multiple style="display:none;" />
+          </div>
           <textarea id="message-input" rows="2" placeholder="輸入訊息… (Enter 送出，Shift+Enter 換行)" disabled></textarea>
           <button type="submit" class="btn-send" disabled>送出 ↵</button>
         </form>
       </section>
+    </div>
+
+    <div id="url-dialog-backdrop" class="attach-dialog-backdrop" aria-hidden="true">
+      <div class="attach-dialog">
+        <h4>參考網頁</h4>
+        <label for="url-dialog-input">網址</label>
+        <input id="url-dialog-input" type="url" placeholder="https://example.com" />
+        <div class="actions">
+          <button id="url-dialog-cancel" type="button" class="btn">取消</button>
+          <button id="url-dialog-save" type="button" class="btn btn-primary">加入</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="dataset-dialog-backdrop" class="attach-dialog-backdrop" aria-hidden="true">
+      <div class="attach-dialog">
+        <h4>使用資料集</h4>
+        <input id="dataset-search-input" type="text" placeholder="搜尋資料集名稱" />
+        <div id="dataset-dialog-list" class="dataset-list" style="margin-top:8px;"></div>
+        <div class="actions">
+          <button id="dataset-dialog-cancel" type="button" class="btn">取消</button>
+          <button id="dataset-dialog-save" type="button" class="btn btn-primary">加入</button>
+        </div>
+      </div>
     </div>
   </main>
   <script type="module">
@@ -357,8 +502,386 @@
     const newConvBtn = document.getElementById('new-conv');
     const chatForm = document.getElementById('chat-form');
     const messageInput = document.getElementById('message-input');
-    const submitBtn = chatForm.querySelector('button');
+    const submitBtn = chatForm.querySelector('.btn-send');
+    const attachmentTray = document.getElementById('chat-attachments');
+    const attachTrigger = document.getElementById('attach-trigger');
+    const attachPopover = document.getElementById('attach-popover');
+    const attachUploadBtn = document.getElementById('attach-upload');
+    const attachUrlBtn = document.getElementById('attach-url');
+    const attachDatasetBtn = document.getElementById('attach-dataset');
+    const attachGoogleBtn = document.getElementById('attach-google');
+    const attachFileInput = document.getElementById('attach-file-input');
+    const urlDialogBackdrop = document.getElementById('url-dialog-backdrop');
+    const urlDialogInput = document.getElementById('url-dialog-input');
+    const urlDialogCancel = document.getElementById('url-dialog-cancel');
+    const urlDialogSave = document.getElementById('url-dialog-save');
+    const datasetDialogBackdrop = document.getElementById('dataset-dialog-backdrop');
+    const datasetDialogList = document.getElementById('dataset-dialog-list');
+    const datasetSearchInput = document.getElementById('dataset-search-input');
+    const datasetDialogCancel = document.getElementById('dataset-dialog-cancel');
+    const datasetDialogSave = document.getElementById('dataset-dialog-save');
+
+    const TEXT_FILE_MAX_BYTES = 200 * 1024;
+    const ATTACHMENT_TEXT_TOTAL_MAX = 600 * 1024;
+
+    const attachmentsState = {
+      files: [],
+      urls: [],
+      datasets: [],
+      googleFiles: [],
+    };
+    let allRagDatasets = [];
+    let googleAccessToken = '';
+    let googleTokenClient = null;
+    let googlePickerReady = false;
+    let googlePickerConfigCache = null;
+
+    function closeAttachPopover() {
+      attachPopover.classList.remove('open');
+      attachPopover.setAttribute('aria-hidden', 'true');
+    }
+
+    function openAttachPopover() {
+      attachPopover.classList.add('open');
+      attachPopover.setAttribute('aria-hidden', 'false');
+    }
+
+    function toHumanFileSize(bytes) {
+      const size = Number(bytes || 0);
+      if (!Number.isFinite(size) || size <= 0) return '0 B';
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    function pushUniqueUrl(url) {
+      if (!attachmentsState.urls.some((u) => u === url)) {
+        attachmentsState.urls.push(url);
+      }
+    }
+
+    function removeAttachment(kind, key) {
+      if (kind === 'file') {
+        attachmentsState.files = attachmentsState.files.filter((x) => x.id !== key);
+      } else if (kind === 'url') {
+        attachmentsState.urls = attachmentsState.urls.filter((x) => x !== key);
+      } else if (kind === 'dataset') {
+        attachmentsState.datasets = attachmentsState.datasets.filter((x) => x.id !== key);
+      } else if (kind === 'gfile') {
+        attachmentsState.googleFiles = attachmentsState.googleFiles.filter((x) => x.id !== key);
+      }
+      renderAttachmentTray();
+    }
+
+    function renderAttachmentTray() {
+      attachmentTray.innerHTML = '';
+      const chips = [];
+      attachmentsState.files.forEach((f) => {
+        chips.push({ kind: 'file', key: f.id, label: `檔案：${f.name}` });
+      });
+      attachmentsState.urls.forEach((u) => {
+        chips.push({ kind: 'url', key: u, label: `網頁：${u}` });
+      });
+      attachmentsState.datasets.forEach((d) => {
+        chips.push({ kind: 'dataset', key: d.id, label: `資料集：${d.name}` });
+      });
+      attachmentsState.googleFiles.forEach((g) => {
+        chips.push({ kind: 'gfile', key: g.id, label: `Google：${g.name}` });
+      });
+      chips.forEach((chip) => {
+        const el = document.createElement('span');
+        el.className = 'chat-attachment-chip';
+        const text = document.createElement('span');
+        text.textContent = chip.label;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.textContent = '×';
+        close.addEventListener('click', () => removeAttachment(chip.kind, chip.key));
+        el.appendChild(text);
+        el.appendChild(close);
+        attachmentTray.appendChild(el);
+      });
+    }
+
+    function escapeForPrompt(text) {
+      return String(text || '').replace(/```/g, "'''\n");
+    }
+
+    function buildAttachmentContext() {
+      const lines = [];
+      let summaryCount = 0;
+
+      if (attachmentsState.urls.length > 0) {
+        summaryCount += attachmentsState.urls.length;
+        lines.push('參考網頁:');
+        attachmentsState.urls.forEach((u) => {
+          lines.push(`- ${u}`);
+          const exportUrl = toGoogleDocExportUrl(u);
+          if (exportUrl) {
+            lines.push(`  (Google 文件可讀取匯出連結) ${exportUrl}`);
+          }
+        });
+      }
+
+      if (attachmentsState.datasets.length > 0) {
+        summaryCount += attachmentsState.datasets.length;
+        lines.push('使用資料集:');
+        attachmentsState.datasets.forEach((d) => lines.push(`- ${d.name} (id=${d.id}, scope=${d.scope || 'unknown'})`));
+      }
+
+      if (attachmentsState.googleFiles.length > 0) {
+        summaryCount += attachmentsState.googleFiles.length;
+        lines.push('Google 雲端檔案:');
+        attachmentsState.googleFiles.forEach((g) => {
+          const url = g.url || '';
+          lines.push(`- ${g.name} (id=${g.id}${url ? `, url=${url}` : ''})`);
+        });
+      }
+
+      if (attachmentsState.files.length > 0) {
+        summaryCount += attachmentsState.files.length;
+        lines.push('上傳檔案:');
+        attachmentsState.files.forEach((f) => {
+          lines.push(`- ${f.name} (${toHumanFileSize(f.size)})`);
+          if (f.textContent) {
+            lines.push(`<檔案內容 ${f.name}>`);
+            lines.push(escapeForPrompt(f.textContent));
+            lines.push(`</檔案內容 ${f.name}>`);
+          }
+        });
+      }
+
+      if (lines.length === 0) return { contextText: '', summaryText: '' };
+      return {
+        contextText: `\n\n[附加輸入]\n${lines.join('\n')}`,
+        summaryText: `（已附加 ${summaryCount} 個項目）`,
+      };
+    }
+
+    function toGoogleDocExportUrl(urlText) {
+      try {
+        const url = new URL(String(urlText || '').trim());
+        const host = (url.hostname || '').toLowerCase();
+        if (!host.includes('docs.google.com')) return '';
+        const path = url.pathname || '';
+        const match = path.match(/\/document\/d\/([^/]+)/);
+        if (!match || !match[1]) return '';
+        return `https://docs.google.com/document/d/${match[1]}/export?format=txt`;
+      } catch {
+        return '';
+      }
+    }
+
+    function clearAttachments() {
+      attachmentsState.files = [];
+      attachmentsState.urls = [];
+      attachmentsState.datasets = [];
+      attachmentsState.googleFiles = [];
+      renderAttachmentTray();
+    }
+
+    function hasAnyAttachments() {
+      return (
+        attachmentsState.files.length > 0
+        || attachmentsState.urls.length > 0
+        || attachmentsState.datasets.length > 0
+        || attachmentsState.googleFiles.length > 0
+      );
+    }
+
+    async function readTextFileMaybe(file) {
+      const name = String(file.name || '').toLowerCase();
+      const textExt = ['.txt', '.md', '.csv', '.json', '.yaml', '.yml', '.xml', '.html', '.htm', '.js', '.ts', '.py', '.sh', '.log'];
+      const isTextMime = String(file.type || '').startsWith('text/');
+      const isTextExt = textExt.some((ext) => name.endsWith(ext));
+      if (!(isTextMime || isTextExt)) return '';
+      if (Number(file.size || 0) > TEXT_FILE_MAX_BYTES) return '';
+      return await file.text();
+    }
+
+    function totalAttachmentTextBytes() {
+      return attachmentsState.files.reduce((sum, f) => sum + (f.textContent ? f.textContent.length : 0), 0);
+    }
+
+    function openUrlDialog() {
+      urlDialogBackdrop.classList.add('open');
+      urlDialogInput.value = '';
+      setTimeout(() => urlDialogInput.focus(), 0);
+    }
+
+    function closeUrlDialog() {
+      urlDialogBackdrop.classList.remove('open');
+    }
+
+    function isValidHttpUrl(url) {
+      try {
+        const u = new URL(url);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    }
+
+    async function loadDatasetsForDialog() {
+      const query = currentAgentId ? `?agent_id=${encodeURIComponent(currentAgentId)}` : '';
+      const selectableRes = await api.get(`/rag/datasets/selectable${query}`);
+      const selectableRows = Array.isArray(selectableRes.datasets) ? selectableRes.datasets : [];
+      allRagDatasets = selectableRows;
+    }
+
+    function renderDatasetDialogList(keyword) {
+      const key = String(keyword || '').trim().toLowerCase();
+      const selectedIds = new Set(attachmentsState.datasets.map((d) => String(d.id)));
+      datasetDialogList.innerHTML = '';
+      const rows = (allRagDatasets || []).filter((r) => {
+        const name = String(r.name || '').toLowerCase();
+        return !key || name.includes(key);
+      });
+      if (rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.color = 'var(--text-secondary)';
+        empty.style.padding = '8px';
+        empty.textContent = '找不到可用資料集';
+        datasetDialogList.appendChild(empty);
+        return;
+      }
+      rows.forEach((r) => {
+        const id = String(r.id || '');
+        const row = document.createElement('label');
+        row.className = 'dataset-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = id;
+        checkbox.checked = selectedIds.has(id);
+        const text = document.createElement('span');
+        text.textContent = `${r.name || id} (${r.scope || 'unknown'})`;
+        row.appendChild(checkbox);
+        row.appendChild(text);
+        datasetDialogList.appendChild(row);
+      });
+    }
+
+    async function openDatasetDialog() {
+      datasetDialogBackdrop.classList.add('open');
+      datasetDialogList.innerHTML = '<div style="padding:8px;color:var(--text-secondary);">載入中…</div>';
+      try {
+        await loadDatasetsForDialog();
+      } catch (error) {
+        allRagDatasets = [];
+        datasetDialogList.innerHTML = '<div style="padding:8px;color:var(--text-secondary);">目前無法載入資料集</div>';
+        showError((error && error.message) || '資料集載入失敗');
+        return;
+      }
+      datasetSearchInput.value = '';
+      renderDatasetDialogList('');
+      setTimeout(() => datasetSearchInput.focus(), 0);
+    }
+
+    function closeDatasetDialog() {
+      datasetDialogBackdrop.classList.remove('open');
+    }
+
+    async function getGooglePickerConfig() {
+      if (googlePickerConfigCache) return googlePickerConfigCache;
+      const response = await api.get('/chat/google-picker-config');
+      const clientId = String((response || {}).google_client_id || '').trim();
+      const apiKey = String((response || {}).google_api_key || '').trim();
+      googlePickerConfigCache = {
+        clientId,
+        apiKey,
+        configured: !!((response || {}).configured),
+      };
+      return googlePickerConfigCache;
+    }
+
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        const exists = [...document.querySelectorAll('script')].find((s) => s.src === src);
+        if (exists) {
+          if (exists.dataset.loaded === '1') { resolve(); return; }
+          exists.addEventListener('load', () => resolve(), { once: true });
+          exists.addEventListener('error', (e) => reject(e), { once: true });
+          return;
+        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.defer = true;
+        script.onload = () => {
+          script.dataset.loaded = '1';
+          resolve();
+        };
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    }
+
+    async function ensureGooglePickerSdkReady() {
+      await loadScriptOnce('https://accounts.google.com/gsi/client');
+      await loadScriptOnce('https://apis.google.com/js/api.js');
+      await new Promise((resolve) => window.gapi.load('picker', resolve));
+      googlePickerReady = true;
+    }
+
+    function openGooglePickerWithToken(token, apiKey) {
+      const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(false);
+      const picker = new google.picker.PickerBuilder()
+        .setDeveloperKey(apiKey)
+        .setOAuthToken(token)
+        .addView(view)
+        .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+        .setCallback((data) => {
+          if (data.action !== google.picker.Action.PICKED) return;
+          const docs = Array.isArray(data.docs) ? data.docs : [];
+          docs.forEach((doc) => {
+            const id = String(doc.id || '');
+            if (!id) return;
+            if (attachmentsState.googleFiles.some((x) => x.id === id)) return;
+            attachmentsState.googleFiles.push({
+              id,
+              name: String(doc.name || id),
+              mimeType: String(doc.mimeType || ''),
+              url: String(doc.url || ''),
+            });
+          });
+          renderAttachmentTray();
+        })
+        .build();
+      picker.setVisible(true);
+    }
+
+    async function openGooglePickerFlow() {
+      const { clientId, apiKey } = await getGooglePickerConfig();
+      if (!clientId || !apiKey) {
+        showError('Google Picker 尚未設定，請由管理員在後端 .env 設定 GOOGLE_CLIENT_ID 與 GOOGLE_API_KEY');
+        return;
+      }
+      await ensureGooglePickerSdkReady();
+      if (!googlePickerReady) {
+        showError('Google Picker SDK 載入失敗');
+        return;
+      }
+      if (!googleTokenClient) {
+        googleTokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: 'https://www.googleapis.com/auth/drive.readonly',
+          callback: (tokenResponse) => {
+            if (!tokenResponse || !tokenResponse.access_token) {
+              showError('Google OAuth 授權失敗');
+              return;
+            }
+            googleAccessToken = tokenResponse.access_token;
+            openGooglePickerWithToken(googleAccessToken, apiKey);
+          },
+        });
+      }
+      googleTokenClient.requestAccessToken({ prompt: googleAccessToken ? '' : 'consent' });
+    }
+
     const SHOW_PERSISTED_TOOL_EVENTS = false;
+    const SHOW_PROTOCOL_DEBUG = false;
 
     // 追蹤目前串流中的工具卡片（需預先宣告，避免在 module 嚴格模式下 ReferenceError）
     let activeToolCard = null;
@@ -373,6 +896,113 @@
         e.preventDefault();
         chatForm.dispatchEvent(new Event('submit'));
       }
+    });
+
+    attachTrigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (attachPopover.classList.contains('open')) closeAttachPopover();
+      else openAttachPopover();
+    });
+
+    attachUploadBtn.addEventListener('click', () => {
+      closeAttachPopover();
+      attachFileInput.click();
+    });
+
+    attachUrlBtn.addEventListener('click', () => {
+      closeAttachPopover();
+      openUrlDialog();
+    });
+
+    attachDatasetBtn.addEventListener('click', async () => {
+      closeAttachPopover();
+      await openDatasetDialog();
+    });
+
+    attachGoogleBtn.addEventListener('click', async () => {
+      closeAttachPopover();
+      try {
+        await openGooglePickerFlow();
+      } catch (error) {
+        showError((error && error.message) || 'Google Picker 開啟失敗');
+      }
+    });
+
+    attachFileInput.addEventListener('change', async () => {
+      const files = Array.from(attachFileInput.files || []);
+      for (const file of files) {
+        const id = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        let textContent = '';
+        try {
+          textContent = await readTextFileMaybe(file);
+        } catch {
+          textContent = '';
+        }
+        if (textContent) {
+          const projected = totalAttachmentTextBytes() + textContent.length;
+          if (projected > ATTACHMENT_TEXT_TOTAL_MAX) {
+            textContent = '';
+          }
+        }
+        attachmentsState.files.push({
+          id,
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          textContent,
+        });
+      }
+      attachFileInput.value = '';
+      renderAttachmentTray();
+    });
+
+    urlDialogCancel.addEventListener('click', closeUrlDialog);
+    urlDialogBackdrop.addEventListener('click', (event) => {
+      if (event.target === urlDialogBackdrop) closeUrlDialog();
+    });
+    urlDialogSave.addEventListener('click', () => {
+      const raw = String(urlDialogInput.value || '').trim();
+      if (!isValidHttpUrl(raw)) {
+        showError('請輸入有效網址（http/https）');
+        return;
+      }
+      pushUniqueUrl(raw);
+      renderAttachmentTray();
+      closeUrlDialog();
+    });
+
+    datasetSearchInput.addEventListener('input', () => {
+      renderDatasetDialogList(datasetSearchInput.value || '');
+    });
+    datasetDialogCancel.addEventListener('click', closeDatasetDialog);
+    datasetDialogBackdrop.addEventListener('click', (event) => {
+      if (event.target === datasetDialogBackdrop) closeDatasetDialog();
+    });
+    datasetDialogSave.addEventListener('click', () => {
+      const selected = [...datasetDialogList.querySelectorAll('input[type="checkbox"]:checked')]
+        .map((x) => String(x.value || '').trim())
+        .filter(Boolean);
+      const idSet = new Set(selected);
+      attachmentsState.datasets = (allRagDatasets || [])
+        .filter((r) => idSet.has(String(r.id || '')))
+        .map((r) => ({ id: String(r.id || ''), name: String(r.name || r.id || ''), scope: String(r.scope || '') }));
+      renderAttachmentTray();
+      closeDatasetDialog();
+    });
+
+    document.addEventListener('click', (event) => {
+      if (!attachPopover.classList.contains('open')) return;
+      const target = event.target;
+      if (target === attachTrigger || attachTrigger.contains(target)) return;
+      if (target === attachPopover || attachPopover.contains(target)) return;
+      closeAttachPopover();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      closeAttachPopover();
+      closeUrlDialog();
+      closeDatasetDialog();
     });
 
     // 輔助：建立工具卡片（標題、狀態、內容、操作）
@@ -574,6 +1204,7 @@
     let currentConversationId = null;
     let currentConversations = [];
     let agentRegistry = [];
+    let renderRevision = 0;
 
     async function loadAgents() {
       try {
@@ -619,7 +1250,14 @@
           agents.forEach(agent => {
             const option = document.createElement('option');
             option.value = agent.id;
-            option.textContent = agent.is_router ? `${agent.name}（主代理）` : agent.name;
+            const cls = String(agent.agent_class || (agent.is_router ? 'master' : 'tasked'));
+            if (agent.is_router || cls === 'master') {
+              option.textContent = `${agent.name}（主代理）`;
+            } else if (cls === 'public') {
+              option.textContent = `${agent.name}（公眾）`;
+            } else {
+              option.textContent = `${agent.name}（任務）`;
+            }
             agentSelect.appendChild(option);
           });
         }
@@ -632,7 +1270,7 @@
         const agentParam = urlParams.get('agent');
         const lastAgent = localStorage.getItem('last_agent_id');
         if (autoRoutingMode) {
-          const router = (agents || []).find((a) => !!a.is_router);
+          const router = (agents || []).find((a) => !!a.is_router || String(a.agent_class || '').toLowerCase() === 'master');
           const initial = (router && router.id) ? router.id : ((agents[0] && agents[0].id) || '');
           if (initial) {
             currentAgentId = initial;
@@ -781,11 +1419,41 @@
       });
     }
 
+    function mergeConversationsWithLocalFallback(refreshedConversations, previousConversations, preferredConversationId) {
+      const refreshed = Array.isArray(refreshedConversations) ? [...refreshedConversations] : [];
+      const previous = Array.isArray(previousConversations) ? previousConversations : [];
+      if (!preferredConversationId) return refreshed;
+
+      const localConv = previous.find((c) => c && c.id === preferredConversationId);
+      if (!localConv || !Array.isArray(localConv.messages) || localConv.messages.length === 0) {
+        return refreshed;
+      }
+
+      const remoteIndex = refreshed.findIndex((c) => c && c.id === preferredConversationId);
+      if (remoteIndex < 0) {
+        return [localConv, ...refreshed];
+      }
+
+      const remoteConv = refreshed[remoteIndex] || {};
+      const remoteCount = Array.isArray(remoteConv.messages) ? remoteConv.messages.length : 0;
+      const localCount = localConv.messages.length;
+      if (remoteCount >= localCount) {
+        return refreshed;
+      }
+
+      refreshed[remoteIndex] = {
+        ...remoteConv,
+        messages: localConv.messages,
+      };
+      return refreshed;
+    }
+
     document.addEventListener('click', () => {
       closeAllConversationMenus();
     });
 
     async function renderMessagesById(convId) {
+      const thisRenderRevision = ++renderRevision;
       const conv = (currentConversations || []).find(c => c.id === convId);
       if (!conv) return;
       let routeLabels = [];
@@ -794,11 +1462,16 @@
         const routeEvents = Array.isArray(routeRes.events) ? routeRes.events : [];
         routeLabels = routeEvents.map((e) => {
           const payload = (e && e.payload) || {};
-          if (payload.target_agent_name) return `本輪由：${String(payload.target_agent_name)} 代理者回覆`;
-          if (payload.target_agent_id) return `本輪由：${String(payload.target_agent_id)} 代理者回覆`;
-          return '';
+          const target = payload.target_agent_name
+            ? String(payload.target_agent_name)
+            : (payload.target_agent_id ? String(payload.target_agent_id) : '未知代理');
+          const reason = payload.reason ? `（${String(payload.reason)}）` : '';
+          const degraded = payload.degraded ? ' [降級]' : '';
+          return `本輪由：${target} 代理者回覆${reason}${degraded}`;
         }).filter(Boolean);
       } catch {}
+
+      if (thisRenderRevision !== renderRevision || convId !== currentConversationId) return;
 
       let assistantTurnIndex = 0;
       chatMessages.innerHTML = (conv.messages || []).map(msg => {
@@ -809,7 +1482,12 @@
           const routeBanner = routeLabel
             ? `<div class="route-info">${escapeHTML(routeLabel)}</div>`
             : '';
-          body = `${routeBanner}<div class="markdown-body">${marked.parse(msg.content || '')}</div>`;
+          const parsed = parseProtocolArtifacts(msg.content || '');
+          const cleanedAssistantText = stripToolProtocolText(parsed.cleaned || '');
+          const protocolDebug = SHOW_PROTOCOL_DEBUG && (parsed.blocks || []).length > 0
+            ? `<details class="agent-detail"><summary class="agent-text-label">工具呼叫協定（除錯）</summary><pre class="code" style="white-space:pre-wrap;margin-top:6px;">${escapeHTML((parsed.blocks || []).join('\n\n'))}</pre></details>`
+            : '';
+          body = `${routeBanner}${protocolDebug}<div class="markdown-body">${marked.parse(cleanedAssistantText)}</div>`;
         }
         return `<div class="message ${msg.role}">${body}<small style="opacity:0.7;">${msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</small></div>`;
       }).join('');
@@ -851,6 +1529,87 @@
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    }
+
+    function _extractJsonToolCallsBlocks(text) {
+      let cleaned = String(text || '');
+      const blocks = [];
+      while (true) {
+        const markerIndex = cleaned.indexOf('"tool_calls"');
+        if (markerIndex < 0) break;
+        const start = cleaned.lastIndexOf('{', markerIndex);
+        if (start < 0) break;
+        let depth = 0;
+        let inString = false;
+        let escapeNext = false;
+        let end = -1;
+        for (let i = start; i < cleaned.length; i += 1) {
+          const ch = cleaned[i];
+          if (escapeNext) {
+            escapeNext = false;
+            continue;
+          }
+          if (ch === '\\') {
+            escapeNext = true;
+            continue;
+          }
+          if (ch === '"') {
+            inString = !inString;
+            continue;
+          }
+          if (inString) continue;
+          if (ch === '{') depth += 1;
+          if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              end = i;
+              break;
+            }
+          }
+        }
+        if (end < 0) break;
+        const candidate = cleaned.slice(start, end + 1);
+        if (candidate.includes('"tool_calls"')) {
+          blocks.push(candidate.trim());
+          cleaned = cleaned.slice(0, start) + cleaned.slice(end + 1);
+          continue;
+        }
+        break;
+      }
+      return { cleaned, blocks };
+    }
+
+    function parseProtocolArtifacts(text) {
+      let cleaned = String(text || '');
+      const blocks = [];
+      const callRegex = /\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g;
+      cleaned = cleaned.replace(callRegex, (m) => {
+        blocks.push(String(m || '').trim());
+        return '';
+      });
+      const parsedJsonBlocks = _extractJsonToolCallsBlocks(cleaned);
+      cleaned = parsedJsonBlocks.cleaned;
+      (parsedJsonBlocks.blocks || []).forEach((b) => blocks.push(b));
+      return { cleaned, blocks };
+    }
+
+    function stripToolProtocolText(text) {
+      const parsed = parseProtocolArtifacts(text);
+      let cleaned = String(parsed.cleaned || '');
+      cleaned = cleaned.replace(/```json[\s\S]*?"tool_calls"[\s\S]*?```/gi, '');
+      cleaned = cleaned.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/gi, '');
+      cleaned = cleaned.replace(/^\s*```json\s*$/gim, '');
+      cleaned = cleaned.replace(/^\s*```\s*$/gim, '');
+      cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
+      cleaned = cleaned.replace(/<\/?system-reminder>/gi, '');
+      cleaned = cleaned.replace(/^\s*Your operational mode has changed from plan to build\.\s*$/gim, '');
+      cleaned = cleaned.replace(/^\s*You are no longer in read-only mode\.\s*$/gim, '');
+      cleaned = cleaned.replace(/^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$/gim, '');
+      cleaned = cleaned.replace(/\[\[CALL[^\n\r]*$/gm, '');
+      cleaned = cleaned.replace(/(?:^|\s)tool\s*=\s*[a-zA-Z0-9:_\-./]+/g, ' ');
+      cleaned = cleaned.replace(/^\s*(?:tool\s*=\s*)?(?:mcp|cp):[a-zA-Z0-9_\-./]+\s*/i, '');
+      cleaned = cleaned.replace(/^\s*[:：,，\-]+\s*/g, '');
+      return cleaned.trim();
     }
 
     function syntaxHighlight(jsonText) {
@@ -903,7 +1662,7 @@
           currentConversations = [conv, ...(currentConversations || [])];
           currentConversationId = conv.id;
           renderSidebar(currentConversations);
-          renderMessagesById(currentConversationId);
+          await renderMessagesById(currentConversationId);
           messageInput.focus();
         }
       } catch (e) {
@@ -914,13 +1673,35 @@
     chatForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const msg = (messageInput.value || '').trim();
-      if (!msg || !currentAgentId) return;
+      if (!msg) return;
+      const attachmentContext = buildAttachmentContext();
+      const composedMessage = `${msg}${attachmentContext.contextText}`;
+      if (!currentAgentId) {
+        const firstSelectable = [...agentSelect.options].find((option) => !!option.value);
+        if (firstSelectable) {
+          currentAgentId = firstSelectable.value;
+        } else {
+          showError('目前沒有可用代理者，請先建立或啟用代理者');
+          return;
+        }
+      }
       const STREAM_TIMEOUT_MS = 120000;
       messageInput.disabled = true;
       submitBtn.disabled = true;
+      const activeConversation = (currentConversations || []).find((c) => c.id === currentConversationId);
+      if (activeConversation) {
+        if (!Array.isArray(activeConversation.messages)) activeConversation.messages = [];
+        activeConversation.messages.push({
+          id: `temp-user-${Date.now()}`,
+          role: 'user',
+          content: composedMessage,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       const userMsg = document.createElement('div');
       userMsg.className = 'message user';
-      userMsg.innerHTML = `<p>${escapeHTML(msg)}</p>`;
+      userMsg.innerHTML = `<p>${escapeHTML(msg)}</p>${attachmentContext.summaryText ? `<p style="margin-top:6px;font-size:0.8rem;opacity:0.9;">${escapeHTML(attachmentContext.summaryText)}</p>` : ''}`;
       chatMessages.appendChild(userMsg);
       // 建立助理訊息區塊
       const assistantMsg = document.createElement('div');
@@ -941,26 +1722,58 @@
       let orchestratorPlanEl = null;      // 任務清單容器
       const agentTaskBadges = new Map();  // task_index → badge element
       let hidingToolProtocol = false;
-      function stripToolProtocolText(text) {
-        let cleaned = String(text || '');
-        cleaned = cleaned.replace(/\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?/g, '');
-        cleaned = cleaned.replace(/\[\[CALL[\s\S]*$/g, '');
-        cleaned = cleaned.replace(/(?:^|\s)tool\s*=\s*[a-zA-Z0-9:_\-./]+/g, ' ');
-        cleaned = cleaned.replace(/^\s*(?:tool\s*=\s*)?(?:mcp|cp):[a-zA-Z0-9_\-./]+\s*/i, '');
-        cleaned = cleaned.replace(/```json\s*\{[\s\S]*?\}\s*```/gi, '');
-        cleaned = cleaned.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/g, '');
-        cleaned = cleaned.replace(/^\s*[:：,，\-]+\s*/g, '');
-        return cleaned.trimStart();
+      let protocolDetailEl = null;
+      let protocolPreEl = null;
+      const protocolSeenBlocks = new Set();
+
+      function ensureProtocolPanel() {
+        if (!SHOW_PROTOCOL_DEBUG) return;
+        if (protocolDetailEl && protocolPreEl) return;
+        protocolDetailEl = document.createElement('details');
+        protocolDetailEl.className = 'agent-detail';
+        const summary = document.createElement('summary');
+        summary.className = 'agent-text-label';
+        summary.textContent = '工具呼叫協定（除錯）';
+        protocolPreEl = document.createElement('pre');
+        protocolPreEl.className = 'code';
+        protocolPreEl.style.whiteSpace = 'pre-wrap';
+        protocolPreEl.style.marginTop = '6px';
+        protocolDetailEl.appendChild(summary);
+        protocolDetailEl.appendChild(protocolPreEl);
+        assistantMsg.insertBefore(protocolDetailEl, p);
+      }
+
+      function extractProtocolBlocks(text) {
+        return parseProtocolArtifacts(text);
+      }
+
+      function appendProtocolBlocks(blocks) {
+        if (!SHOW_PROTOCOL_DEBUG) return;
+        if (!Array.isArray(blocks) || blocks.length === 0) return;
+        const unseen = [];
+        blocks.forEach((b) => {
+          const key = String(b || '').trim();
+          if (!key) return;
+          if (protocolSeenBlocks.has(key)) return;
+          protocolSeenBlocks.add(key);
+          unseen.push(key);
+        });
+        if (unseen.length === 0) return;
+        ensureProtocolPanel();
+        const now = new Date().toLocaleTimeString();
+        const lines = unseen.map((b) => `[${now}]\n${b}`).join('\n\n');
+        protocolPreEl.textContent = (protocolPreEl.textContent ? `${protocolPreEl.textContent}\n\n` : '') + lines;
       }
 
       // 串流聊天
+      let sendSucceeded = false;
       try {
         const token = localStorage.getItem('auth_token');
         const selected = (agentRegistry || []).find((a) => String(a.id) === String(currentAgentId));
-        const useUnifiedEntry = !!autoRoutingMode || !!(selected && selected.is_router);
+        const useUnifiedEntry = !!autoRoutingMode || !!(selected && selected.is_router) || hasAnyAttachments();
         const url = useUnifiedEntry
           ? '/api/chat'
-          : (`/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: msg }));
+          : (`/api/agents/${currentAgentId}/chat/stream?` + new URLSearchParams({ message: composedMessage }));
         const controller = new AbortController();
         // timer 改為「每收到事件就重置」：從最後一個事件起算 STREAM_TIMEOUT_MS
         let timer = setTimeout(() => controller.abort('timeout'), STREAM_TIMEOUT_MS);
@@ -971,7 +1784,7 @@
             'Authorization': `Bearer ${token}`,
             ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
           },
-          body: useUnifiedEntry ? JSON.stringify({ message: msg }) : undefined,
+          body: useUnifiedEntry ? JSON.stringify({ message: composedMessage }) : undefined,
           signal: controller.signal,
         });
         if (!resp.ok && resp.status === 503) {
@@ -983,7 +1796,7 @@
               'Authorization': `Bearer ${token}`,
               ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
             },
-            body: useUnifiedEntry ? JSON.stringify({ message: msg }) : undefined,
+            body: useUnifiedEntry ? JSON.stringify({ message: composedMessage }) : undefined,
             signal: controller.signal,
           });
         }
@@ -995,6 +1808,8 @@
         const reader = resp.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
+        let sawDoneEvent = false;
+        let doneConversationId = null;
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -1024,14 +1839,18 @@
                 } else {
                   accText += deltaText;
                 }
-                accText = stripToolProtocolText(accText);
+                const extracted = extractProtocolBlocks(accText);
+                appendProtocolBlocks(extracted.blocks);
+                accText = stripToolProtocolText(extracted.cleaned);
                 p.innerHTML = marked.parse(accText);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
               } else if (payload.type === 'route.decision') {
+                const reasonText = payload.reason ? `（${String(payload.reason)}）` : '';
+                const degradedText = payload.degraded ? ' [降級]' : '';
                 if (payload.target_agent_name) {
-                  routeInfo.textContent = `本輪由：${String(payload.target_agent_name)} 代理者回覆`;
+                  routeInfo.textContent = `本輪由：${String(payload.target_agent_name)} 代理者回覆${reasonText}${degradedText}`;
                 } else if (payload.target_agent_id) {
-                  routeInfo.textContent = `本輪由：${String(payload.target_agent_id)} 代理者回覆`;
+                  routeInfo.textContent = `本輪由：${String(payload.target_agent_id)} 代理者回覆${reasonText}${degradedText}`;
                 }
                 if (payload.target_agent_id) {
                   currentAgentId = String(payload.target_agent_id);
@@ -1039,6 +1858,8 @@
                     try { agentSelect.value = String(payload.target_agent_id); } catch {}
                   }
                 }
+              } else if (payload.type === 'debug') {
+                console.debug('[CHAT DEBUG]', payload);
               } else if (payload.type === 'orchestrator.thinking') {
                 routeInfo.textContent = payload.message || '多代理分析中…';
               } else if (payload.type === 'orchestrator.plan') {
@@ -1142,8 +1963,6 @@
                 } catch {}
               } else if (payload.type === 'tool_start') {
                 hidingToolProtocol = false;
-                accText = '';
-                p.innerHTML = '';
                 const built = createToolCard(payload.name);
                 built._toolName = payload.name;
                 built._lastPayload = (payload.args && typeof payload.args === 'object') ? payload.args : {};
@@ -1175,24 +1994,85 @@
                 }
               } else if (payload.type === 'text_clear_tool') {
                 hidingToolProtocol = false;
-                accText = '';
+                const extracted = extractProtocolBlocks(accText);
+                appendProtocolBlocks(extracted.blocks);
+                accText = extracted.cleaned;
                 if (p) p.innerHTML = marked.parse(accText);
               } else if (payload.type === 'done') {
+                sawDoneEvent = true;
+                doneConversationId = payload.conversation_id ? String(payload.conversation_id) : null;
                 // 完成
                 if (activeToolCard && activeToolCard._state === 'running') setCardStatus(activeToolCard, 'ok');
                 if (activeToolCard && (!activeToolCard._convId) && payload.conversation_id) activeToolCard._convId = payload.conversation_id;
+                const doneConvId = doneConversationId || currentConversationId;
+                if (doneConvId && accText.trim()) {
+                  const doneConv = (currentConversations || []).find((c) => c.id === doneConvId);
+                  if (doneConv) {
+                    if (!Array.isArray(doneConv.messages)) doneConv.messages = [];
+                    const lastMsg = doneConv.messages[doneConv.messages.length - 1];
+                    if (!lastMsg || lastMsg.role !== 'assistant') {
+                      doneConv.messages.push({
+                        id: `temp-assistant-${Date.now()}`,
+                        role: 'assistant',
+                        content: accText,
+                        timestamp: new Date().toISOString(),
+                      });
+                    }
+                  }
+                }
                 // 串流完成後，刷新側欄會話清單以更新最後互動時間與新會話
                 try {
-                  const refreshUrl = autoRoutingMode ? '/conversations' : `/agents/${currentAgentId}/conversations`;
-                  const refreshed = await api.get(refreshUrl);
-                  currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+                  const previousConversations = Array.isArray(currentConversations) ? [...currentConversations] : [];
+                  await new Promise((r) => setTimeout(r, 450));
+                  const refreshed = await api.get('/conversations');
+                  const refreshedList = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+                  currentConversations = mergeConversationsWithLocalFallback(
+                    refreshedList,
+                    previousConversations,
+                    doneConversationId || currentConversationId,
+                  );
+                  if (doneConversationId) {
+                    currentConversationId = doneConversationId;
+                  } else if (currentConversationId && !currentConversations.some((c) => c.id === currentConversationId)) {
+                    currentConversationId = currentConversations[0]?.id || null;
+                  }
                   renderSidebar(currentConversations);
+                  if (currentConversationId) {
+                    await renderMessagesById(currentConversationId);
+                  }
                 } catch {}
               }
             } catch {}
           }
         }
         clearTimeout(timer);
+        if (!sawDoneEvent) {
+          try {
+            const previousConversations = Array.isArray(currentConversations) ? [...currentConversations] : [];
+            await new Promise((r) => setTimeout(r, 450));
+            const refreshed = await api.get('/conversations');
+            const refreshedList = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+            currentConversations = mergeConversationsWithLocalFallback(
+              refreshedList,
+              previousConversations,
+              doneConversationId || currentConversationId,
+            );
+            if (currentConversations.length > 0) {
+              if (doneConversationId) {
+                currentConversationId = doneConversationId;
+              } else if (!currentConversationId) {
+                currentConversationId = currentConversations[0].id;
+              } else if (!currentConversations.some((c) => c.id === currentConversationId)) {
+                currentConversationId = currentConversations[0].id;
+              }
+              renderSidebar(currentConversations);
+              if (currentConversationId) {
+                await renderMessagesById(currentConversationId);
+              }
+            }
+          } catch {}
+        }
+        sendSucceeded = true;
         messageInput.value = '';
         messageInput.style.height = 'auto';
       } catch (e) {
@@ -1208,10 +2088,12 @@
         submitBtn.disabled = false;
         messageInput.value = '';
         messageInput.style.height = 'auto';
+        if (sendSucceeded) clearAttachments();
         messageInput.focus();
       }
     });
 
+    renderAttachmentTray();
     loadAgents();
     if (autoRoutingMode && chatInitialHint) {
       chatInitialHint.textContent = '可直接開始對話，系統會自動由主代理分派。';

@@ -44,6 +44,20 @@
             <option value="local">地端模型 (Local)</option>
           </select>
         </div>
+        <div class="form-group">
+          <label for="agent_class">代理者類別 *</label>
+          <select id="agent_class" name="agent_class" required>
+            <option value="tasked">任務類 (tasked)</option>
+            <option value="public">公眾類 (public)</option>
+            <option value="master">主代理類 (master)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="enabled" name="enabled" checked>
+            啟用此代理者
+          </label>
+        </div>
         <div class="actions">
           <button type="submit" class="btn btn-primary">儲存</button>
           <a href="/pages/agent-list.html" class="btn btn-secondary">取消</a>
@@ -83,6 +97,18 @@
     const deleteBtn = document.getElementById('delete-btn');
     const confirmDelete = document.getElementById('confirm-delete');
     const cancelDelete = document.getElementById('cancel-delete');
+    const agentClassSelect = document.getElementById('agent_class');
+    const enabledInput = document.getElementById('enabled');
+
+    function syncEnabledControlByClass() {
+      const isMaster = (agentClassSelect.value || '').toLowerCase() === 'master';
+      if (isMaster) {
+        enabledInput.checked = true;
+        enabledInput.disabled = true;
+        return;
+      }
+      enabledInput.disabled = false;
+    }
 
     async function loadAgent() {
       try {
@@ -91,6 +117,9 @@
         document.getElementById('description').value = response.description || '';
         document.getElementById('system_prompt').value = response.system_prompt || '';
         document.getElementById('model_type').value = response.model_type;
+        document.getElementById('agent_class').value = response.agent_class || (response.is_router ? 'master' : 'tasked');
+        document.getElementById('enabled').checked = response.enabled !== false;
+        syncEnabledControlByClass();
         // 設定進階 LLM 設定連結
         const adv = document.getElementById('llm-config-adv');
         if (adv) adv.href = `/pages/agent-llm-config.html?id=${agentId}`;
@@ -109,6 +138,8 @@
       const description = document.getElementById('description').value;
       const system_prompt = document.getElementById('system_prompt').value;
       const model_type = document.getElementById('model_type').value;
+      const agent_class = document.getElementById('agent_class').value;
+      const enabled = document.getElementById('enabled').checked;
 
       try {
         await api.put(`/agents/${agentId}`, {
@@ -116,6 +147,8 @@
           description,
           system_prompt,
           model_type,
+          agent_class,
+          enabled,
         });
         showSuccess('代理者更新成功！');
       } catch (error) {
@@ -140,6 +173,8 @@
         deleteModal.classList.remove('active');
       }
     });
+
+    agentClassSelect.addEventListener('change', syncEnabledControlByClass);
 
     loadAgent();
   </script>

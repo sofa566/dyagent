@@ -500,6 +500,61 @@ async def list_rag_datasets(
     return {'datasets': [_dataset_to_dict(r) for r in rows]}
 
 
+@router.get('/rag/datasets/selectable')
+async def list_selectable_rag_datasets(
+    agent_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 目的：提供聊天介面可選資料集清單。
+    # 為什麼：一般聊天使用者沒有 read_agent 權限，直接呼叫 /rag/datasets 會 403。
+    can_chat = check_permission(current_user, 'chat')
+    can_read_agent = check_permission(current_user, 'read_agent')
+    if not can_chat and not can_read_agent:
+        raise forbidden_error()
+
+    if not agent_id:
+        if not can_read_agent:
+            return {'datasets': []}
+        rows = db.query(RagDataset).filter(
+            RagDataset.scope == 'global',
+            RagDataset.enabled == True,  # noqa: E712
+        ).order_by(RagDataset.created_at.desc()).all()
+        return {'datasets': [_dataset_to_dict(r) for r in rows]}
+
+    try:
+        agent_uuid = uuid.UUID(str(agent_id))
+    except Exception:
+        raise not_found_error('Agent', agent_id) from None
+
+    agent = db.query(Agent).filter(Agent.id == agent_uuid, Agent.enabled == True).first()  # noqa: E712
+    if agent is None:
+        raise not_found_error('Agent', agent_id)
+
+    rag_cfg = agent.rag_config if isinstance(agent.rag_config, dict) else {}
+    global_ids = [str(x) for x in list((rag_cfg or {}).get('global_dataset_ids') or []) if x]
+    private_ids = [str(x) for x in list((rag_cfg or {}).get('private_dataset_ids') or []) if x]
+    dataset_ids = list(dict.fromkeys(global_ids + private_ids))
+    if not dataset_ids:
+        return {'datasets': []}
+
+    rows = db.query(RagDataset).filter(
+        RagDataset.id.in_(dataset_ids),
+        RagDataset.enabled == True,  # noqa: E712
+    ).all()
+
+    out = []
+    for row in rows:
+        if row.scope == 'global':
+            out.append(row)
+            continue
+        if row.scope == 'agent_private' and str(getattr(row, 'agent_id', '') or '') == str(agent.id):
+            out.append(row)
+
+    out = sorted(out, key=lambda x: x.created_at or datetime.min, reverse=True)
+    return {'datasets': [_dataset_to_dict(r) for r in out]}
+
+
 @router.post('/rag/datasets')
 async def create_global_rag_dataset(
     payload: dict,

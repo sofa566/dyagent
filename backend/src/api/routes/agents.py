@@ -28,7 +28,7 @@ async def list_public_agents(
     - 僅回傳基本資訊供前端選擇。
     """
     # 僅驗證登入；不做額外權限限制
-    agents = db.query(Agent).all()
+    agents = db.query(Agent).filter(Agent.enabled == True).all()  # noqa: E712
     agents = sorted(agents, key=lambda x: (0 if bool(getattr(x, 'is_router', False)) else 1, str(x.name or '')))
     return {
         'agents': [
@@ -37,6 +37,8 @@ async def list_public_agents(
                 'name': a.name,
                 'description': a.description,
                 'is_router': bool(getattr(a, 'is_router', False)),
+                'agent_class': str(getattr(a, 'agent_class', 'tasked') or 'tasked'),
+                'enabled': bool(getattr(a, 'enabled', True)),
             }
             for a in agents
         ]
@@ -663,6 +665,9 @@ async def list_agents(
                 'name': a.name,
                 'description': a.description,
                 'model_type': a.model_type,
+                'agent_class': str(getattr(a, 'agent_class', 'tasked') or 'tasked'),
+                'enabled': bool(getattr(a, 'enabled', True)),
+                'is_router': bool(getattr(a, 'is_router', False)),
                 'created_at': a.created_at.isoformat() if a.created_at else None,
                 'updated_at': a.updated_at.isoformat() if a.updated_at else None,
             }
@@ -676,6 +681,8 @@ async def create_agent(
     name: str,
     description: str = '',
     model_type: str = 'cloud',
+    agent_class: str = 'tasked',
+    enabled: bool = True,
     model_config: dict = {},
     system_prompt: str = '',
     db: Session = Depends(get_db),
@@ -687,6 +694,11 @@ async def create_agent(
 
     if not name or len(name.strip()) == 0:
         raise validation_error('Agent name is required')
+    normalized_class = str(agent_class or 'tasked').strip().lower()
+    if normalized_class not in {'master', 'public', 'tasked'}:
+        raise validation_error('agent_class must be master/public/tasked')
+    if normalized_class == 'master':
+        enabled = True
 
     workspace = db.query(Workspace).first()
     if not workspace:
@@ -700,6 +712,9 @@ async def create_agent(
         description=description,
         system_prompt=system_prompt.strip() or None,
         model_type=model_type,
+        agent_class=normalized_class,
+        enabled=bool(enabled),
+        is_router=(normalized_class == 'master'),
         model_config=model_config,
         workspace_id=workspace.id,
     )
@@ -713,6 +728,9 @@ async def create_agent(
         'description': agent.description,
         'system_prompt': agent.system_prompt or '',
         'model_type': agent.model_type,
+        'agent_class': str(getattr(agent, 'agent_class', 'tasked') or 'tasked'),
+        'enabled': bool(getattr(agent, 'enabled', True)),
+        'is_router': bool(getattr(agent, 'is_router', False)),
         'model_config': agent.model_config,
         'created_at': agent.created_at.isoformat() if agent.created_at else None,
         'updated_at': agent.updated_at.isoformat() if agent.updated_at else None,
@@ -745,6 +763,9 @@ async def get_agent(
         'description': agent.description,
         'system_prompt': agent.system_prompt or '',
         'model_type': agent.model_type,
+        'agent_class': str(getattr(agent, 'agent_class', 'tasked') or 'tasked'),
+        'enabled': bool(getattr(agent, 'enabled', True)),
+        'is_router': bool(getattr(agent, 'is_router', False)),
         'model_config': agent.model_config,
         'mcp_config': agent.mcp_config,
         'skills': agent.skills,
@@ -762,6 +783,8 @@ async def update_agent(
     name: str | None = None,
     description: str | None = None,
     model_type: str | None = None,
+    agent_class: str | None = None,
+    enabled: bool | None = None,
     model_config: dict | None = None,
     system_prompt: str | None = None,
     request: Request = None,
@@ -802,6 +825,13 @@ async def update_agent(
             model_type = str(v) if isinstance(v, str) else model_type
         if 'model_config' in payload and model_config is None and isinstance(payload.get('model_config'), dict):
             model_config = payload.get('model_config')
+        if 'agent_class' in payload and agent_class is None:
+            v = payload.get('agent_class')
+            agent_class = str(v) if isinstance(v, str) else agent_class
+        if 'enabled' in payload and enabled is None:
+            v = payload.get('enabled')
+            if isinstance(v, bool):
+                enabled = v
         if 'system_prompt' in payload and system_prompt is None:
             v = payload.get('system_prompt')
             system_prompt = str(v) if isinstance(v, str) else system_prompt
@@ -815,6 +845,18 @@ async def update_agent(
         if mt not in {'cloud', 'local'}:
             raise validation_error('model_type must be cloud or local')
         agent.model_type = mt
+    if agent_class is not None:
+        normalized_class = str(agent_class).strip().lower()
+        if normalized_class not in {'master', 'public', 'tasked'}:
+            raise validation_error('agent_class must be master/public/tasked')
+        agent.agent_class = normalized_class
+        agent.is_router = normalized_class == 'master'
+        if normalized_class == 'master':
+            agent.enabled = True
+    if enabled is not None:
+        if str(getattr(agent, 'agent_class', '') or '') == 'master' and not bool(enabled):
+            raise validation_error('master 代理不可停用')
+        agent.enabled = bool(enabled)
     if model_config is not None:
         agent.model_config = model_config
     if system_prompt is not None:
@@ -829,6 +871,9 @@ async def update_agent(
         'description': agent.description,
         'model_type': agent.model_type,
         'system_prompt': agent.system_prompt or '',
+        'agent_class': str(getattr(agent, 'agent_class', 'tasked') or 'tasked'),
+        'enabled': bool(getattr(agent, 'enabled', True)),
+        'is_router': bool(getattr(agent, 'is_router', False)),
         'updated_at': agent.updated_at.isoformat() if agent.updated_at else None,
     }
 
@@ -883,7 +928,17 @@ async def update_agent_llm_config(
     if not isinstance(model_config, dict):
         raise validation_error('model_config must be an object')
 
-    agent.model_config = model_config
+    # 目的：只更新 LLM 設定欄位，不覆蓋既有 integrations 設定。
+    # 為什麼：不同頁面會分開寫 model_config，若整包覆蓋會清空 skill_ids/mcp_ids 等資料。
+    existing_config = agent.model_config if isinstance(agent.model_config, dict) else {}
+    merged_config = dict(existing_config)
+    for key, value in model_config.items():
+        if value is None:
+            merged_config.pop(str(key), None)
+            continue
+        merged_config[str(key)] = value
+
+    agent.model_config = merged_config
     db.commit()
     db.refresh(agent)
 

@@ -35,7 +35,13 @@ const api = {
         throw new Error('登入已過期，請重新登入');
       }
       const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.error || `HTTP ${response.status}`);
+      const message =
+        (error && error.error)
+        || (error && error.detail && error.detail.error)
+        || (error && error.detail && typeof error.detail === 'string' ? error.detail : '')
+        || (error && error.message)
+        || `HTTP ${response.status}`;
+      throw new Error(message);
     }
 
     if (response.status === 204) {

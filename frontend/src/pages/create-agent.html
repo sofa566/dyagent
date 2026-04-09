@@ -45,6 +45,20 @@
           </select>
         </div>
         <div class="form-group">
+          <label for="agent_class">代理者類別 *</label>
+          <select id="agent_class" name="agent_class" required>
+            <option value="tasked">任務類 (tasked)</option>
+            <option value="public">公眾類 (public)</option>
+            <option value="master">主代理類 (master)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="enabled" name="enabled" checked>
+            啟用此代理者
+          </label>
+        </div>
+        <div class="form-group">
           <label for="provider">模型提供者</label>
           <select id="provider" name="provider">
             <option value="openai">OpenAI</option>
@@ -70,6 +84,22 @@
       window.location.href = '/pages/login.html';
     }
 
+    const agentClassSelect = document.getElementById('agent_class');
+    const enabledInput = document.getElementById('enabled');
+
+    function syncEnabledControlByClass() {
+      const isMaster = (agentClassSelect.value || '').toLowerCase() === 'master';
+      if (isMaster) {
+        enabledInput.checked = true;
+        enabledInput.disabled = true;
+        return;
+      }
+      enabledInput.disabled = false;
+    }
+
+    agentClassSelect.addEventListener('change', syncEnabledControlByClass);
+    syncEnabledControlByClass();
+
     document.getElementById('create-agent-form').addEventListener('submit', async (e) => {
       e.preventDefault();
 
@@ -77,6 +107,8 @@
       const description = document.getElementById('description').value;
       const system_prompt = document.getElementById('system_prompt').value;
       const model_type = document.getElementById('model_type').value;
+      const agent_class = document.getElementById('agent_class').value;
+      const enabled = document.getElementById('enabled').checked;
       const provider = document.getElementById('provider').value;
       const model_name = document.getElementById('model_name').value;
 
@@ -92,6 +124,8 @@
           description,
           system_prompt,
           model_type,
+          agent_class,
+          enabled: String(enabled),
         });
         await api.request(`/agents?${qs.toString()}`, { method: 'POST' });
         showSuccess('代理者創建成功！');

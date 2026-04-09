@@ -25,6 +25,15 @@ def _seed_router_agent(db):
 
         router = db.query(Agent).filter(Agent.is_router == True).first()  # noqa: E712
         if router is not None:
+            changed = False
+            if str(getattr(router, 'agent_class', '') or '') != 'master':
+                router.agent_class = 'master'
+                changed = True
+            if not bool(getattr(router, 'enabled', True)):
+                router.enabled = True
+                changed = True
+            if changed:
+                db.commit()
             return
 
         ws = db.query(Workspace).first()
@@ -39,6 +48,8 @@ def _seed_router_agent(db):
             description='負責將使用者問題分派到合適代理者',
             system_prompt='你是主代理，負責判斷問題並選擇合適的部門代理者。',
             model_type='cloud',
+            agent_class='master',
+            enabled=True,
             is_router=True,
             model_config={'tier': 'cloud'},
             mcp_config=[],

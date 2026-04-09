@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
 
-./stop-dev.sh
-./start-dev.sh
-
+bash ./stop-dev.sh
+bash ./start-dev.sh

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ''
     GEMINI_API_KEY: str = ''  # Google Gemini
     XAI_API_KEY: str = ''     # Grok (xAI)
+    # Google Picker OAuth（前端雲端硬碟選擇器）
+    GOOGLE_CLIENT_ID: str = ''
+    GOOGLE_API_KEY: str = ''
     # Azure OpenAI
     AZURE_OPENAI_API_KEY: str = ''
     AZURE_OPENAI_ENDPOINT: str = ''
@@ -62,6 +65,12 @@ class Settings(BaseSettings):
     # LLM 成本估算表（JSON）
     # 格式：{"provider:model": {"input_per_1k": 0.005, "output_per_1k": 0.015}}
     LLM_COST_TABLE_JSON: str = ''
+
+    # 聊天歷史上下文注入（同一會話連貫）
+    CHAT_HISTORY_MODE: str = 'recent'  # off | recent
+    CHAT_HISTORY_MAX_MESSAGES: int = 8
+    CHAT_HISTORY_MAX_TOKENS: int = 2500
+    CHAT_HISTORY_INCLUDE_TOOL_TEXT: bool = False
 
     # Embedding 設定
     # provider: deterministic | sentence_transformers | ollama | vllm
@@ -138,3 +147,9 @@ def validate_llm_settings() -> None:
         log.warning("config.invalid_react_max_steps: value=%s expect=>0 int", settings.REACT_MAX_STEPS)
     if settings.REACT_MAX_OBSERVATION_CHARS < 500:
         log.warning("config.invalid_react_max_observation_chars: value=%s expect=>=500 int", settings.REACT_MAX_OBSERVATION_CHARS)
+    if (settings.CHAT_HISTORY_MODE or '').lower() not in {"off", "recent"}:
+        log.warning("config.invalid_chat_history_mode: value=%s expect=off|recent", settings.CHAT_HISTORY_MODE)
+    if settings.CHAT_HISTORY_MAX_MESSAGES < 0:
+        log.warning("config.invalid_chat_history_max_messages: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_MESSAGES)
+    if settings.CHAT_HISTORY_MAX_TOKENS < 0:
+        log.warning("config.invalid_chat_history_max_tokens: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_TOKENS)

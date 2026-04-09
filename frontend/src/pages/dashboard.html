@@ -14,6 +14,11 @@
     .service-ok { color: #15803d; font-weight: 600; }
     .service-down { color: #b91c1c; font-weight: 600; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+    .table-wrap { overflow-x: auto; }
+    table.metrics { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    table.metrics th, table.metrics td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
+    table.metrics th { color: var(--text-secondary); font-weight: 600; }
+    table.metrics td.num { text-align: right; }
   </style>
 </head>
 <body>
@@ -58,6 +63,11 @@
         <div id="llm-stats" class="stats-grid"></div>
       </div>
 
+      <div class="card">
+        <h3 class="section-title">代理者 Token / Cost（近 24 小時）</h3>
+        <div id="agent-llm-breakdown" class="table-wrap"></div>
+      </div>
+
       <div class="actions">
         <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
         <a href="/pages/chat.html" class="btn btn-primary">前往聊天</a>
@@ -100,6 +110,7 @@
       const users = data.users || {};
       const traffic = data.traffic || {};
       const llm = data.llm || {};
+      const llmBreakdown = Array.isArray(llm.agent_breakdown_24h) ? llm.agent_breakdown_24h : [];
 
       document.getElementById('updated-at').textContent =
         data.updated_at ? new Date(data.updated_at).toLocaleString() : '更新時間未知';
@@ -140,6 +151,43 @@
         mkStat('ReAct 步驟數', llm.react_steps_24h ?? 0),
         mkStat('工具成功 / 失敗', `${llm.tool_success_24h ?? 0} / ${llm.tool_error_24h ?? 0}`),
       ].join('');
+
+      if (!llmBreakdown.length) {
+        document.getElementById('agent-llm-breakdown').innerHTML = '<div class="mono">目前無 LLM 使用紀錄</div>';
+      } else {
+        const rows = llmBreakdown.map((row) => {
+          const name = row.agent_name || '-';
+          const turns = Number(row.turns || 0);
+          const inputTokens = Number(row.input_tokens || 0);
+          const outputTokens = Number(row.output_tokens || 0);
+          const totalTokens = Number(row.total_tokens || 0);
+          const cost = Number(row.cost_usd || 0).toFixed(6);
+          return `<tr>
+            <td>${name}</td>
+            <td class="num">${turns}</td>
+            <td class="num">${inputTokens}</td>
+            <td class="num">${outputTokens}</td>
+            <td class="num">${totalTokens}</td>
+            <td class="num">${cost}</td>
+          </tr>`;
+        }).join('');
+
+        document.getElementById('agent-llm-breakdown').innerHTML = `
+          <table class="metrics">
+            <thead>
+              <tr>
+                <th>代理者</th>
+                <th class="num">輪次</th>
+                <th class="num">輸入 Tokens</th>
+                <th class="num">輸出 Tokens</th>
+                <th class="num">總 Tokens</th>
+                <th class="num">Cost (USD)</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
     }
 
     async function loadOverview() {

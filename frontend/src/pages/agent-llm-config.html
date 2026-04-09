@@ -623,6 +623,9 @@
             private_dataset_ids: privateDatasetIds,
           });
           showSuccess('已儲存');
+          setTimeout(() => {
+            window.location.href = '/pages/agent-list.html';
+          }, 300);
         }
       } catch (e) {
         showError(e.message || '儲存失敗');

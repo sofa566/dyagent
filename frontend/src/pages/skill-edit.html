@@ -8,8 +8,19 @@
   <style>
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .form-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .triple-grid { display:grid; grid-template-columns: 1.2fr 1fr 0.8fr; gap: 12px; }
+    .triple-grid .label-cell { font-weight: 600; }
+    .triple-grid.input-row .form-group { margin: 0; }
+    .triple-grid.input-row input[type="text"],
+    .triple-grid.input-row select { width: 100%; }
+    .triple-grid .check-cell { display:flex; align-items:center; }
+    .triple-grid .check-cell label { display:flex; align-items:center; gap:8px; margin:0; }
+    .card { padding: 12px; margin-bottom: 12px; }
+    .card .form-group { margin-bottom: 10px; }
+    .card .form-group:last-child { margin-bottom: 0; }
     @media (max-width: 600px) {
       .form-grid, .form-grid-3 { grid-template-columns: 1fr; }
+      .triple-grid { grid-template-columns: 1fr; }
     }
     .tab-buttons { display: flex; gap: 8px; margin-bottom: 12px; }
     .tab-buttons .btn.active { background: var(--primary-color); color: #fff; }
@@ -57,32 +68,30 @@
 
     <!-- 基本設定 -->
     <section class="card">
-      <h3>基本設定</h3>
-      <div class="form-grid">
+      <div class="section-header">
+        <h3>基本設定</h3>
+      </div>
+      <div class="triple-grid" style="margin-bottom:6px;">
+        <div class="label-cell">技能名稱 <span style="color:var(--error-color);">*</span></div>
+        <div class="label-cell">技能格式</div>
+        <div class="label-cell">啟用此技能</div>
+      </div>
+      <div class="triple-grid input-row" style="margin-bottom:12px;">
         <div class="form-group">
-          <label for="name">技能名稱 <span style="color:var(--error-color);">*</span></label>
           <input id="name" type="text" placeholder="skill_name">
         </div>
         <div class="form-group">
-          <label for="skill_type">技能格式</label>
           <select id="skill_type">
             <option value="executable" selected>executable（可執行工具）</option>
+            <option value="webhook">webhook（HTTP 呼叫）</option>
             <option value="prompt">prompt（提示詞模板）</option>
             <option value="hybrid">hybrid（混合）</option>
           </select>
         </div>
-      </div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label for="type">執行類型</label>
-          <select id="type">
-            <option value="webhook" selected>webhook</option>
-            <option value="python">python</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label style="display:flex;align-items:center;gap:8px;margin-top:26px;">
-            <input type="checkbox" id="enabled" checked> 啟用此技能
+        <div class="form-group check-cell">
+          <label>
+            <input type="checkbox" id="enabled" checked>
+            啟用
           </label>
         </div>
       </div>
@@ -92,21 +101,35 @@
       </div>
     </section>
 
-    <!-- Claude Skills（提示詞模板 + ZIP） -->
-    <section id="panel-claude-skills" class="card">
-      <h3>Claude Skills 設定</h3>
+    <!-- Claude Skill（提示詞模板 + ZIP） -->
+    <section id="panel-claude-skills" class="card" style="display:none;">
+      <h3>Claude Skill</h3>
       <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;">
-        Claude Skills 格式相容。可上傳 ZIP 檔案或直接輸入提示詞模板。
+        支援直接輸入 SKILL.md 內容；若技能較複雜，可再匯入 ZIP（SKILL.md + scripts + references）。
       </p>
 
-      <!-- ZIP 上傳 -->
+      <!-- 提示詞模板 -->
       <div class="form-group">
+        <label for="prompt_template">提示詞模板（SKILL.md 內容）</label>
+        <textarea id="prompt_template" rows="8" placeholder="# My Skill
+
+當用戶需要 ... 時，執行以下步驟：
+
+1. ...
+2. ...
+3. ..."></textarea>
+        <small style="color:var(--text-secondary);">可只填 SKILL.md（不含 scripts），作為純提示詞技能使用。</small>
+      </div>
+
+      <!-- ZIP 上傳（hybrid 顯示） -->
+      <div id="zip-upload-block" class="form-group" style="display:none;">
         <label>上傳 ZIP 檔案（包含 SKILL.md + scripts/ + references/）</label>
         <div style="display:flex;gap:8px;align-items:center;">
           <input type="file" id="zip_file" accept=".zip" style="flex:1;">
           <button type="button" class="btn" id="btn-parse-zip">解析 ZIP</button>
         </div>
         <small style="color:var(--text-secondary);">上傳後將自動解析 SKILL.md 提示詞模板和 references/ 內容</small>
+        <small style="color:var(--text-secondary);display:block;">scripts/ 目前支援 <code>.py</code>、<code>.js/.mjs</code>、<code>.sh</code>；若使用 Node 腳本，伺服器需已安裝 <code>node</code>。</small>
       </div>
 
       <div id="zip-preview" class="preview-box" style="display:none;">
@@ -119,34 +142,11 @@
         <button type="button" class="btn" id="btn-clear-zip" style="margin-left:8px;">清除 ZIP</button>
       </div>
 
-      <!-- 提示詞模板 -->
-      <div class="form-group">
-        <label for="prompt_template">提示詞模板（SKILL.md 內容）</label>
-        <textarea id="prompt_template" rows="8" placeholder="# My Skill
-
-當用戶需要 ... 時，執行以下步驟：
-
-1. ...
-2. ...
-3. ..."></textarea>
-        <small style="color:var(--text-secondary);">Claude Skills 的核心提示詞，指導 LLM 如何執行此技能</small>
-      </div>
-
       <!-- References 顯示 -->
       <div class="form-group" id="references-section" style="display:none;">
         <label>References（參考文檔）</label>
         <div id="references-list" style="border:1px solid var(--border-color);border-radius:var(--radius);padding:8px;background:var(--card-bg);max-height:150px;overflow-y:auto;">
         </div>
-      </div>
-    </section>
-
-    <!-- 輸入結構 -->
-    <section class="card">
-      <h3>輸入結構（JSON Schema）</h3>
-      <div class="form-group">
-        <label for="input_schema">定義此技能接受的參數格式（可選）</label>
-        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
-        <small style="color:var(--text-secondary);">使用 JSON Schema 格式定義輸入參數。若為空則不驗證輸入。</small>
       </div>
     </section>
 
@@ -182,13 +182,23 @@
       </div>
     </section>
 
-    <!-- Python 設定 -->
+    <!-- Command 設定 -->
     <section id="panel-python" class="card" style="display:none;">
-      <h3>Python 設定</h3>
+      <h3>Command 設定</h3>
       <div class="form-group">
-        <label for="python_handler">Handler（package.module:function）</label>
-        <input id="python_handler" type="text" placeholder="my_pkg.skills.weather:run">
-        <small style="color:var(--text-secondary);">例如：my_pkg.skills.weather:run</small>
+        <label for="command">Command</label>
+        <input id="command" type="text" placeholder="uvx mcp-server-fetch 或 npx -y @wopal/mcp-server-hotnews">
+        <small style="color:var(--text-secondary);">支援白名單前綴：uvx、npx、python、node、java。</small>
+      </div>
+    </section>
+
+    <!-- 輸入結構 -->
+    <section id="panel-input-schema" class="card">
+      <h3>輸入結構（JSON Schema）</h3>
+      <div class="form-group">
+        <label for="input_schema">定義此技能接受的參數格式（可選）</label>
+        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
+        <small style="color:var(--text-secondary);">使用 JSON Schema 格式定義輸入參數。若為空則不驗證輸入。提示：可在欄位加入 <code>default</code>、<code>example</code> 或 <code>examples</code>，測試時可自動帶入。</small>
       </div>
     </section>
 
@@ -202,6 +212,7 @@
       <div class="tab-buttons">
         <button id="tab-form" class="btn active">表單輸入</button>
         <button id="tab-json" class="btn">JSON 輸入</button>
+        <button id="btn-generate-json-sample" class="btn" type="button">由 Schema 產生範例</button>
       </div>
 
       <div id="test-form"></div>
@@ -259,32 +270,66 @@
 
     const u = new URL(window.location.href);
     const id = u.searchParams.get('id');
+    const isEditMode = !!id;
     const $ = (sel) => document.getElementById(sel);
+    let inputSchemaTouched = false;
+    let lastInputSchemaText = '';
+
+    if (isEditMode) {
+      $('skill_type').disabled = true;
+      $('skill_type').title = '編輯模式不可切換技能格式';
+    }
+
+    function getInputSchemaText() {
+      const currentInputSchema = $('input_schema').value.trim();
+      if (currentInputSchema) {
+        lastInputSchemaText = currentInputSchema;
+        return currentInputSchema;
+      }
+      return (lastInputSchemaText || '').trim();
+    }
 
     // ========== 類型切換 ==========
     function syncTypeUI() {
       const skillType = $('skill_type').value;
-      const execType = $('type').value;
+      const showExecutable = skillType === 'executable';
+      const showWebhook = skillType === 'webhook';
+      const showPrompt = skillType === 'prompt';
+      const showHybrid = skillType === 'hybrid';
 
-      // Claude Skills 區塊：prompt 和 hybrid 顯示
-      const showClaudeSkills = skillType === 'prompt' || skillType === 'hybrid';
-      $('panel-claude-skills').style.display = showClaudeSkills ? 'block' : 'none';
+      $('panel-input-schema').style.display = showExecutable ? 'block' : 'none';
+      $('panel-python').style.display = showExecutable ? 'block' : 'none';
+      $('panel-webhook').style.display = showWebhook ? 'block' : 'none';
+      $('panel-claude-skills').style.display = (showPrompt || showHybrid) ? 'block' : 'none';
+      $('zip-upload-block').style.display = showHybrid ? 'block' : 'none';
 
-      // 執行設定：executable 和 hybrid 顯示
-      const showExec = skillType === 'executable' || skillType === 'hybrid';
-      $('panel-webhook').style.display = (showExec && execType === 'webhook') ? 'block' : 'none';
-      $('panel-python').style.display = (showExec && execType === 'python') ? 'block' : 'none';
-
-      // 執行類型選擇器
-      $('type').closest('.form-group').style.display = showExec ? 'block' : 'none';
+      if (!showHybrid) {
+        $('zip-preview').style.display = 'none';
+        if (!hasStoredZip) {
+          $('references-section').style.display = 'none';
+        }
+      } else if (hasStoredZip) {
+        $('has-zip-indicator').style.display = 'block';
+      }
     }
 
-    $('type').addEventListener('change', syncTypeUI);
     $('skill_type').addEventListener('change', syncTypeUI);
 
     // ========== ZIP 上傳相關 ==========
     let parsedZipData = null;
     let hasStoredZip = false;
+
+    function shouldRequireExecutableByForm() {
+      return $('skill_type').value === 'executable';
+    }
+
+    function goToSavedSkill(skillId) {
+      if (!skillId) {
+        window.location.href = '/pages/skills.html';
+        return;
+      }
+      window.location.href = `/pages/skill-edit.html?id=${encodeURIComponent(String(skillId))}`;
+    }
 
     async function parseZipFile() {
       const fileInput = $('zip_file');
@@ -305,15 +350,22 @@
         const res = await api.uploadFile('/skills/import-claude-skill-zip', formData);
         if (res.ok && res.parsed) {
           parsedZipData = res.parsed;
+          const parsedSkillMd = res.parsed.skill_md || {};
+          const parsedName = String(parsedSkillMd.name || '').trim();
+          const parsedDescription = String(parsedSkillMd.description || '').trim();
+          const parsedPrompt = String(parsedSkillMd.raw_content || parsedSkillMd.prompt_template || '').trim();
+
+          // Claude Skill ZIP 一律走 hybrid；執行類型先清空（非必要）
+          $('skill_type').value = 'hybrid';
+          if (parsedName) $('name').value = parsedName;
+          if (parsedDescription) $('description').value = parsedDescription;
+          if (parsedPrompt) $('prompt_template').value = parsedPrompt;
 
           // 顯示解析結果
           let infoHtml = '';
           if (res.parsed.skill_md) {
             infoHtml += `<div><strong>SKILL.md</strong>: ${res.parsed.skill_md.name || '(無名稱)'}</div>`;
-            // 自動填入 prompt_template
-            if (res.parsed.skill_md.template) {
-              $('prompt_template').value = res.parsed.skill_md.template;
-            }
+            infoHtml += `<div style="margin-top:4px;"><strong>description</strong>: ${res.parsed.skill_md.description || '(無描述)'}</div>`;
           }
           if (res.parsed.scripts && res.parsed.scripts.length > 0) {
             infoHtml += `<div style="margin-top:4px;"><strong>scripts/</strong>: ${res.parsed.scripts.map(s => s.filename).join(', ')}</div>`;
@@ -326,6 +378,7 @@
 
           $('zip-info').innerHTML = infoHtml || '(無內容)';
           $('zip-preview').style.display = 'block';
+          syncTypeUI();
           showSuccess('ZIP 解析成功');
         } else {
           showError(res.error || 'ZIP 解析失敗');
@@ -371,14 +424,19 @@
         $('name').value = r.name || '';
         $('enabled').checked = !!r.enabled;
         $('description').value = r.description || '';
-        $('type').value = r.type || 'webhook';
         $('skill_type').value = r.skill_type || 'executable';
         $('endpoint_url').value = r.endpoint_url || '';
         $('http_method').value = (r.http_method || 'POST').toUpperCase();
         $('timeout_ms').value = r.timeout_ms || 8000;
         $('headers').value = (r.headers && typeof r.headers === 'object') ? JSON.stringify(r.headers, null, 2) : '';
-        $('python_handler').value = r.python_handler || '';
-        $('input_schema').value = (r.input_schema && typeof r.input_schema === 'object') ? JSON.stringify(r.input_schema, null, 2) : '';
+        $('command').value = r.command || '';
+        const loadedInputSchema = (r.input_schema && typeof r.input_schema === 'object') ? JSON.stringify(r.input_schema, null, 2) : '';
+        if (!inputSchemaTouched) {
+          $('input_schema').value = loadedInputSchema;
+        }
+        if (loadedInputSchema) {
+          lastInputSchemaText = loadedInputSchema;
+        }
 
         // Claude Skills 欄位
         $('prompt_template').value = r.prompt_template || '';
@@ -401,14 +459,25 @@
     async function save() {
       try {
         const skillType = $('skill_type').value;
-        const execType = $('type').value;
+        const endpointUrl = $('endpoint_url').value.trim();
+        const command = $('command').value.trim();
+        const executableRequired = shouldRequireExecutableByForm();
+        const webhookRequired = skillType === 'webhook';
+
+        if (executableRequired && !command && !endpointUrl) {
+          showError('executable 類技能需填寫 Command 或 Endpoint URL。');
+          return;
+        }
+        if (webhookRequired && !endpointUrl) {
+          showError('webhook 類技能需填寫 Endpoint URL。');
+          return;
+        }
 
         const body = {
           name: $('name').value.trim(),
           enabled: $('enabled').checked,
           description: $('description').value.trim(),
           skill_type: skillType,
-          type: execType,
           input_schema: (() => {
             const raw = $('input_schema').value.trim();
             if (!raw) return {};
@@ -416,6 +485,8 @@
             catch (e) { showError('輸入結構需為合法 JSON'); throw e; }
           })(),
         };
+
+        if (skillType === 'executable' && command) body.command = command;
 
         // Claude Skills 欄位（prompt 或 hybrid）
         if (skillType === 'prompt' || skillType === 'hybrid') {
@@ -427,10 +498,10 @@
           }
         }
 
-        // 執行設定（executable 或 hybrid）
-        if (skillType === 'executable' || skillType === 'hybrid') {
-          if (execType === 'webhook') {
-            body.endpoint_url = $('endpoint_url').value.trim();
+        // Webhook 設定（webhook 或 executable+endpoint）
+        if (webhookRequired || (executableRequired && endpointUrl)) {
+          if (endpointUrl) {
+            body.endpoint_url = endpointUrl;
             body.http_method = ($('http_method').value || 'POST').toUpperCase();
             const tm = parseInt($('timeout_ms').value || '8000', 10);
             body.timeout_ms = isFinite(tm) && tm > 0 ? tm : 8000;
@@ -439,8 +510,6 @@
               try { body.headers = JSON.parse(hdr); }
               catch { showError('Headers 需為合法 JSON'); return; }
             }
-          } else if (execType === 'python') {
-            body.python_handler = $('python_handler').value.trim();
           }
         }
 
@@ -463,22 +532,25 @@
               const fd = new FormData();
               fd.append('file', zipFile);
               await api.uploadFile(`/skills/${created.id}/upload-zip`, fd);
+              showSuccess('已儲存');
+              setTimeout(() => goToSavedSkill(created.id), 500);
+              return;
             }
-            showSuccess('已儲存');
-            setTimeout(() => window.location.href = '/pages/skills.html', 600);
-            return;
           }
         } else {
           // 一般儲存（無 ZIP）
           if (id) {
             await api.put(`/skills/${id}`, body);
           } else {
-            await api.post('/skills', body);
+            const created = await api.post('/skills', body);
+            showSuccess('已儲存');
+            setTimeout(() => goToSavedSkill(created && created.id), 500);
+            return;
           }
         }
 
         showSuccess('已儲存');
-        setTimeout(() => window.location.href = '/pages/skills.html', 600);
+        setTimeout(() => goToSavedSkill(id), 500);
       } catch (e) {
         showError(e.message || '儲存失敗');
       }
@@ -770,7 +842,52 @@
       }
     }
 
-    $('input_schema').addEventListener('input', renderTestForm);
+    function _exampleValueFromSpec(spec) {
+      if (!spec || typeof spec !== 'object') return '';
+      if (Array.isArray(spec.examples) && spec.examples.length > 0) return spec.examples[0];
+      if (Object.prototype.hasOwnProperty.call(spec, 'example')) return spec.example;
+      if (Object.prototype.hasOwnProperty.call(spec, 'default')) return spec.default;
+      if (Array.isArray(spec.enum) && spec.enum.length > 0) return spec.enum[0];
+      const typeName = spec.type || 'string';
+      if (typeName === 'boolean') return false;
+      if (typeName === 'number' || typeName === 'integer') return 0;
+      if (typeName === 'array') return [];
+      if (typeName === 'object') return {};
+      return '';
+    }
+
+    function generatePayloadFromSchema(schema) {
+      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties || typeof schema.properties !== 'object') {
+        return {};
+      }
+      const payload = {};
+      Object.entries(schema.properties).forEach(([key, spec]) => {
+        payload[key] = _exampleValueFromSpec(spec);
+      });
+      return payload;
+    }
+
+    $('btn-generate-json-sample').addEventListener('click', () => {
+      try {
+        const schemaRaw = getInputSchemaText();
+        if (!schemaRaw) {
+          showError('請先填入 input_schema');
+          return;
+        }
+        const schema = JSON.parse(schemaRaw);
+        const samplePayload = generatePayloadFromSchema(schema);
+        $('test_payload').value = JSON.stringify(samplePayload, null, 2);
+        showSuccess('已依 Schema 產生測試範例');
+      } catch (error) {
+        showError((error && error.message) || 'Schema 解析失敗');
+      }
+    });
+
+    $('input_schema').addEventListener('input', () => {
+      inputSchemaTouched = true;
+      lastInputSchemaText = $('input_schema').value.trim();
+      renderTestForm();
+    });
 
     // ========== 測試歷史 ==========
     function formatTimestamp(ts) {

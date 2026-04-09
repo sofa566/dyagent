@@ -6,6 +6,8 @@ class AgentBase(BaseModel):
     name: str
     description: Optional[str] = ''
     model_type: str = 'cloud'
+    agent_class: str = 'tasked'
+    enabled: bool = True
 
 
 class AgentCreate(AgentBase):
@@ -15,6 +17,9 @@ class AgentCreate(AgentBase):
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    model_type: Optional[str] = None
+    agent_class: Optional[str] = None
+    enabled: Optional[bool] = None
     model_config: Optional[dict] = None
     mcp_config: Optional[dict] = None
     skills: Optional[list] = None
@@ -24,6 +29,7 @@ class AgentUpdate(BaseModel):
 
 class AgentResponse(AgentBase):
     id: str
+    is_router: bool
     model_config: dict
     mcp_config: dict
     skills: list

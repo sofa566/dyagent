@@ -12,6 +12,11 @@ from typing import Optional, List, Any, Tuple
 from datetime import datetime
 import uuid
 from collections import deque
+import os
+import shlex
+import subprocess
+import json as _json
+import re
 
 from src.services.llm_client import LLMClient
 from src.core.logging import get_logger
@@ -22,6 +27,7 @@ from src.core.config import settings
 from src.services.permission_service import PermissionService
 from src.services.mcp_client import MCPClient
 from src.services.react_synthesis import ReActSynthesis
+from src.services.skill_executor import execute_skill
 
 
 DEFAULT_LAST_METRICS = {
@@ -89,6 +95,63 @@ class ChatRouter:
 
         self._mcp_tool_name_cache[normalized_conn_name] = resolved_name
         return resolved_name
+
+    def _normalize_mcp_arguments(self, payload: dict) -> dict:
+        """目的：盡量將常見字串參數修復為合法 JSON 型別。
+        為什麼：模型偶爾把陣列寫成字串或函式樣式，會造成 MCP 工具參數型別錯誤。
+        """
+        if not isinstance(payload, dict):
+            return {}
+
+        normalized: dict[str, Any] = {}
+        for key, value in payload.items():
+            if not isinstance(value, str):
+                normalized[key] = value
+                continue
+
+            text = value.strip()
+            repaired: Any = value
+
+            # Case 1: 直接是 JSON 字串（如 "[1,2,3]"）
+            if text.startswith('[') or text.startswith('{'):
+                try:
+                    repaired = _json.loads(text)
+                    normalized[key] = repaired
+                    continue
+                except Exception:
+                    pass
+
+            # Case 2: 函式樣式（如 get_hot_news([1,3,5,6])）
+            func_like = re.match(r'^[A-Za-z_][A-Za-z0-9_]*\((.*)\)$', text)
+            if func_like:
+                inner = (func_like.group(1) or '').strip()
+                try:
+                    repaired = _json.loads(inner)
+                    normalized[key] = repaired
+                    continue
+                except Exception:
+                    list_like = re.search(r'(\[[\s\S]*\])', inner)
+                    if list_like:
+                        try:
+                            repaired = _json.loads(list_like.group(1))
+                            normalized[key] = repaired
+                            continue
+                        except Exception:
+                            pass
+
+            # Case 3: 字串中包含陣列片段
+            list_like = re.search(r'(\[[\s\S]*\])', text)
+            if list_like:
+                try:
+                    repaired = _json.loads(list_like.group(1))
+                    normalized[key] = repaired
+                    continue
+                except Exception:
+                    pass
+
+            normalized[key] = value
+
+        return normalized
 
     def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: Optional[str] = None, db: Optional[Session] = None, llm_overrides: Optional[dict] = None) -> str:
         """執行單輪回合並回傳助理文字。
@@ -579,7 +642,7 @@ class ChatRouter:
                         args=args,
                         env=env,
                         method="tools/call",
-                        params={"name": target_tool_name, "arguments": payload or {}},
+                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})},
                     ):
                         if isinstance(frame, dict) and frame.get("ok") is True:
                             self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -599,7 +662,7 @@ class ChatRouter:
                 return {"ok": False, "error": "mcp_invalid_base_url"}
             # 嘗試 WS 串流呼叫
             try:
-                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": payload or {}}, auth=auth if isinstance(auth, dict) else None):
+                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})}, auth=auth if isinstance(auth, dict) else None):
                     # 可在此寫入逐段事件，先保留最小行為：若拿到 result 即成功
                     if isinstance(frame, dict) and ("result" in frame or frame.get("ok") is True):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -649,7 +712,7 @@ class ChatRouter:
         marker = "[[CALL tool="
         idx = text.find(marker)
         if idx < 0:
-            return None
+            return self._maybe_handle_json_tool_calls(session_id=session_id, text=text)
         try:
             tail = text[idx + len(marker):]
             name_end = tail.find("]]")
@@ -705,6 +768,160 @@ class ChatRouter:
         except Exception:
             return None
 
+    def _maybe_handle_json_tool_calls(self, *, session_id: str, text: str) -> str | None:
+        """目的：解析並執行 JSON `tool_calls` 協定。
+        為什麼：部分模型會輸出 OpenAI-style tool_calls，而非 [[CALL ...]] 標記。
+        """
+        raw = str(text or '').strip()
+        if '"tool_calls"' not in raw:
+            return None
+
+        import json as _json
+
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start < 0 or end <= start:
+            return None
+
+        try:
+            obj = _json.loads(raw[start:end + 1])
+        except Exception:
+            return None
+
+        tool_calls = obj.get('tool_calls') if isinstance(obj, dict) else None
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return None
+
+        executed: list[tuple[str, dict, dict]] = []
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get('function') if isinstance(call.get('function'), dict) else {}
+            tool_name = str(fn.get('name') or '').strip()
+            if not tool_name:
+                continue
+            raw_args = fn.get('arguments')
+            payload: dict = {}
+            if isinstance(raw_args, dict):
+                payload = raw_args
+            elif isinstance(raw_args, str) and raw_args.strip():
+                try:
+                    loaded = _json.loads(raw_args)
+                    if isinstance(loaded, dict):
+                        payload = loaded
+                except Exception:
+                    payload = {}
+            result = self.call_tool(session_id=session_id, tool=tool_name, payload=payload)
+            if not result.get('ok'):
+                return f"抱歉，我嘗試使用工具「{tool_name}」但失敗：{result.get('error')}"
+            executed.append((tool_name, payload, result))
+
+        if not executed:
+            return None
+
+        # 若最後一個工具已直接產生可讀文字，優先直接回覆
+        last_result = executed[-1][2].get('result', {})
+        text_output = self._extract_text_from_tool_result(last_result)
+        if text_output:
+            return text_output
+
+        # 其餘情況交由模型整合工具輸出
+        try:
+            rows = []
+            for idx, (tool_name, payload, result) in enumerate(executed, start=1):
+                rows.append(
+                    f"[{idx}] 工具：{tool_name}\n"
+                    f"輸入：{_json.dumps(payload or {}, ensure_ascii=False)}\n"
+                    f"輸出：{_json.dumps(result.get('result', {}), ensure_ascii=False)[:6000]}"
+                )
+            prompt = (
+                "你是繁體中文助理。請根據以下工具結果，直接輸出最終可讀答案。\n"
+                "規則：\n"
+                "1) 不可輸出 tool_calls JSON\n"
+                "2) 不可提及內部協定或工具執行細節\n"
+                "3) 若資料不足要明確說明\n\n"
+                f"{chr(10).join(rows)}\n\n"
+                "請直接給最終回答："
+            )
+            final = self._llm.complete(prompt=prompt)
+            ans = (final or '').strip()
+            if ans:
+                return ans
+        except Exception:
+            pass
+
+        return None
+
+    def _extract_text_from_tool_result(self, result: Any) -> str:
+        """目的：從工具結果抽取最終文字。
+        為什麼：skills 常直接回傳 text 欄位，應優先輸出避免二次總結失真。
+        """
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, dict):
+            candidates = [
+                result.get('text'),
+                (result.get('result') or {}).get('text') if isinstance(result.get('result'), dict) else None,
+                result.get('output'),
+                result.get('content'),
+            ]
+            for item in candidates:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        return ''
+
+    def _run_skill_command(self, *, command: str, payload: dict[str, Any], timeout_ms: int) -> dict:
+        """目的：執行技能 command 並回傳工具結果格式。
+        為什麼：executable 技能需支援 uvx/npx/java 等命令，避免僅能用 python handler。
+        """
+        cmd_text = str(command or '').strip()
+        if not cmd_text:
+            return {"ok": False, "error": "empty_command"}
+        try:
+            args = shlex.split(cmd_text)
+        except Exception as e:
+            return {"ok": False, "error": f"invalid_command: {e}"}
+        if not args:
+            return {"ok": False, "error": "empty_command"}
+
+        allowed_prefixes = {'uvx', 'npx', 'node', 'java', 'python', 'python3'}
+        if args[0] not in allowed_prefixes:
+            return {"ok": False, "error": f"command_not_allowed: {args[0]}"}
+
+        env = os.environ.copy()
+        env['SKILL_INPUT'] = _json.dumps(payload or {}, ensure_ascii=False)
+        timeout_seconds = max(1, int((timeout_ms or 8000) / 1000))
+        try:
+            proc = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"command_timeout_{timeout_seconds}s"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+        stdout = str(proc.stdout or '').strip()
+        stderr = str(proc.stderr or '').strip()
+        if proc.returncode != 0:
+            return {
+                "ok": False,
+                "error": f"command_exit_{proc.returncode}",
+                "stdout": stdout[:2000],
+                "stderr": stderr[:2000],
+            }
+
+        if not stdout:
+            return {"ok": True, "result": {"text": "", "return_code": 0}}
+        try:
+            data = _json.loads(stdout)
+            return {"ok": True, "result": data}
+        except Exception:
+            return {"ok": True, "result": {"text": stdout[:6000], "return_code": 0}}
+
     # 公用：以白名單強制的工具呼叫（未來供工具規劃/LLM function call 整合）
     def call_tool(self, *, session_id: str, tool: str, payload: dict) -> dict:
         name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
@@ -730,7 +947,7 @@ class ChatRouter:
                         args=args,
                         env=env,
                         method="tools/call",
-                        params={"name": target_tool_name, "arguments": payload or {}},
+                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})},
                     )
                     if res.get("ok"):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=res)
@@ -746,7 +963,7 @@ class ChatRouter:
                     self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
                     return {"ok": False, "error": "mcp_invalid_base_url"}
                 try:
-                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=payload or {})
+                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=self._normalize_mcp_arguments(payload or {}))
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                     return {"ok": True, "result": res}
                 except Exception as e:
@@ -788,6 +1005,72 @@ class ChatRouter:
             except Exception:
                 pass
 
+            skill_type = str(getattr(row, 'skill_type', 'executable') or 'executable').strip()
+            has_zip_bundle = bool(getattr(row, 'zip_bundle', None))
+            should_use_claude_skill = skill_type in {'prompt', 'hybrid'} or has_zip_bundle
+            if should_use_claude_skill:
+                skill_exec = execute_skill(
+                    skill_id=str(getattr(row, 'id', '') or name),
+                    zip_bundle=getattr(row, 'zip_bundle', None),
+                    prompt_template=str(getattr(row, 'prompt_template', '') or ''),
+                    input_data=payload or {},
+                    execute_scripts=True,
+                )
+                if not skill_exec.ok:
+                    error_text = str(skill_exec.error or 'skill_zip_execution_failed')
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=error_text)
+                    return {"ok": False, "error": error_text}
+                failed_scripts = [x for x in (skill_exec.script_outputs or []) if not bool(x.get('ok'))]
+                if failed_scripts:
+                    err = f"script_execution_failed: {failed_scripts[0].get('script') or ''}".strip()
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=err)
+                    return {"ok": False, "error": err, "script_outputs": skill_exec.script_outputs}
+
+                merged_prompt_base = str(skill_exec.prompt or '').strip()
+                if not merged_prompt_base:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error="empty_prompt_template")
+                    return {"ok": False, "error": "empty_prompt_template"}
+                import json as _json
+                prompt_payload = payload or {}
+                if isinstance(prompt_payload, dict):
+                    prompt_payload = {k: v for k, v in prompt_payload.items() if k not in {'_script', '_args'}}
+                payload_json = _json.dumps(prompt_payload or {}, ensure_ascii=False)
+                merged_prompt = (
+                    f"{merged_prompt_base}\n\n"
+                    "[技能輸入(JSON)]\n"
+                    f"{payload_json}\n\n"
+                    "請嚴格依模板要求輸出最終結果。"
+                )
+                try:
+                    out = self._llm.complete(prompt=merged_prompt, tier=None)
+                    result = {
+                        "ok": True,
+                        "result": {
+                            "text": str(out or ""),
+                            "mode": "claude_skill",
+                            "script_outputs": skill_exec.script_outputs or [],
+                        },
+                    }
+                    self.write_event_tool_result(session_id=session_id, tool=name, result=result)
+                    return result
+                except Exception as e:
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
+                    return {"ok": False, "error": str(e)}
+
+            try:
+                timeout_ms = int(getattr(row, 'timeout_ms', 8000) or 8000)
+            except Exception:
+                timeout_ms = 8000
+
+            command_text = str(getattr(row, 'command', '') or '').strip()
+            if command_text:
+                result = self._run_skill_command(command=command_text, payload=payload or {}, timeout_ms=timeout_ms)
+                if bool(result.get('ok')):
+                    self.write_event_tool_result(session_id=session_id, tool=name, result=result)
+                    return result
+                self.write_event_tool_error(session_id=session_id, tool=name, error=str(result.get('error')))
+                return result
+
             if str(getattr(row, 'type', 'webhook')) == 'python':
                 # 本地 Python handler：package.module:function
                 handler = str(getattr(row, 'python_handler', '') or '').strip()
@@ -812,10 +1095,6 @@ class ChatRouter:
                 url = str(getattr(row, 'endpoint_url', '') or '').strip()
                 method = str(getattr(row, 'http_method', 'POST') or 'POST').upper()
                 headers = getattr(row, 'headers', {}) or {}
-                try:
-                    timeout_ms = int(getattr(row, 'timeout_ms', 8000) or 8000)
-                except Exception:
-                    timeout_ms = 8000
                 if not url:
                     self.write_event_tool_error(session_id=session_id, tool=name, error="invalid_webhook_url")
                     return {"ok": False, "error": "invalid_webhook_url"}

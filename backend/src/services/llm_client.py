@@ -87,6 +87,20 @@ class LLMClient:
         若未指定 tier，使用 Session 層級或系統預設層級。
         """
         route = (tier or getattr(self, "_session_tier", None) or self._default_tier).lower()
+        if self._lc_available:
+            try:
+                chunks = list(self._stream_via_langchain(prompt=prompt, tier=route))
+                merged = "".join([c for c in chunks if isinstance(c, str)])
+                if merged:
+                    return merged
+            except Exception as error:
+                self._log.warning("llm.complete.langchain.fallback", error=str(error), tier=route)
+
+        self._last_route = {
+            "tier": route,
+            "provider": "",
+            "fallback": True,
+        }
         if route == "onprem":
             return self.onprem_default(prompt=prompt)
         return self.cloud_default(prompt=prompt)

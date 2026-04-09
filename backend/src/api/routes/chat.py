@@ -12,9 +12,11 @@ import re
 from functools import lru_cache
 from decimal import Decimal
 from datetime import datetime
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from src.core.database import get_db
-from src.models import User, Agent, Conversation, Message, LlmTurn, MultiAgentSession, MultiAgentTask
+from src.models import User, Agent, Conversation, Message, LlmTurn, MultiAgentSession, MultiAgentTask, SkillEntry
 from src.models.events import EventPart
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
@@ -27,6 +29,42 @@ from src.core.config import settings
 
 router = APIRouter()
 _log = get_logger("api.chat")
+
+REFERENCE_FETCH_TIMEOUT_SECONDS = 8
+REFERENCE_FETCH_MAX_CHARS = 6000
+REFERENCE_FETCH_MAX_URLS = 2
+
+
+def _strip_system_reminder_text(text: str) -> str:
+    """目的：移除不應出現在使用者回覆中的 system reminder 文本。
+    為什麼：避免模型誤回顯執行環境提醒，污染最終對話內容。
+    """
+    raw = str(text or '')
+    if not raw:
+        return ''
+    cleaned = re.sub(r'<system-reminder>[\s\S]*?</system-reminder>', '', raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r'</?system-reminder>', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'^\s*Your operational mode has changed from plan to build\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r'^\s*You are no longer in read-only mode\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r'^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    return cleaned
+
+
+def _strip_tool_protocol_text(text: str) -> str:
+    """目的：移除工具呼叫協定殘留，避免回覆內容被內部協定污染。
+    為什麼：模型可能輸出完整或不完整的 tool_calls JSON，需要統一清理策略。
+    """
+    out = str(text or '')
+    if not out:
+        return ''
+    out = re.sub(r"\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?", "", out)
+    out = re.sub(r"```json\s*\{[\s\S]*?\}\s*```", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"```json[\s\S]*?\"tool_calls\"[\s\S]*?```", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\{\s*\"tool_calls\"\s*:\s*\[[\s\S]*?\]\s*\}", "", out)
+    out = re.sub(r"\{\s*\"tool_calls\"\s*:\s*\[[\s\S]*?\]\s*", "", out)
+    out = re.sub(r"\{\s*\"tool_calls\"\s*:\s*\[[^\n\r]*", "", out)
+    out = _strip_system_reminder_text(out)
+    return out.strip()
 
 
 async def _stream_complete_async(llm_client: Any, *, prompt: str, tier: str | None):
@@ -179,7 +217,7 @@ def _apply_custom_toolcall_guide(router_obj: ChatRouter, agent: Agent) -> None:
         pass
 
 
-def _build_capability_prompt(*, router_obj: ChatRouter, agent_ctx: dict[str, Any], message: str) -> str:
+def _build_capability_prompt(*, router_obj: ChatRouter, agent_ctx: dict[str, Any], message: str, history_context: str = '') -> str:
     """目的：統一能力前綴與工具指引拼接。
     為什麼：避免不同路由在 prompt 組裝上出現不一致。
     """
@@ -192,7 +230,73 @@ def _build_capability_prompt(*, router_obj: ChatRouter, agent_ctx: dict[str, Any
     rag_prefix = f"\n[RAG] sources={','.join(rag.get('sources', []) or [])} topK={int(rag.get('topK', 5) or 5)}" if rag.get('enabled') else ''
     prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
     guide = router_obj._render_toolcall_guide(agent_ctx)
+    history_text = str(history_context or '').strip()
+    if history_text:
+        return f"{prefix}{guide}\n{history_text}\n\n[Current User Message]\n{message}"
     return f"{prefix}{guide}\n{message}"
+
+
+def _build_recent_history_context(
+    *,
+    db: Session,
+    conversation_id: Any,
+    max_messages: int,
+    max_tokens: int,
+    include_tool_text: bool,
+    exclude_message_id: Any | None = None,
+) -> str:
+    """目的：組裝同一會話最近歷史，供本輪 prompt 延續上下文。
+    為什麼：目前模型呼叫採單輪輸入，需顯式注入歷史才能維持前後文連貫。
+    """
+    if max_messages <= 0 or max_tokens <= 0:
+        return ''
+
+    try:
+        scan_limit = max(max_messages * 4, max_messages + 4)
+        rows = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+        ).order_by(Message.timestamp.desc()).limit(scan_limit).all()
+    except Exception:
+        return ''
+
+    picked: list[tuple[str, str]] = []
+    used_tokens = 0
+    excluded_id = str(exclude_message_id) if exclude_message_id is not None else ''
+
+    for row in rows:
+        role = str(getattr(row, 'role', '') or '').strip().lower()
+        if role not in {'user', 'assistant'}:
+            continue
+        row_id = str(getattr(row, 'id', '') or '')
+        if excluded_id and row_id == excluded_id:
+            continue
+
+        raw_content = str(getattr(row, 'content', '') or '').strip()
+        if not raw_content:
+            continue
+        content = raw_content if include_tool_text else _strip_tool_protocol_text(raw_content)
+        content = content.strip()
+        if not content:
+            continue
+
+        entry_tokens = _estimate_token_count(content) + 8
+        if (used_tokens + entry_tokens) > max_tokens:
+            break
+
+        used_tokens += entry_tokens
+        picked.append((role, content[:1200]))
+        if len(picked) >= max_messages:
+            break
+
+    if not picked:
+        return ''
+
+    picked.reverse()
+    lines = ['[Conversation History]', '以下為同一會話最近對話，請延續上下文回答：']
+    for role, content in picked:
+        label = '使用者' if role == 'user' else '助理'
+        lines.append(f"- {label}: {content}")
+    return '\n'.join(lines)
 
 
 def _resolve_agent_system_prompt_snapshot(agent: Agent) -> str:
@@ -444,15 +548,105 @@ def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
 
 
 def _pick_worker_by_rules(*, workers: list[Agent], message: str) -> Agent | None:
+    """目的：用名稱與描述關鍵詞做快速規則匹配。
+    為什麼：在向量/LLM 路由前先走低成本判斷，但需避免過短 token 造成誤判。
+    """
     lower_msg = str(message or '').lower()
     for worker in workers:
         name = str(worker.name or '').strip().lower()
         desc = str(worker.description or '').strip().lower()
         if name and name in lower_msg:
             return worker
-        if desc and any(token and token in lower_msg for token in desc.split()[:8]):
+        desc_tokens = [token for token in desc.split()[:8] if token and len(token) >= 2 and not token.isdigit()]
+        if desc_tokens and any(token in lower_msg for token in desc_tokens):
             return worker
     return None
+
+
+def _normalize_reference_url(raw_url: str) -> str:
+    """目的：將常見參考網址正規化為可讀取內容端點。
+    為什麼：Google Docs edit 連結通常無法直接抓正文，需轉成 export 端點。
+    """
+    candidate = str(raw_url or '').strip()
+    if not candidate:
+        return ''
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return ''
+    if parsed.scheme not in {'http', 'https'}:
+        return ''
+    host = (parsed.netloc or '').lower()
+    path = parsed.path or ''
+    if 'docs.google.com' in host and '/document/d/' in path:
+        parts = path.split('/document/d/', 1)
+        tail = parts[1] if len(parts) > 1 else ''
+        doc_id = tail.split('/', 1)[0].strip()
+        if doc_id:
+            return f'https://docs.google.com/document/d/{doc_id}/export?format=txt'
+    return candidate
+
+
+def _extract_reference_urls(message: str) -> list[str]:
+    """目的：從訊息中抽取參考網址（含附加輸入區塊）。
+    為什麼：在工具不可用時，後端可先抓取網頁文字，讓技能仍可處理內容。
+    """
+    text = str(message or '')
+    if not text:
+        return []
+    url_pattern = re.compile(r'https?://[^\s)]+', re.IGNORECASE)
+    urls = []
+    for match in url_pattern.findall(text):
+        normalized = _normalize_reference_url(match)
+        if normalized and normalized not in urls:
+            urls.append(normalized)
+        if len(urls) >= REFERENCE_FETCH_MAX_URLS:
+            break
+    return urls
+
+
+def _strip_html_tags(html: str) -> str:
+    text = re.sub(r'<script[\s\S]*?</script>', ' ', html, flags=re.IGNORECASE)
+    text = re.sub(r'<style[\s\S]*?</style>', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def _fetch_reference_text(url: str) -> str:
+    """目的：抓取單一參考網址文字內容。
+    為什麼：補足未配置 mcp:fetch 的代理者，仍可使用外部參考內容回答。
+    """
+    req = Request(url, headers={'User-Agent': 'dyagent/1.0'})
+    with urlopen(req, timeout=REFERENCE_FETCH_TIMEOUT_SECONDS) as response:  # nosec B310
+        content_type = str(response.headers.get('Content-Type') or '').lower()
+        raw = response.read(REFERENCE_FETCH_MAX_CHARS * 2)
+    text = raw.decode('utf-8', errors='ignore')
+    if 'text/html' in content_type:
+        text = _strip_html_tags(text)
+    text = text.strip()
+    return text[:REFERENCE_FETCH_MAX_CHARS]
+
+
+def _inject_reference_content(message: str) -> str:
+    """目的：將可取得的參考網頁內容注入到訊息中。
+    為什麼：當模型需改寫文章時，若只有網址無正文會降低可用性。
+    """
+    urls = _extract_reference_urls(message)
+    if not urls:
+        return message
+    blocks = []
+    for url in urls:
+        try:
+            fetched = _fetch_reference_text(url)
+        except Exception as error:
+            blocks.append(f'[參考內容抓取失敗]\n- url: {url}\n- error: {str(error)[:180]}')
+            continue
+        if fetched:
+            blocks.append(f'[參考內容]\n- url: {url}\n{fetched}')
+    if not blocks:
+        return message
+    return f"{message}\n\n[系統預抓參考內容]\n" + "\n\n".join(blocks)
 
 
 def _pick_worker_by_embedding(*, workers: list[Agent], message: str) -> tuple[Agent | None, float]:
@@ -505,11 +699,10 @@ def _pick_worker_by_llm(*, workers: list[Agent], message: str) -> Agent | None:
     return None
 
 
-def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tuple[Agent | None, str]:
-    """目的：以混合路由策略挑選工作代理者。
-    為什麼：先用快路徑降低延遲，再以語意比對與模型裁決補齊準確率。
+def _pick_worker_without_default(*, workers: list[Agent], message: str) -> tuple[Agent | None, str]:
+    """目的：在指定候選清單中挑選最適合代理者，未命中時不做預設回退。
+    為什麼：主流程需要先嘗試 tasked，若沒有明確命中再回退 public，不可過早固定到任一 tasked。
     """
-    workers = db.query(Agent).filter(Agent.id != router_agent.id).all()
     if not workers:
         return None, 'worker_not_found'
 
@@ -526,11 +719,184 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
     if embedded is not None and score >= threshold:
         return embedded, 'embedding_match'
 
+    short_message = len(str(message or '').strip()) <= 10
+    if short_message:
+        return None, 'short_message_no_judge'
+
     judged = _pick_worker_by_llm(workers=workers, message=message)
     if judged is not None:
         return judged, 'llm_judge'
 
-    return workers[0], 'default_fallback'
+    return None, 'no_confident_match'
+
+
+def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tuple[Agent | None, str]:
+    """目的：以混合路由策略挑選工作代理者。
+    為什麼：先用快路徑降低延遲，再以語意比對與模型裁決補齊準確率。
+    """
+    tasked_workers = db.query(Agent).filter(
+        Agent.id != router_agent.id,
+        Agent.enabled == True,  # noqa: E712
+        Agent.agent_class == 'tasked',
+    ).all()
+    public_workers = db.query(Agent).filter(
+        Agent.id != router_agent.id,
+        Agent.enabled == True,  # noqa: E712
+        Agent.agent_class == 'public',
+    ).all()
+
+    explicit = _pick_explicit_named_worker(message=message, workers=(public_workers + tasked_workers))
+    if explicit is not None:
+        worker_class = str(getattr(explicit, 'agent_class', '') or '')
+        if worker_class == 'public':
+            return explicit, 'public_explicit_mention'
+        if worker_class == 'tasked':
+            return explicit, 'tasked_explicit_mention'
+        return explicit, 'explicit_mention'
+
+    if _should_prefer_humanizer_public(message=message):
+        preferred_public = _pick_public_with_skill(db=db, public_workers=public_workers, skill_name='humanizer-zh-tw')
+        if preferred_public is not None:
+            return preferred_public, 'public_skill_hint_humanizer'
+
+    short_plain_message = len(str(message or '').strip()) <= 10
+    if short_plain_message and public_workers:
+        return public_workers[0], 'public_short_message_prefer'
+
+    worker, reason = _pick_worker_without_default(workers=tasked_workers, message=message)
+    if worker is not None:
+        return worker, f'tasked_{reason}'
+
+    public_worker, public_reason = _pick_worker_without_default(workers=public_workers, message=message)
+    if public_worker is not None:
+        return public_worker, f'public_{public_reason}'
+    if public_workers:
+        return public_workers[0], 'public_default_fallback'
+
+    if tasked_workers:
+        return tasked_workers[0], 'tasked_default_fallback'
+
+    return None, 'worker_not_found'
+
+
+def _should_prefer_humanizer_public(*, message: str) -> bool:
+    """目的：判斷是否屬於文案潤稿/人味改寫需求。
+    為什麼：這類需求應優先交給配置 humanizer 技能的 public 代理，避免被部門任務描述誤導。
+    """
+    text = str(message or '').strip().lower()
+    if not text:
+        return False
+    hints = [
+        '像真人', '人味', '口語', '改寫', '潤稿', '修文', '文案', 'humanizer',
+    ]
+    return any(h in text for h in hints)
+
+
+def _pick_explicit_named_worker(*, message: str, workers: list[Agent]) -> Agent | None:
+    """目的：優先解析使用者明確指名的代理者。
+    為什麼：當使用者直接指定「由某代理回覆」時，應優先遵從而非規則匹配其它部門代理。
+    """
+    raw_text = str(message or '').strip().lower()
+    if not raw_text:
+        return None
+
+    normalized_text = re.sub(r'\s+', '', raw_text)
+    for worker in workers:
+        name = str(worker.name or '').strip().lower()
+        if not name:
+            continue
+        if name in raw_text:
+            return worker
+        compact_name = re.sub(r'\s+', '', name)
+        if compact_name and compact_name in normalized_text:
+            return worker
+    return None
+
+
+def _pick_public_with_skill(*, db: Session, public_workers: list[Agent], skill_name: str) -> Agent | None:
+    """目的：在 public 候選中挑選具備指定技能的代理。
+    為什麼：技能導向任務（如 humanizer）需要優先路由到已綁定技能的 public 代理。
+    """
+    target = str(skill_name or '').strip().lower()
+    if not target:
+        return None
+
+    for worker in public_workers:
+        names = _extract_agent_skill_names(db=db, agent=worker)
+        if any(str(n).strip().lower() == target for n in names):
+            return worker
+    return None
+
+
+def _extract_agent_skill_names(*, db: Session, agent: Agent) -> list[str]:
+    """目的：彙整代理綁定技能名稱（id 與名稱混用相容）。
+    為什麼：部分歷史資料把 skills 直接存名稱，需兼容才能正確做技能導向路由。
+    """
+    names: list[str] = []
+
+    model_cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
+    skill_refs = [str(x) for x in list((model_cfg or {}).get('skill_ids') or []) if x]
+    if skill_refs:
+        id_like: list[str] = []
+        non_id_like: list[str] = []
+        for ref in skill_refs:
+            try:
+                uuid.UUID(ref)
+                id_like.append(ref)
+            except Exception:
+                non_id_like.append(ref)
+        if id_like:
+            rows = db.query(SkillEntry).filter(SkillEntry.id.in_(id_like), SkillEntry.enabled == True).all()  # noqa: E712
+            names.extend([str(r.name or '').strip() for r in rows if str(r.name or '').strip()])
+        if non_id_like:
+            rows2 = db.query(SkillEntry).filter(SkillEntry.name.in_(non_id_like), SkillEntry.enabled == True).all()  # noqa: E712
+            names.extend([str(r.name or '').strip() for r in rows2 if str(r.name or '').strip()])
+
+    raw_skills = agent.skills if isinstance(agent.skills, list) else []
+    for item in raw_skills:
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+        elif isinstance(item, dict):
+            name = str(item.get('name') or '').strip()
+            if name:
+                names.append(name)
+
+    # 兼容 agent.skills 內直接放技能名稱，但需過濾停用技能
+    text_names = [n for n in names if n]
+    if text_names:
+        rows3 = db.query(SkillEntry).filter(SkillEntry.name.in_(list(dict.fromkeys(text_names))), SkillEntry.enabled == True).all()  # noqa: E712
+        valid_names = {str(r.name or '').strip() for r in rows3 if str(r.name or '').strip()}
+        names = [n for n in names if n in valid_names]
+
+    return list(dict.fromkeys([n for n in names if n]))
+
+
+def _is_agent_ready_for_chat(*, db: Session, agent: Agent) -> bool:
+    """目的：檢查代理者目前是否具備可用 LLM 路由。
+    為什麼：當 public 代理尚未配置完成時，需回退到 master，避免使用者收到 no_route 降級訊息。
+    """
+    try:
+        overrides = _build_agent_overrides(agent)
+        tier = str(overrides.get('tier') or '').strip().lower()
+        if tier == 'cloud':
+            provider = str(overrides.get('provider') or '').strip()
+            model = str(overrides.get('model') or '').strip()
+            return bool(provider and model)
+        if tier == 'onprem':
+            provider = str(overrides.get('onprem_provider') or '').strip()
+            base_url = str(overrides.get('onprem_base_url') or '').strip()
+            model = str(overrides.get('model') or '').strip()
+            return bool(provider and base_url and model)
+
+        provider = str(overrides.get('provider') or '').strip()
+        model = str(overrides.get('model') or '').strip()
+        if provider and model:
+            return True
+        onprem_provider = str(overrides.get('onprem_provider') or '').strip()
+        onprem_base_url = str(overrides.get('onprem_base_url') or '').strip()
+        return bool(onprem_provider and onprem_base_url and model)
+    except Exception:
+        return False
 
 
 def _write_event_part_safe(*, db: Session, conversation_id: str, type_: str, payload: dict[str, Any]) -> None:
@@ -862,6 +1228,8 @@ async def stream_tool(
 async def chat_stream(
     agent_id: str,  # 代理者的唯一标识符，用于识别具体的AI代理
     message: str,  # 用户输入的消息内容，需要AI代理处理和回应
+    conversation_id: str | None = None,
+    persist_user_message: bool = True,
     db: Session = Depends(get_db),  # 数据库会话依赖，用于数据库操作
     current_user: User = Depends(get_current_user),  # 当前用户依赖，获取当前登录用户信息
 ):
@@ -872,17 +1240,32 @@ async def chat_stream(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
+    if not bool(getattr(agent, 'enabled', True)):
+        raise validation_error('代理者已停用')
 
     if not message or len(message.strip()) == 0:
         raise validation_error('Message cannot be empty')
 
     # Why: 串流與同步路徑共用同一會話/寫盤相容策略，避免切頁後資料差異。
-    conversation = _query_latest_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
+    conversation = None
+    if conversation_id:
+        try:
+            conversation = db.query(Conversation).filter(
+                Conversation.id == conversation_id,
+                Conversation.user_id == current_user.id,
+                Conversation.agent_id == agent_id,
+            ).first()
+        except Exception:
+            conversation = None
+    if conversation is None:
+        conversation = _query_latest_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
     if not conversation:
         conversation = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
 
-    user_message = Message(conversation_id=conversation.id, role='user', content=message)
-    _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_message)
+    user_message: Message | None = None
+    if persist_user_message:
+        user_message = Message(conversation_id=conversation.id, role='user', content=message)
+        _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_message)
 
     router = ChatRouter()
     overrides = _build_agent_overrides(agent)
@@ -894,7 +1277,23 @@ async def chat_stream(
         router._llm.init_for_session(session_id=str(conversation.id), preferred_tier=overrides.get('tier'))
 
     agent_ctx = router._prepare_integrations(db=db, agent_id=str(agent.id))
-    composed_user_message = _build_capability_prompt(router_obj=router, agent_ctx=agent_ctx, message=message)
+    history_mode = str(getattr(settings, 'CHAT_HISTORY_MODE', 'recent') or 'recent').strip().lower()
+    history_context = ''
+    if history_mode == 'recent':
+        history_context = _build_recent_history_context(
+            db=db,
+            conversation_id=conversation.id,
+            max_messages=max(0, int(getattr(settings, 'CHAT_HISTORY_MAX_MESSAGES', 8) or 0)),
+            max_tokens=max(0, int(getattr(settings, 'CHAT_HISTORY_MAX_TOKENS', 2500) or 0)),
+            include_tool_text=bool(getattr(settings, 'CHAT_HISTORY_INCLUDE_TOOL_TEXT', False)),
+            exclude_message_id=(user_message.id if user_message is not None else None),
+        )
+    composed_user_message = _build_capability_prompt(
+        router_obj=router,
+        agent_ctx=agent_ctx,
+        message=message,
+        history_context=history_context,
+    )
     started_at = time.monotonic()
     system_prompt_snapshot = _resolve_agent_system_prompt_snapshot(agent)
     turn_status = 'success'
@@ -920,7 +1319,7 @@ async def chat_stream(
                 db=db,
                 conversation_id=str(conversation.id),
                 agent_id=str(agent.id),
-                user_message_id=str(user_message.id),
+                user_message_id=(str(user_message.id) if user_message is not None else None),
                 assistant_message_id=None,
                 provider=provider,
                 model=model,
@@ -1016,10 +1415,68 @@ async def chat_stream(
             )
             async for obs_delta in _stream_complete_async(router._llm, prompt=observe_prompt, tier=overrides.get('tier')):
                 if isinstance(obs_delta, str) and obs_delta:
-                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(obs_delta, ensure_ascii=False)} }}\n\n"
+                    cleaned_obs = _strip_system_reminder_text(obs_delta)
+                    if cleaned_obs:
+                        yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(cleaned_obs, ensure_ascii=False)} }}\n\n"
+
+        def _extract_readable_text_from_tool_result(result_obj: Any) -> str:
+            """目的：從工具回傳中提取可直接回覆的文字內容。
+            為什麼：若工具本身已產生最終文本，應直接回傳，避免再經 LLM 二次摘要失真。
+            """
+            if isinstance(result_obj, str):
+                return _strip_system_reminder_text(result_obj).strip()
+            if isinstance(result_obj, dict):
+                direct_text = result_obj.get('text')
+                if isinstance(direct_text, str) and direct_text.strip():
+                    return _strip_system_reminder_text(direct_text).strip()
+                nested = result_obj.get('result')
+                if isinstance(nested, dict):
+                    nested_text = nested.get('text')
+                    if isinstance(nested_text, str) and nested_text.strip():
+                        return _strip_system_reminder_text(nested_text).strip()
+                content = result_obj.get('content')
+                if isinstance(content, list):
+                    parts = [
+                        str(c.get('text') or '').strip()
+                        for c in content
+                        if isinstance(c, dict) and str(c.get('type') or '').strip() == 'text' and str(c.get('text') or '').strip()
+                    ]
+                    if parts:
+                        return _strip_system_reminder_text('\n'.join(parts)).strip()
+            return ''
+
+        async def _try_humanizer_chain(source_tool: str, source_text: str) -> str | None:
+            """目的：在抓取網頁後自動接續 humanizer 技能。
+            為什麼：人性化改寫需求常先 fetch 內容，再做改寫，若中斷在 fetch 會只得到摘要。
+            """
+            if source_tool != 'mcp:fetch':
+                return None
+            if 'humanizer-zh-tw' not in getattr(router, '_allowed_tools', set()):
+                return None
+            if not _should_prefer_humanizer_public(message=message):
+                return None
+            candidate_text = str(source_text or '').strip()
+            if not candidate_text:
+                return None
+            try:
+                humanizer_result = await router.call_tool_async(
+                    session_id=str(conversation.id),
+                    tool='humanizer-zh-tw',
+                    payload={'text': candidate_text},
+                    db=db,
+                    agent_id=str(agent.id),
+                )
+                if not bool((humanizer_result or {}).get('ok')):
+                    return None
+                return _extract_readable_text_from_tool_result((humanizer_result or {}).get('result')) or None
+            except Exception:
+                return None
 
         async for delta in _stream_complete_async(router._llm, prompt=composed_user_message, tier=overrides.get('tier')):
             if not isinstance(delta, str):
+                continue
+            delta = _strip_system_reminder_text(delta)
+            if not delta:
                 continue
             buffer += delta
             if not detected_tool:
@@ -1114,8 +1571,12 @@ async def chat_stream(
                             if successful_result_text is not None:
                                 yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                                async for evt in _observe_and_answer(tool_name, successful_result_text):
-                                    yield evt
+                                chained = await _try_humanizer_chain(tool_name, successful_result_text)
+                                if isinstance(chained, str) and chained.strip():
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
+                                else:
+                                    async for evt in _observe_and_answer(tool_name, successful_result_text):
+                                        yield evt
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                         except TimeoutError:
@@ -1185,8 +1646,12 @@ async def chat_stream(
                             if successful_result_text is not None:
                                 yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                                async for evt in _observe_and_answer(tool_name, successful_result_text):
-                                    yield evt
+                                chained = await _try_humanizer_chain(tool_name, successful_result_text)
+                                if isinstance(chained, str) and chained.strip():
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
+                                else:
+                                    async for evt in _observe_and_answer(tool_name, successful_result_text):
+                                        yield evt
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                         except TimeoutError:
@@ -1206,10 +1671,18 @@ async def chat_stream(
                             ok_flag = bool((res or {}).get('ok', False))
                             yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                             if ok_flag:
-                                result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                                async for evt in _observe_and_answer(tool_name, result_text):
-                                    yield evt
+                                result_obj = (res or {}).get('result', {})
+                                direct_text = _extract_readable_text_from_tool_result(result_obj)
+                                chained = await _try_humanizer_chain(tool_name, direct_text or _json.dumps(result_obj, ensure_ascii=False))
+                                if isinstance(chained, str) and chained.strip():
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
+                                elif direct_text:
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                                else:
+                                    result_text = _json.dumps(result_obj, ensure_ascii=False)
+                                    async for evt in _observe_and_answer(tool_name, result_text):
+                                        yield evt
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                     else:
@@ -1229,10 +1702,18 @@ async def chat_stream(
                     ok_flag = bool((res or {}).get('ok', False))
                     yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                     if ok_flag:
-                        result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
                         yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                        async for evt in _observe_and_answer(tool_name, result_text):
-                            yield evt
+                        result_obj = (res or {}).get('result', {})
+                        direct_text = _extract_readable_text_from_tool_result(result_obj)
+                        chained = await _try_humanizer_chain(tool_name, direct_text or _json.dumps(result_obj, ensure_ascii=False))
+                        if isinstance(chained, str) and chained.strip():
+                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
+                        elif direct_text:
+                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                        else:
+                            result_text = _json.dumps(result_obj, ensure_ascii=False)
+                            async for evt in _observe_and_answer(tool_name, result_text):
+                                yield evt
                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                         return
                     if not ok_flag:
@@ -1261,10 +1742,7 @@ async def chat_stream(
 
         def _sanitize_text(text: str) -> str:
             out = str(text or '')
-            out = re.sub(r"\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?", "", out)
-            out = re.sub(r"```json\s*\{[\s\S]*?\}\s*```", "", out, flags=re.IGNORECASE)
-            out = re.sub(r"\{\s*\"tool_calls\"\s*:\s*\[[\s\S]*?\]\s*\}", "", out)
-            return out.strip()
+            return _strip_tool_protocol_text(out)
 
         async def _hb_loop():
             nonlocal last_emit, running
@@ -1332,6 +1810,8 @@ async def chat_stream(
                 pass
             try:
                 merged = _sanitize_text(''.join(assistant_chunks))
+                if (not merged) and assistant_chunks:
+                    merged = '系統已完成處理，但回覆內容被安全過濾。請再試一次，或改用更明確的問題。'
                 assistant_message_id: str | None = None
                 if merged:
                     assistant_message = Message(conversation_id=conversation.id, role='assistant', content=merged, timestamp=datetime.utcnow())
@@ -1360,7 +1840,7 @@ async def chat_stream(
                     db=db,
                     conversation_id=str(conversation.id),
                     agent_id=str(agent.id),
-                    user_message_id=str(user_message.id),
+                    user_message_id=(str(user_message.id) if user_message is not None else None),
                     assistant_message_id=assistant_message_id,
                     provider=provider,
                     model=model,
@@ -1715,12 +2195,7 @@ async def _multi_agent_orchestrator(
 
     def _sanitize(text: str) -> str:
         """移除 LLM 工具呼叫協議殘留，避免存入 DB 的訊息含內部標記。"""
-        import re as _re
-        out = str(text or '')
-        out = _re.sub(r"\[\[CALL tool=[^\]]+\]\]\s*(\{[\s\S]*?\})?", "", out)
-        out = _re.sub(r"```json\s*\{[\s\S]*?\}\s*```", "", out, flags=_re.IGNORECASE)
-        out = _re.sub(r"\{\s*\"tool_calls\"\s*:\s*\[[\s\S]*?\]\s*\}", "", out)
-        return out.strip()
+        return _strip_tool_protocol_text(text)
 
     overrides = _build_agent_overrides(router_agent)
     max_steps = int(getattr(settings, 'ORCHESTRATOR_MAX_STEPS', 3) or 3)
@@ -1888,10 +2363,10 @@ async def _multi_agent_orchestrator(
                     import uuid as _uuid_mod
                     db.execute(_sa_text(
                         "INSERT INTO messages (id, conversation_id, role, content, timestamp) "
-                        "VALUES (:id, :cid, 'assistant', :content, NOW())"
+                        "VALUES (:id, :cid, 'assistant', :content, CURRENT_TIMESTAMP)"
                     ), {"id": str(_uuid_mod.uuid4()), "cid": _conv_id, "content": _sanitized})
                 db.execute(_sa_text(
-                    "UPDATE conversations SET last_interacted_at=NOW() WHERE id=:cid"
+                    "UPDATE conversations SET last_interacted_at=CURRENT_TIMESTAMP WHERE id=:cid"
                 ), {"cid": _conv_id})
                 db.commit()
                 _log.info('orchestrator.save_synthesis_ok', conversation_id=_conv_id)
@@ -1931,10 +2406,10 @@ async def _multi_agent_orchestrator(
         ), {"sid": _session_id})
         db.execute(_sa_text(
             "INSERT INTO messages (id, conversation_id, role, content, timestamp) "
-            "VALUES (:id, :cid, 'assistant', :content, NOW())"
+            "VALUES (:id, :cid, 'assistant', :content, CURRENT_TIMESTAMP)"
         ), {"id": str(_uuid_mod.uuid4()), "cid": _conv_id, "content": _sanitize(_saved_synthesis)})
         db.execute(_sa_text(
-            "UPDATE conversations SET last_interacted_at=NOW() WHERE id=:cid"
+            "UPDATE conversations SET last_interacted_at=CURRENT_TIMESTAMP WHERE id=:cid"
         ), {"cid": _conv_id})
         db.commit()
     except Exception as _fe:
@@ -1955,38 +2430,32 @@ async def chat_entry_router(
     message = str((payload or {}).get('message') or '').strip()
     if not message:
         raise validation_error('Message cannot be empty')
+    enriched_message = _inject_reference_content(message)
 
-    router_agent = db.query(Agent).filter(Agent.is_router == True).first()  # noqa: E712
+    router_agent = db.query(Agent).filter(Agent.is_router == True, Agent.enabled == True).first()  # noqa: E712
     if router_agent is None:
-        router_agent = db.query(Agent).first()
+        router_agent = db.query(Agent).filter(Agent.enabled == True).first()  # noqa: E712
     if router_agent is None:
         raise validation_error('尚未建立可用代理者')
 
     # ── 多代理協作路徑（三層判斷後交 Orchestrator 處理）──
-    workers = db.query(Agent).filter(Agent.id != router_agent.id).all()
-    routing = _classify_routing(message=message, workers=workers)
+    workers = db.query(Agent).filter(
+        Agent.id != router_agent.id,
+        Agent.enabled == True,  # noqa: E712
+        Agent.agent_class.in_(['tasked', 'public']),
+    ).all()
+    routing = _classify_routing(message=enriched_message, workers=workers)
+    debug_trace_enabled = bool(getattr(settings, 'CHAT_DEBUG_TRACE', False)) or bool((payload or {}).get('debug'))
     if routing == 'multi':
         import asyncio as _asyncio
         import functools as _functools
 
-        conversation = _query_latest_conversation_with_fallback(
-            db=db, agent_id=str(router_agent.id), user_id=current_user.id
-        )
-        if conversation is None:
-            conversation = _create_conversation_with_fallback(
-                db=db, agent_id=str(router_agent.id), user_id=current_user.id
-            )
-
-        # 儲存使用者訊息（在 return StreamingResponse 前，避免在 generator 內卡住）
-        try:
-            user_msg = Message(conversation_id=conversation.id, role='user', content=message)
-            _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_msg)
-        except Exception:
-            pass
-
         async def _orchestrate_stream() -> AsyncGenerator[str, None]:
+            _decompose_started_at = time.monotonic()
             # 立即發送第一個事件，讓前端知道已進入多代理模式
             yield f"data: {_json.dumps({'type': 'orchestrator.thinking', 'message': '正在分析任務分派…'}, ensure_ascii=False)}\n\n"
+            if debug_trace_enabled:
+                yield f"data: {_json.dumps({'type': 'debug', 'phase': 'routing', 'routing': routing, 'workers': len(workers)}, ensure_ascii=False)}\n\n"
             # 在 thread 裡做 LLM decompose，不阻塞 event loop
             try:
                 plan = await _asyncio.wait_for(
@@ -1997,9 +2466,25 @@ async def chat_entry_router(
                 )
             except _asyncio.TimeoutError:
                 plan = None
+
+            if debug_trace_enabled:
+                yield f"data: {_json.dumps({'type': 'debug', 'phase': 'decompose', 'elapsed_ms': int((time.monotonic() - _decompose_started_at) * 1000), 'plan': plan if isinstance(plan, dict) else None}, ensure_ascii=False)}\n\n"
+
             if plan and plan.get('multi') and len(plan.get('tasks', [])) >= 2:
+                conversation = _query_latest_conversation_with_fallback(
+                    db=db, agent_id=str(router_agent.id), user_id=current_user.id
+                )
+                if conversation is None:
+                    conversation = _create_conversation_with_fallback(
+                        db=db, agent_id=str(router_agent.id), user_id=current_user.id
+                    )
+                try:
+                    user_msg = Message(conversation_id=conversation.id, role='user', content=enriched_message)
+                    _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_msg)
+                except Exception:
+                    pass
                 async for event in _multi_agent_orchestrator(
-                    message=message,
+                    message=enriched_message,
                     plan=plan,
                     workers=workers,
                     db=db,
@@ -2009,22 +2494,42 @@ async def chat_entry_router(
                 ):
                     yield event
             else:
-                # decompose 失敗或降級 → 走單代理，直接透過原 chat_stream
-                yield f"data: {_json.dumps({'type': 'route.decision', 'target_agent_name': str(router_agent.name or ''), 'degraded': True}, ensure_ascii=False)}\n\n"
-                async for event in chat_stream(
-                    agent_id=str(router_agent.id),
-                    message=message,
-                    conversation_id=str(conversation.id) if conversation else None,
+                # decompose 失敗或降級 → 走單代理選擇器，不直接固定主代理
+                worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=enriched_message)
+                if worker is None:
+                    worker = router_agent
+                    route_reason = 'decompose_failed_worker_not_found'
+                else:
+                    route_reason = f"decompose_failed_{route_reason}"
+                worker_class = str(getattr(worker, 'agent_class', '') or '')
+                if worker_class in {'public', 'tasked'}:
+                    if not _is_agent_ready_for_chat(db=db, agent=worker):
+                        worker = router_agent
+                        route_reason = f'decompose_failed_{worker_class}_not_ready_master_fallback'
+                route_payload = {
+                    'type': 'route.decision',
+                    'target_agent_id': str(worker.id),
+                    'target_agent_name': str(worker.name or ''),
+                    'reason': route_reason,
+                    'degraded': True,
+                }
+                if debug_trace_enabled:
+                    route_payload['debug'] = {'routing': routing, 'decompose_plan': plan}
+                yield f"data: {_json.dumps(route_payload, ensure_ascii=False)}\n\n"
+                routed_response = await chat_stream(
+                    agent_id=str(worker.id),
+                    message=enriched_message,
                     db=db,
                     current_user=current_user,
-                ):
+                )
+                async for event in routed_response.body_iterator:
                     yield event
 
         return StreamingResponse(_orchestrate_stream(), media_type='text/event-stream')
 
     # ── 單代理路徑（原有邏輯不變）──
 
-    worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=message)
+    worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=enriched_message)
     is_fallback = False
     if worker is None:
         worker = router_agent
@@ -2032,6 +2537,12 @@ async def chat_entry_router(
         route_reason = 'worker_not_found_fallback'
     elif route_reason in {'default_fallback'}:
         is_fallback = True
+    worker_class = str(getattr(worker, 'agent_class', '') or '')
+    if worker_class in {'public', 'tasked'}:
+        if not _is_agent_ready_for_chat(db=db, agent=worker):
+            worker = router_agent
+            is_fallback = True
+            route_reason = f'{worker_class}_not_ready_master_fallback'
 
     conversation = _query_latest_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
     if conversation is None:
@@ -2065,7 +2576,9 @@ async def chat_entry_router(
 
     routed_response = await chat_stream(
         agent_id=str(worker.id),
-        message=message,
+        message=enriched_message,
+        conversation_id=str(conversation.id),
+        persist_user_message=True,
         db=db,
         current_user=current_user,
     )
@@ -2081,6 +2594,24 @@ async def chat_entry_router(
             yield chunk
 
     return StreamingResponse(_with_route_event(), media_type='text/event-stream')
+
+
+@router.get('/chat/google-picker-config')
+async def get_google_picker_config(
+    current_user: User = Depends(get_current_user),
+):
+    """目的：提供聊天頁 Google Picker 所需公開設定。
+    為什麼：前端由後端環境變數統一下發，避免每位使用者手動輸入。
+    """
+    _require_chat_permission(current_user)
+    client_id = str(getattr(settings, 'GOOGLE_CLIENT_ID', '') or '').strip()
+    api_key = str(getattr(settings, 'GOOGLE_API_KEY', '') or '').strip()
+    return {
+        'ok': True,
+        'configured': bool(client_id and api_key),
+        'google_client_id': client_id,
+        'google_api_key': api_key,
+    }
 
 
 @router.get('/conversations')
