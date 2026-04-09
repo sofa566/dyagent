@@ -8,7 +8,7 @@ import shutil
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, text
+from sqlalchemy import func, text, and_
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
@@ -163,6 +163,52 @@ async def _build_overview(db: Session) -> dict:
         reverse=True,
     )
 
+    # 若 llm_turns 寫入缺漏，退化為從對話訊息估算（避免儀表板出現「永遠不增加」的假象）
+    if not agent_llm_breakdown_24h:
+        assistant_rows = (
+            db.query(
+                Conversation.agent_id.label('agent_id'),
+                func.count(Message.id).label('assistant_turns'),
+                func.sum(func.length(Message.content)).label('assistant_chars'),
+            )
+            .join(Message, Message.conversation_id == Conversation.id)
+            .filter(
+                and_(
+                    Message.role == 'assistant',
+                    Message.timestamp >= since_24h,
+                )
+            )
+            .group_by(Conversation.agent_id)
+            .all()
+        )
+
+        fallback_rows: list[dict[str, float | int | str]] = []
+        for row in assistant_rows:
+            agent_id = str(getattr(row, 'agent_id', '') or '')
+            if not agent_id:
+                continue
+            assistant_turns = int(getattr(row, 'assistant_turns', 0) or 0)
+            assistant_chars = int(getattr(row, 'assistant_chars', 0) or 0)
+            output_tokens = max(0, assistant_chars // 4)
+            fallback_rows.append(
+                {
+                    'agent_id': agent_id,
+                    'agent_name': agents_map.get(agent_id) or f'未知代理({agent_id[:8]})',
+                    'turns': assistant_turns,
+                    'input_tokens': 0,
+                    'output_tokens': output_tokens,
+                    'total_tokens': output_tokens,
+                    'cost_usd': 0.0,
+                    'estimated': True,
+                }
+            )
+
+        agent_llm_breakdown_24h = sorted(
+            fallback_rows,
+            key=lambda row: int(row.get('total_tokens') or 0),
+            reverse=True,
+        )
+
     load1, load5, load15 = (0.0, 0.0, 0.0)
     try:
         load1, load5, load15 = os.getloadavg()
@@ -232,6 +278,7 @@ async def _build_overview(db: Session) -> dict:
             "output_chars_24h": int(llm_chars),
             "output_tokens_approx_24h": int(llm_output_tokens_approx),
             "cost_estimate_usd_24h": round(float(llm_cost_usd_24h), 6),
+            "turn_rows_24h": int(len(llm_turn_rows)),
             "react_runs_24h": int(react_runs),
             "react_steps_24h": int(react_steps),
             "tool_success_24h": int(tool_success),

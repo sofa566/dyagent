@@ -44,6 +44,12 @@ def _strip_system_reminder_text(text: str) -> str:
         return ''
     cleaned = re.sub(r'<system-reminder>[\s\S]*?</system-reminder>', '', raw, flags=re.IGNORECASE)
     cleaned = re.sub(r'</?system-reminder>', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r'Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.',
+        '',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r'^\s*Your operational mode has changed from plan to build\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     cleaned = re.sub(r'^\s*You are no longer in read-only mode\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     cleaned = re.sub(r'^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
@@ -356,6 +362,25 @@ def _to_float_or_none(value: Any) -> float | None:
         return None
 
 
+def _to_json_safe(value: Any) -> Any:
+    """目的：將任意物件轉為可 JSON 序列化格式。
+    為什麼：llm_turns 的 JSON 欄位若含不可序列化型別，會造成整筆審計寫入失敗。
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {str(k): _to_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_safe(v) for v in value]
+    try:
+        _json.dumps(value, ensure_ascii=False)
+        return value
+    except Exception:
+        return str(value)
+
+
 def _normalize_usage_payload(*, usage_raw: Any, user_text: str, assistant_text: str) -> dict[str, Any]:
     """目的：統一 usage 結構。
     為什麼：不同供應商欄位命名不同，需落地一致格式供查詢與報表使用。
@@ -496,6 +521,8 @@ def _create_llm_turn_record(
     為什麼：聊天流程不應因審計寫入失敗而中斷，需集中保護。
     """
     try:
+        safe_context_snapshot = _to_json_safe(context_snapshot)
+        safe_usage = _to_json_safe(usage)
         row = LlmTurn(
             conversation_id=conversation_id,
             agent_id=agent_id,
@@ -505,8 +532,8 @@ def _create_llm_turn_record(
             model=model,
             tier=tier,
             system_prompt_snapshot=system_prompt_snapshot,
-            context_snapshot=context_snapshot,
-            usage=usage,
+            context_snapshot=safe_context_snapshot,
+            usage=safe_usage,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             status=status,
@@ -514,8 +541,15 @@ def _create_llm_turn_record(
         )
         db.add(row)
         db.commit()
-    except Exception:
+    except Exception as e:
         db.rollback()
+        _log.error(
+            'llm_turn.persist_failed',
+            error=str(e),
+            agent_id=str(agent_id),
+            conversation_id=str(conversation_id),
+            status=str(status),
+        )
 
 
 def _get_by_path(obj: dict, path: str):

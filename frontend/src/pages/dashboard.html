@@ -147,6 +147,7 @@
         mkStat('輸出字元(24h)', llm.output_chars_24h ?? 0),
         mkStat('輸出 tokens 估算', llm.output_tokens_approx_24h ?? 0),
         mkStat('成本估算 USD', llm.cost_estimate_usd_24h ?? 0),
+        mkStat('LLM 審計筆數', llm.turn_rows_24h ?? 0),
         mkStat('ReAct 執行次數', llm.react_runs_24h ?? 0),
         mkStat('ReAct 步驟數', llm.react_steps_24h ?? 0),
         mkStat('工具成功 / 失敗', `${llm.tool_success_24h ?? 0} / ${llm.tool_error_24h ?? 0}`),
@@ -162,8 +163,9 @@
           const outputTokens = Number(row.output_tokens || 0);
           const totalTokens = Number(row.total_tokens || 0);
           const cost = Number(row.cost_usd || 0).toFixed(6);
+          const estimatedTag = row.estimated ? '（估算）' : '';
           return `<tr>
-            <td>${name}</td>
+            <td>${name}${estimatedTag}</td>
             <td class="num">${turns}</td>
             <td class="num">${inputTokens}</td>
             <td class="num">${outputTokens}</td>

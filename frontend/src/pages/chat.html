@@ -1602,6 +1602,7 @@
       cleaned = cleaned.replace(/^\s*```\s*$/gim, '');
       cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
       cleaned = cleaned.replace(/<\/?system-reminder>/gi, '');
+      cleaned = cleaned.replace(/Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\./gi, '');
       cleaned = cleaned.replace(/^\s*Your operational mode has changed from plan to build\.\s*$/gim, '');
       cleaned = cleaned.replace(/^\s*You are no longer in read-only mode\.\s*$/gim, '');
       cleaned = cleaned.replace(/^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$/gim, '');
