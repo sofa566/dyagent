@@ -59,6 +59,9 @@ def _strip_system_reminder_text(text: str) -> str:
     cleaned = re.sub(r'^\s*Your operational mode has changed from plan to build\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     cleaned = re.sub(r'^\s*You are no longer in read-only mode\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     cleaned = re.sub(r'^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    marker = cleaned.lower().find('<system-reminder>')
+    if marker >= 0:
+        cleaned = cleaned[:marker]
     return cleaned
 
 

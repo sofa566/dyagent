@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>員工請假技能範例</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section id="step-1" class="panel">
+        <h1>員工請假申請</h1>
+        <p>步驟 1/2：請先填寫基本資料。</p>
+
+        <form id="leave-form" class="form-grid">
+          <label>
+            員工姓名
+            <input id="employeeName" name="employeeName" required />
+          </label>
+          <label>
+            員工編號
+            <input id="employeeId" name="employeeId" required />
+          </label>
+          <label>
+            假別
+            <select id="leaveType" name="leaveType" required>
+              <option value="annual">特休</option>
+              <option value="sick">病假</option>
+              <option value="personal">事假</option>
+              <option value="special">其他</option>
+            </select>
+          </label>
+          <label>
+            開始日期
+            <input id="startDate" name="startDate" type="date" required />
+          </label>
+          <label>
+            結束日期
+            <input id="endDate" name="endDate" type="date" required />
+          </label>
+          <label class="full-width">
+            請假原因
+            <textarea id="reason" name="reason" rows="3" required></textarea>
+          </label>
+        </form>
+
+        <button id="next-button" type="button">下一步</button>
+      </section>
+
+      <section id="step-2" class="panel hidden">
+        <h2>確認送出</h2>
+        <p>步驟 2/2：確認資料後送出申請。</p>
+        <dl id="review-box" class="review-box"></dl>
+
+        <div class="button-row">
+          <button id="back-button" type="button">返回修改</button>
+          <button id="submit-button" type="button">送出請假單</button>
+        </div>
+
+        <p id="result" class="result"></p>
+      </section>
+    </main>
+
+    <script type="module" src="/ui.js"></script>
+  </body>
+</html>

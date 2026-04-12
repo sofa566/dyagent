@@ -1499,7 +1499,7 @@
             : '';
           body = `${routeBanner}${protocolDebug}<div class="markdown-body">${marked.parse(cleanedAssistantText)}</div>`;
         }
-        return `<div class="message ${msg.role}">${body}<small style="opacity:0.7;">${msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}</small></div>`;
+        return `<div class="message ${msg.role}">${body}<small style="opacity:0.7;">${toLocalTimeStringSafe(msg.timestamp)}</small></div>`;
       }).join('');
       chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -1539,6 +1539,16 @@
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    }
+
+    function toLocalTimeStringSafe(timestampText) {
+      const raw = String(timestampText || '').trim();
+      if (!raw) return '';
+      const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
+      const normalized = hasTimezone ? raw : `${raw}Z`;
+      const dateObj = new Date(normalized);
+      if (Number.isNaN(dateObj.getTime())) return '';
+      return dateObj.toLocaleTimeString();
     }
 
     function _extractJsonToolCallsBlocks(text) {
@@ -1613,6 +1623,10 @@
       cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
       cleaned = cleaned.replace(/<\/?system-reminder>/gi, '');
       cleaned = cleaned.replace(/Your operational mode has changed[\s\S]{0,400}?tools as needed\./gi, '');
+      const reminderPos = cleaned.toLowerCase().indexOf('<system-reminder>');
+      if (reminderPos >= 0) {
+        cleaned = cleaned.slice(0, reminderPos);
+      }
       cleaned = cleaned.replace(/Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\./gi, '');
       cleaned = cleaned.replace(/^\s*Your operational mode has changed from plan to build\.\s*$/gim, '');
       cleaned = cleaned.replace(/^\s*You are no longer in read-only mode\.\s*$/gim, '');
