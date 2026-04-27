@@ -858,7 +858,19 @@ async def update_agent(
             raise validation_error('master 代理不可停用')
         agent.enabled = bool(enabled)
     if model_config is not None:
-        agent.model_config = model_config
+        # 目的：更新代理基本資料時保留既有 LLM/整合設定，不被空 payload 覆蓋。
+        # 為什麼：多個設定頁會分段更新 model_config，直接覆蓋會造成 LLM 設定被清空。
+        if not isinstance(model_config, dict):
+            raise validation_error('model_config must be an object')
+        existing_config = agent.model_config if isinstance(agent.model_config, dict) else {}
+        merged_config = dict(existing_config)
+        for key, value in model_config.items():
+            normalized_key = str(key)
+            if value is None:
+                merged_config.pop(normalized_key, None)
+                continue
+            merged_config[normalized_key] = value
+        agent.model_config = merged_config
     if system_prompt is not None:
         agent.system_prompt = system_prompt.strip() or None
 

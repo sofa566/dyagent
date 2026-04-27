@@ -47,3 +47,5 @@ black==23.12.1
 # MCP (Model Context Protocol)
 mcp==1.0.0
 python-docx
+
+jieba==0.42.1

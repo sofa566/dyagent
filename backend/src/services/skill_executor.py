@@ -15,13 +15,16 @@ import subprocess
 import shutil
 import uuid
 import sys
+import hashlib
 from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
 from src.core.config import settings
+from src.core.logging import get_logger
 
 
+_log = get_logger('skill_executor')
 @dataclass
 class SkillExecutionResult:
     """技能執行結果。"""
@@ -81,6 +84,84 @@ def cleanup_work_dir(work_dir: Path) -> None:
             shutil.rmtree(work_dir)
         except Exception:
             pass
+
+
+def extract_skill_ui_dir(zip_content: bytes, skill_id: str) -> Path:
+    # 目的：解壓技能 ZIP 的 UI 內容到可重用快取目錄。
+    # 為什麼：避免每次請求都重複解壓，降低 I/O 成本並提供穩定靜態資源路徑。
+    cache_dir = _ensure_cache_dir() / 'skill-ui'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    zip_hash = hashlib.sha256(zip_content).hexdigest()
+    skill_cache_dir = cache_dir / f'{skill_id}-{zip_hash[:16]}'
+    if skill_cache_dir.exists() and (skill_cache_dir / '.ready').exists():
+        return skill_cache_dir
+
+    if skill_cache_dir.exists():
+        shutil.rmtree(skill_cache_dir, ignore_errors=True)
+    skill_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zf:
+        for member in zf.infolist():
+            member_name = str(member.filename or '')
+            if not member_name or member_name.endswith('/'):
+                continue
+            normalized_path = Path(member_name)
+            if normalized_path.is_absolute() or '..' in normalized_path.parts:
+                raise ValueError(f'ZIP 包含不安全路徑: {member_name}')
+            target_path = (skill_cache_dir / normalized_path).resolve()
+            if not str(target_path).startswith(str(skill_cache_dir.resolve())):
+                raise ValueError(f'ZIP 路徑超出工作目錄: {member_name}')
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member, 'r') as src, open(target_path, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+
+    ready_flag_path = skill_cache_dir / '.ready'
+    ready_flag_path.write_text('ok', encoding='utf-8')
+    return skill_cache_dir
+
+
+def resolve_skill_ui_asset(base_dir: Path, asset_path: str) -> Path:
+    # 目的：解析並驗證技能 UI 資源路徑。
+    # 為什麼：限制只能讀取 ui/ 目錄，防止路徑穿越或讀取非預期檔案。
+    normalized_asset = str(asset_path or '').strip().lstrip('/')
+    if not normalized_asset:
+        raise ValueError('asset_path_required')
+    relative_path = Path(normalized_asset)
+    if relative_path.is_absolute() or '..' in relative_path.parts:
+        raise ValueError('invalid_asset_path')
+    if not relative_path.parts or relative_path.parts[0] != 'ui':
+        raise ValueError('asset_outside_ui_dir')
+
+    target_path = (base_dir / relative_path).resolve()
+    if not str(target_path).startswith(str(base_dir.resolve())):
+        raise ValueError('asset_outside_work_dir')
+    if not target_path.exists() or not target_path.is_file():
+        fallback_path = _resolve_nested_ui_asset(base_dir=base_dir, relative_path=relative_path)
+        if fallback_path is None:
+            raise FileNotFoundError('asset_not_found')
+        target_path = fallback_path
+    return target_path
+
+
+def _resolve_nested_ui_asset(base_dir: Path, relative_path: Path) -> Path | None:
+    # 目的：支援 ZIP 外層包一層資料夾時的 UI 路徑解析。
+    # 為什麼：實務上很多壓縮檔會是 `skill-name/ui/index.html`，不能只接受根目錄直接有 `ui/`。
+    parts = relative_path.parts
+    if not parts or parts[0] != 'ui':
+        return None
+
+    nested_relative = Path(*parts[1:]) if len(parts) > 1 else Path('index.html')
+    candidate_paths = list(base_dir.glob('*/ui/*'))
+    if not candidate_paths:
+        return None
+
+    for candidate in base_dir.glob('*/ui'):
+        resolved_candidate = (candidate / nested_relative).resolve()
+        if not str(resolved_candidate).startswith(str(base_dir.resolve())):
+            continue
+        if resolved_candidate.exists() and resolved_candidate.is_file():
+            return resolved_candidate
+    return None
 
 
 def _find_scripts_dir(work_dir: Path) -> Path | None:
@@ -292,6 +373,8 @@ def execute_skill(
     script_outputs: list[dict[str, Any]] = []
 
     try:
+        _log.debug("Starting skill execution", skill_id=skill_id, has_zip_bundle=bool(zip_bundle), prompt_template_present=bool(prompt_template), input_data_keys=list(input_data.keys()) if input_data else None, execute_scripts=execute_scripts, timeout_seconds=timeout_seconds)
+        
         script_name, script_args, pure_input_data = _extract_script_controls(input_data)
 
         # 解壓 ZIP（若有）

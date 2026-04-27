@@ -28,6 +28,7 @@ from src.services.permission_service import PermissionService
 from src.services.mcp_client import MCPClient
 from src.services.react_synthesis import ReActSynthesis
 from src.services.skill_executor import execute_skill
+from src.services.skill_interaction_service import SkillInteractionService
 
 
 DEFAULT_LAST_METRICS = {
@@ -35,13 +36,14 @@ DEFAULT_LAST_METRICS = {
     "cost": 0.0,
 }
 
+_log = get_logger("services.chat_router")
 
 class ChatRouter:
     """單輪聊天管線骨架。"""
 
     def __init__(self, llm: Optional[LLMClient] = None) -> None:
         self._llm = llm or LLMClient()
-        self._log = get_logger("ChatRouter")
+        self._log = get_logger("services.chat_router")
         # 最近一次回合的度量（供外部查詢）
         self._last_metrics: dict | None = None
         # 結構化輸出模式（T017 預留）
@@ -445,18 +447,14 @@ class ChatRouter:
                                             pass
                     except Exception:
                         pass
-                    # 僅在未使用 skill_ids 時，才納入 agent.skills（歷史相容）
+                    # 永遠合併 agent.skills（歷史相容），與 _extract_agent_skill_names 邏輯一致
+                    # 若 skill_ids 已有的名稱重複，dict.fromkeys 去重會保留第一筆
                     try:
-                        using_skill_ids = bool((getattr(ag, 'model_config', {}) or {}).get('skill_ids'))
+                        for s in (ag.skills or []):
+                            if isinstance(s, str) and s.strip():
+                                skills_names.append(s.strip())
                     except Exception:
-                        using_skill_ids = False
-                    if not using_skill_ids:
-                        try:
-                            for s in (ag.skills or []):
-                                if isinstance(s, str) and s.strip():
-                                    skills_names.append(s.strip())
-                        except Exception:
-                            pass
+                        pass
                     # 去重
                     agent_ctx["skills"] = list(dict.fromkeys(skills_names).keys())
                     rc = ag.rag_config or {}
@@ -612,6 +610,7 @@ class ChatRouter:
 
         Why: 將 SSE 串流與同步工具邏輯橋接在同一入口，避免路由層分散處理白名單與審計。
         """
+        _log.debug("Start call_tool_async.request", tool=tool, session_id=session_id)
         name, early = self._validate_async_tool_call_request(
             session_id=session_id,
             tool=tool,
@@ -624,6 +623,8 @@ class ChatRouter:
 
         # 僅在 MCP 工具時優先走 WS JSON-RPC 串流（stdio 模式則直接走同步）
         if name.startswith("mcp:"):
+            _log.debug("call_tool_async.mcp_attempt", tool=name, session_id=session_id)
+
             conn_name = name.split(":", 1)[1]
             conn = getattr(self, "_mcp_map", {}).get(conn_name)
             if not conn:
@@ -676,6 +677,7 @@ class ChatRouter:
                 self._log.warning("mcp.ws.stream_failed_fallback_http", error=str(e))
                 return self.call_tool(session_id=session_id, tool=name, payload=payload)
 
+        _log.debug("call_tool", tool=name, session_id=session_id)
         # 其他情況沿用同步路徑
         return self.call_tool(session_id=session_id, tool=name, payload=payload)
 
@@ -870,10 +872,44 @@ class ChatRouter:
                     return item.strip()
         return ''
 
+    def _extract_interactive_skill_result(self, script_outputs: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        # 目的：從技能腳本輸出辨識互動模式結果。
+        # 為什麼：HTML 技能需讓 scripts/main.js 直接驅動 ui/final/error，不經 LLM 二次改寫。
+        outputs = script_outputs if isinstance(script_outputs, list) else []
+        if not outputs:
+            return None
+
+        for output_item in reversed(outputs):
+            if not isinstance(output_item, dict) or not bool(output_item.get('ok')):
+                continue
+            stdout_text = str(output_item.get('stdout') or '').strip()
+            if not stdout_text:
+                continue
+
+            parsed_result: Any = None
+            try:
+                parsed_result = _json.loads(stdout_text)
+            except Exception:
+                json_start = stdout_text.find('{')
+                json_end = stdout_text.rfind('}')
+                if json_start >= 0 and json_end > json_start:
+                    try:
+                        parsed_result = _json.loads(stdout_text[json_start:json_end + 1])
+                    except Exception:
+                        parsed_result = None
+
+            if not isinstance(parsed_result, dict):
+                continue
+            mode_text = str(parsed_result.get('mode') or '').strip().lower()
+            if mode_text in {'ui', 'final', 'error'}:
+                return parsed_result
+        return None
+
     def _run_skill_command(self, *, command: str, payload: dict[str, Any], timeout_ms: int) -> dict:
         """目的：執行技能 command 並回傳工具結果格式。
         為什麼：executable 技能需支援 uvx/npx/java 等命令，避免僅能用 python handler。
         """
+        _log.debug("run_skill_command", command=command, payload=payload, timeout_ms=timeout_ms)
         cmd_text = str(command or '').strip()
         if not cmd_text:
             return {"ok": False, "error": "empty_command"}
@@ -906,6 +942,8 @@ class ChatRouter:
 
         stdout = str(proc.stdout or '').strip()
         stderr = str(proc.stderr or '').strip()
+
+        _log.debug("skill_command_completed", command=cmd_text, returncode=proc.returncode, stdout=stdout[:200], stderr=stderr[:200])
         if proc.returncode != 0:
             return {
                 "ok": False,
@@ -924,6 +962,8 @@ class ChatRouter:
 
     # 公用：以白名單強制的工具呼叫（未來供工具規劃/LLM function call 整合）
     def call_tool(self, *, session_id: str, tool: str, payload: dict) -> dict:
+        _log.debug("Start call_tool.request", tool=tool, session_id=session_id)
+
         name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
         if early is not None:
             return early
@@ -981,10 +1021,65 @@ class ChatRouter:
                 self.write_event_tool_error(session_id=session_id, tool=name, error="skill_not_found_or_disabled")
                 return {"ok": False, "error": "skill_not_found_or_disabled"}
 
+            interaction_service = None
+            prepare_result = None
+            skill_payload = payload or {}
+            try:
+                interaction_service = SkillInteractionService(db)
+                _log.debug("SkillInteractionService.prepare_request", tool=name, session_id=session_id)
+                prepare_result = interaction_service.prepare_request(
+                    conversation_id=session_id,
+                    tool_name=name,
+                    skill_id=(str(getattr(row, 'id', '') or '') or None),
+                    payload=payload or {},
+                )
+                if not prepare_result.ok:
+                    error_text = str(prepare_result.error or 'interaction_prepare_failed')
+                    self.write_event_tool_error(session_id=session_id, tool=name, error=error_text)
+                    return {"ok": False, "error": error_text}
+                skill_payload = prepare_result.skill_payload if isinstance(prepare_result.skill_payload, dict) else (payload or {})
+            except Exception as interaction_error:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                self._log.warning('skill.interaction.prepare_failed_fallback', tool=name, error=str(interaction_error))
+                interaction_service = None
+                prepare_result = None
+                skill_payload = payload or {}
+
+            def _finalize_success_if_possible(result_payload: dict) -> dict:
+                if interaction_service is None or prepare_result is None:
+                    return result_payload
+                try:
+                    return interaction_service.finalize_success(prepare_result=prepare_result, result_payload=result_payload)
+                except Exception as finalize_error:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                    self._log.warning('skill.interaction.finalize_success_failed_ignore', tool=name, error=str(finalize_error))
+                    return result_payload
+
+            def _finalize_error_if_possible(error_text: str) -> None:
+                if interaction_service is None or prepare_result is None:
+                    return
+                try:
+                    interaction_service.finalize_error(prepare_result=prepare_result, error_text=error_text)
+                except Exception as finalize_error:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                    self._log.warning('skill.interaction.finalize_error_failed_ignore', tool=name, error=str(finalize_error))
+
             # 可選：依 input_schema 驗證 payload
             try:
                 schema = getattr(row, 'input_schema', None)
                 if isinstance(schema, dict) and schema:
+                    validation_payload = skill_payload if isinstance(skill_payload, dict) else {}
+                    if isinstance(validation_payload, dict) and '_interaction' in validation_payload:
+                        validation_payload = {k: v for k, v in validation_payload.items() if k != '_interaction'}
                     valid = True
                     err_msg = ''
                     try:
@@ -992,10 +1087,10 @@ class ChatRouter:
                         try:
                             import fastjsonschema  # type: ignore
                             validator = fastjsonschema.compile(schema)
-                            validator(payload or {})
+                            validator(validation_payload or {})
                         except ImportError:
                             import jsonschema  # type: ignore
-                            jsonschema.validate(instance=payload or {}, schema=schema)
+                            jsonschema.validate(instance=validation_payload or {}, schema=schema)
                     except Exception as ve:
                         valid = False
                         err_msg = str(ve)
@@ -1006,32 +1101,51 @@ class ChatRouter:
                 pass
 
             skill_type = str(getattr(row, 'skill_type', 'executable') or 'executable').strip()
+            _log.debug("Skill type and bundle check", skill_type=skill_type, session_id=session_id)
             has_zip_bundle = bool(getattr(row, 'zip_bundle', None))
             should_use_claude_skill = skill_type in {'prompt', 'hybrid'} or has_zip_bundle
+
+            _log.debug("Skill execution path decision", tool=name, skill_type=skill_type, has_zip_bundle=has_zip_bundle, should_use_claude_skill=should_use_claude_skill, session_id=session_id)
             if should_use_claude_skill:
                 skill_exec = execute_skill(
                     skill_id=str(getattr(row, 'id', '') or name),
                     zip_bundle=getattr(row, 'zip_bundle', None),
                     prompt_template=str(getattr(row, 'prompt_template', '') or ''),
-                    input_data=payload or {},
+                    input_data=skill_payload or {},
                     execute_scripts=True,
                 )
+                _log.debug("Skill execution completed", tool=name, skill_exec_ok=skill_exec.ok if skill_exec else None, session_id=session_id)
+
                 if not skill_exec.ok:
                     error_text = str(skill_exec.error or 'skill_zip_execution_failed')
+                    _finalize_error_if_possible(error_text)
                     self.write_event_tool_error(session_id=session_id, tool=name, error=error_text)
                     return {"ok": False, "error": error_text}
                 failed_scripts = [x for x in (skill_exec.script_outputs or []) if not bool(x.get('ok'))]
                 if failed_scripts:
                     err = f"script_execution_failed: {failed_scripts[0].get('script') or ''}".strip()
+                    _finalize_error_if_possible(err)
                     self.write_event_tool_error(session_id=session_id, tool=name, error=err)
                     return {"ok": False, "error": err, "script_outputs": skill_exec.script_outputs}
 
+                interactive_result = self._extract_interactive_skill_result(skill_exec.script_outputs)
+                if isinstance(interactive_result, dict):
+                    result = {
+                        "ok": True,
+                        "result": interactive_result,
+                        "script_outputs": skill_exec.script_outputs or [],
+                    }
+                    result = _finalize_success_if_possible(result)
+                    self.write_event_tool_result(session_id=session_id, tool=name, result=result)
+                    return result
+
                 merged_prompt_base = str(skill_exec.prompt or '').strip()
                 if not merged_prompt_base:
+                    _finalize_error_if_possible('empty_prompt_template')
                     self.write_event_tool_error(session_id=session_id, tool=name, error="empty_prompt_template")
                     return {"ok": False, "error": "empty_prompt_template"}
                 import json as _json
-                prompt_payload = payload or {}
+                prompt_payload = skill_payload or {}
                 if isinstance(prompt_payload, dict):
                     prompt_payload = {k: v for k, v in prompt_payload.items() if k not in {'_script', '_args'}}
                 payload_json = _json.dumps(prompt_payload or {}, ensure_ascii=False)
@@ -1051,9 +1165,11 @@ class ChatRouter:
                             "script_outputs": skill_exec.script_outputs or [],
                         },
                     }
+                    result = _finalize_success_if_possible(result)
                     self.write_event_tool_result(session_id=session_id, tool=name, result=result)
                     return result
                 except Exception as e:
+                    _finalize_error_if_possible(str(e))
                     self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
                     return {"ok": False, "error": str(e)}
 
@@ -1064,10 +1180,13 @@ class ChatRouter:
 
             command_text = str(getattr(row, 'command', '') or '').strip()
             if command_text:
-                result = self._run_skill_command(command=command_text, payload=payload or {}, timeout_ms=timeout_ms)
+                _log.debug("Before run skill command ", tool=name, command=command_text, session_id=session_id)
+                result = self._run_skill_command(command=command_text, payload=skill_payload or {}, timeout_ms=timeout_ms)
                 if bool(result.get('ok')):
+                    result = _finalize_success_if_possible(result)
                     self.write_event_tool_result(session_id=session_id, tool=name, result=result)
                     return result
+                _finalize_error_if_possible(str(result.get('error') or 'skill_command_failed'))
                 self.write_event_tool_error(session_id=session_id, tool=name, error=str(result.get('error')))
                 return result
 
@@ -1082,12 +1201,14 @@ class ChatRouter:
                     import importlib
                     mod = importlib.import_module(mod_name)
                     func = getattr(mod, func_name)
-                    res = func(payload or {})
+                    res = func(skill_payload or {})
                     if not isinstance(res, dict):
                         res = {"ok": True, "result": res}
+                    res = _finalize_success_if_possible(res)
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
-                    return {"ok": True, "result": res}
+                    return res
                 except Exception as e:
+                    _finalize_error_if_possible(str(e))
                     self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
                     return {"ok": False, "error": str(e)}
             else:
@@ -1102,13 +1223,16 @@ class ChatRouter:
                 try:
                     schema = getattr(row, 'input_schema', None)
                     if isinstance(schema, dict) and schema:
+                        validation_payload = skill_payload if isinstance(skill_payload, dict) else {}
+                        if isinstance(validation_payload, dict) and '_interaction' in validation_payload:
+                            validation_payload = {k: v for k, v in validation_payload.items() if k != '_interaction'}
                         try:
                             import fastjsonschema  # type: ignore
                             validator = fastjsonschema.compile(schema)
-                            validator(payload or {})
+                            validator(validation_payload or {})
                         except ImportError:
                             import jsonschema  # type: ignore
-                            jsonschema.validate(instance=payload or {}, schema=schema)
+                            jsonschema.validate(instance=validation_payload or {}, schema=schema)
                         except Exception as ve:
                             self.write_event_tool_error(session_id=session_id, tool=name, error="schema_validation_failed")
                             # 盡量回傳結構化錯誤路徑
@@ -1131,15 +1255,16 @@ class ChatRouter:
                     import httpx
                     with httpx.Client(timeout=timeout_ms / 1000.0) as client:
                         if method == 'GET':
-                            resp = client.get(url, params=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                            resp = client.get(url, params=skill_payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
                         elif method == 'PUT':
-                            resp = client.put(url, json=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                            resp = client.put(url, json=skill_payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
                         elif method == 'DELETE':
-                            resp = client.delete(url, json=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                            resp = client.delete(url, json=skill_payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
                         else:
-                            resp = client.post(url, json=payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
+                            resp = client.post(url, json=skill_payload or {}, headers={k: str(v) for k, v in (headers.items() if isinstance(headers, dict) else [])})
                     if resp.status_code >= 400:
                         err = f"http_{resp.status_code}: {(resp.text or '')[:200]}"
+                        _finalize_error_if_possible(err)
                         self.write_event_tool_error(session_id=session_id, tool=name, error=err)
                         return {"ok": False, "error": err}
                     # 嘗試 JSON 解析；否則以 text 包裝
@@ -1148,9 +1273,11 @@ class ChatRouter:
                     except Exception:
                         data = {"text": resp.text}
                     result = {"ok": True, "result": data}
+                    result = _finalize_success_if_possible(result)
                     self.write_event_tool_result(session_id=session_id, tool=name, result=result)
                     return result
                 except Exception as e:
+                    _finalize_error_if_possible(str(e))
                     self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
                     return {"ok": False, "error": str(e)}
         except Exception as e:
@@ -1229,7 +1356,7 @@ class ChatRouter:
         self._write_part(session_id=session_id, type_="tool_input", payload={"tool": tool, "keys": list(payload.keys())})
         # 標記開始時間
         try:
-            self._tool_start_times[(session_id, tool)] = datetime.utcnow()
+            self._tool_start_times[(session_id, tool)] = datetime.now()
         except Exception:
             pass
         # T040：檢測 doom loop
@@ -1246,7 +1373,7 @@ class ChatRouter:
         try:
             t0 = self._tool_start_times.pop((session_id, tool), None)
             if t0 is not None:
-                duration_ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+                duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
         except Exception:
             duration_ms = None
         self._log.info("event.tool_result", session_id=session_id, tool=tool, keys=list(result.keys()), duration_ms=duration_ms)
@@ -1259,7 +1386,7 @@ class ChatRouter:
         try:
             t0 = self._tool_start_times.pop((session_id, tool), None)
             if t0 is not None:
-                duration_ms = int((datetime.utcnow() - t0).total_seconds() * 1000)
+                duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
         except Exception:
             duration_ms = None
         self._log.error("event.tool_error", session_id=session_id, tool=tool, error=error, duration_ms=duration_ms)

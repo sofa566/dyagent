@@ -1,207 +1,297 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-TW">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>多代理者協作聊天模式規劃</title>
-  <style>
-    :root {
-      --bg-primary: #1a1a2e;
-      --bg-secondary: #16213e;
-      --bg-card: #0f3460;
-      --text-primary: #eee;
-      --text-secondary: #aaa;
-      --accent: #e94560;
-      --accent-secondary: #0f3460;
-      --border: #333;
-      --success: #4ade80;
-      --warning: #fbbf24;
-      --info: #60a5fa;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.6;
-      padding: 2rem;
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    h1 { color: var(--accent); margin-bottom: 0.5rem; font-size: 2rem; }
-    h2 { color: var(--info); margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid var(--border); }
-    h3 { color: var(--success); margin: 1.5rem 0 0.75rem; }
-    h4 { color: var(--warning); margin: 1rem 0 0.5rem; }
-    p { margin-bottom: 1rem; }
-    a { color: var(--info); }
-    .meta { color: var(--text-secondary); margin-bottom: 2rem; }
-    .meta span { margin-right: 2rem; }
-    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-    th, td { padding: 0.75rem; text-align: left; border: 1px solid var(--border); }
-    th { background: var(--bg-secondary); color: var(--info); }
-    tr:nth-child(even) { background: var(--bg-secondary); }
-    pre {
-      background: var(--bg-secondary);
-      padding: 1rem;
-      border-radius: 8px;
-      overflow-x: auto;
-      margin: 1rem 0;
-      font-size: 0.9rem;
-      border: 1px solid var(--border);
-    }
-    code {
-      background: var(--bg-secondary);
-      padding: 0.2rem 0.4rem;
-      border-radius: 4px;
-      font-size: 0.9rem;
-    }
-    pre code { background: none; padding: 0; }
-    ul, ol { margin: 1rem 0 1rem 2rem; }
-    li { margin-bottom: 0.5rem; }
-    .card {
-      background: var(--bg-card);
-      border-radius: 8px;
-      padding: 1.5rem;
-      margin: 1rem 0;
-      border: 1px solid var(--border);
-    }
-    .diagram {
-      background: #0d1117;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem;
-      margin: 1rem 0;
-      overflow-x: auto;
-      font-family: 'Courier New', monospace;
-      font-size: 0.85rem;
-      line-height: 1.4;
-      white-space: pre;
-    }
-    .badge {
-      display: inline-block;
-      padding: 0.25rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.8rem;
-      margin-right: 0.5rem;
-    }
-    .badge-success { background: var(--success); color: #000; }
-    .badge-warning { background: var(--warning); color: #000; }
-    .badge-info { background: var(--info); color: #000; }
-    .badge-danger { background: var(--accent); color: #fff; }
-    .toc {
-      background: var(--bg-secondary);
-      padding: 1.5rem;
-      border-radius: 8px;
-      margin-bottom: 2rem;
-    }
-    .toc h3 { margin-top: 0; }
-    .toc ul { list-style: none; margin-left: 0; }
-    .toc li { margin-bottom: 0.5rem; }
-    .toc a { text-decoration: none; }
-    .toc a:hover { text-decoration: underline; }
-    .pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
-    .pros, .cons { padding: 1rem; border-radius: 8px; }
-    .pros { background: rgba(74, 222, 128, 0.1); border: 1px solid var(--success); }
-    .cons { background: rgba(233, 69, 96, 0.1); border: 1px solid var(--accent); }
-    .pros h4 { color: var(--success); }
-    .cons h4 { color: var(--accent); }
-    @media (max-width: 768px) {
-      .pros-cons { grid-template-columns: 1fr; }
-      body { padding: 1rem; }
-    }
-  </style>
-</head>
-<body>
-  <h1>多代理者協作聊天模式規劃</h1>
-  <div class="meta">
-    <span><strong>版本：</strong>v0.1 (草案)</span>
-    <span><strong>日期：</strong>2026-03-26</span>
-    <span><strong>狀態：</strong><span class="badge badge-warning">待討論</span></span>
-  </div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>多代理者協作聊天模式規劃</title>
+    <style>
+      :root {
+        --bg-primary: #1a1a2e;
+        --bg-secondary: #16213e;
+        --bg-card: #0f3460;
+        --text-primary: #eee;
+        --text-secondary: #aaa;
+        --accent: #e94560;
+        --accent-secondary: #0f3460;
+        --border: #333;
+        --success: #4ade80;
+        --warning: #fbbf24;
+        --info: #60a5fa;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        line-height: 1.6;
+        padding: 2rem;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      h1 {
+        color: var(--accent);
+        margin-bottom: 0.5rem;
+        font-size: 2rem;
+      }
+      h2 {
+        color: var(--info);
+        margin: 2rem 0 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid var(--border);
+      }
+      h3 {
+        color: var(--success);
+        margin: 1.5rem 0 0.75rem;
+      }
+      h4 {
+        color: var(--warning);
+        margin: 1rem 0 0.5rem;
+      }
+      p {
+        margin-bottom: 1rem;
+      }
+      a {
+        color: var(--info);
+      }
+      .meta {
+        color: var(--text-secondary);
+        margin-bottom: 2rem;
+      }
+      .meta span {
+        margin-right: 2rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+      }
+      th,
+      td {
+        padding: 0.75rem;
+        text-align: left;
+        border: 1px solid var(--border);
+      }
+      th {
+        background: var(--bg-secondary);
+        color: var(--info);
+      }
+      tr:nth-child(even) {
+        background: var(--bg-secondary);
+      }
+      pre {
+        background: var(--bg-secondary);
+        padding: 1rem;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 1rem 0;
+        font-size: 0.9rem;
+        border: 1px solid var(--border);
+      }
+      code {
+        background: var(--bg-secondary);
+        padding: 0.2rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.9rem;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+      }
+      ul,
+      ol {
+        margin: 1rem 0 1rem 2rem;
+      }
+      li {
+        margin-bottom: 0.5rem;
+      }
+      .card {
+        background: var(--bg-card);
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border: 1px solid var(--border);
+      }
+      .diagram {
+        background: #0d1117;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+        overflow-x: auto;
+        font-family: "Courier New", monospace;
+        font-size: 0.85rem;
+        line-height: 1.4;
+        white-space: pre;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        margin-right: 0.5rem;
+      }
+      .badge-success {
+        background: var(--success);
+        color: #000;
+      }
+      .badge-warning {
+        background: var(--warning);
+        color: #000;
+      }
+      .badge-info {
+        background: var(--info);
+        color: #000;
+      }
+      .badge-danger {
+        background: var(--accent);
+        color: #fff;
+      }
+      .toc {
+        background: var(--bg-secondary);
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin-bottom: 2rem;
+      }
+      .toc h3 {
+        margin-top: 0;
+      }
+      .toc ul {
+        list-style: none;
+        margin-left: 0;
+      }
+      .toc li {
+        margin-bottom: 0.5rem;
+      }
+      .toc a {
+        text-decoration: none;
+      }
+      .toc a:hover {
+        text-decoration: underline;
+      }
+      .pros-cons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin: 1rem 0;
+      }
+      .pros,
+      .cons {
+        padding: 1rem;
+        border-radius: 8px;
+      }
+      .pros {
+        background: rgba(74, 222, 128, 0.1);
+        border: 1px solid var(--success);
+      }
+      .cons {
+        background: rgba(233, 69, 96, 0.1);
+        border: 1px solid var(--accent);
+      }
+      .pros h4 {
+        color: var(--success);
+      }
+      .cons h4 {
+        color: var(--accent);
+      }
+      @media (max-width: 768px) {
+        .pros-cons {
+          grid-template-columns: 1fr;
+        }
+        body {
+          padding: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>多代理者協作聊天模式規劃</h1>
+    <div class="meta">
+      <span><strong>版本：</strong>v0.1 (草案)</span>
+      <span><strong>日期：</strong>2026-03-26</span>
+      <span
+        ><strong>狀態：</strong
+        ><span class="badge badge-warning">待討論</span></span
+      >
+    </div>
 
-  <nav class="toc">
-    <h3>目錄</h3>
-    <ul>
-      <li><a href="#overview">1. 概述</a></li>
-      <li><a href="#mode-a">2. 模式 A：Router 協調模式</a></li>
-      <li><a href="#mode-b">3. 模式 B：對話鏈模式</a></li>
-      <li><a href="#mode-c">4. 模式 C：共享記憶體模式</a></li>
-      <li><a href="#comparison">5. 模式比較</a></li>
-      <li><a href="#data-model">6. 資料模型擴充</a></li>
-      <li><a href="#api">7. API 設計</a></li>
-      <li><a href="#ui">8. 前端 UI 考量</a></li>
-    </ul>
-  </nav>
+    <nav class="toc">
+      <h3>目錄</h3>
+      <ul>
+        <li><a href="#overview">1. 概述</a></li>
+        <li><a href="#mode-a">2. 模式 A：Router 協調模式</a></li>
+        <li><a href="#mode-b">3. 模式 B：對話鏈模式</a></li>
+        <li><a href="#mode-c">4. 模式 C：共享記憶體模式</a></li>
+        <li><a href="#comparison">5. 模式比較</a></li>
+        <li><a href="#data-model">6. 資料模型擴充</a></li>
+        <li><a href="#api">7. API 設計</a></li>
+        <li><a href="#ui">8. 前端 UI 考量</a></li>
+      </ul>
+    </nav>
 
-  <section id="overview">
-    <h2>1. 概述</h2>
+    <section id="overview">
+      <h2>1. 概述</h2>
 
-    <h3>現況</h3>
-    <p>目前系統支援：</p>
-    <ul>
-      <li>單一代理者與使用者對話</li>
-      <li>每個代理者獨立運作，擁有各自的 system_prompt、MCP、Skills、RAG</li>
-      <li><code>is_router</code> 欄位存在但尚未啟用協調功能</li>
-    </ul>
+      <h3>現況</h3>
+      <p>目前系統支援：</p>
+      <ul>
+        <li>單一代理者與使用者對話</li>
+        <li>每個代理者獨立運作，擁有各自的 system_prompt、MCP、Skills、RAG</li>
+        <li><code>is_router</code> 欄位存在但尚未啟用協調功能</li>
+      </ul>
 
-    <h3>目標</h3>
-    <p>實現多代理者協作，讓代理者能夠：</p>
-    <ol>
-      <li><strong>討論</strong> - 針對任務互相交換意見</li>
-      <li><strong>規劃</strong> - 共同研究出執行計畫</li>
-      <li><strong>分工</strong> - 根據各自專長分配子任務</li>
-      <li><strong>彙整</strong> - 將各代理者的成果整合回報</li>
-    </ol>
-  </section>
+      <h3>目標</h3>
+      <p>實現多代理者協作，讓代理者能夠：</p>
+      <ol>
+        <li><strong>討論</strong> - 針對任務互相交換意見</li>
+        <li><strong>規劃</strong> - 共同研究出執行計畫</li>
+        <li><strong>分工</strong> - 根據各自專長分配子任務</li>
+        <li><strong>彙整</strong> - 將各代理者的成果整合回報</li>
+      </ol>
+    </section>
 
-  <section id="mode-a">
-    <h2>2. 模式 A：Router 協調模式</h2>
+    <section id="mode-a">
+      <h2>2. 模式 A：Router 協調模式</h2>
 
-    <h3>概念</h3>
-    <p>由一個「主代理者（Router）」擔任指揮官角色，負責：</p>
-    <ul>
-      <li>分析使用者任務</li>
-      <li>決定需要哪些子代理者參與</li>
-      <li>發送子任務給各代理者</li>
-      <li>彙整所有回覆後回報使用者</li>
-    </ul>
+      <h3>概念</h3>
+      <p>由一個「主代理者（Router）」擔任指揮官角色，負責：</p>
+      <ul>
+        <li>分析使用者任務</li>
+        <li>決定需要哪些子代理者參與</li>
+        <li>發送子任務給各代理者</li>
+        <li>彙整所有回覆後回報使用者</li>
+      </ul>
 
-    <h3>架構圖</h3>
-    <div class="diagram">┌─────────────────────────────────────────────────────────────┐
-│                        使用者                                │
-└─────────────────────────────┬───────────────────────────────┘
-                              │ 提問/任務
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Router Agent (主代理者)                    │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ 1. 分析任務                                          │   │
-│  │ 2. 決定參與的子代理者                                 │   │
-│  │ 3. 生成子任務 prompt                                  │   │
-│  │ 4. 彙整結果                                          │   │
-│  └─────────────────────────────────────────────────────┘   │
-└───────┬─────────────────┬─────────────────┬─────────────────┘
-        │                 │                 │
-        ▼                 ▼                 ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│  Agent A      │ │  Agent B      │ │  Agent C      │
-│  (程式專家)    │ │  (測試專家)    │ │  (文件專家)    │
-└───────┬───────┘ └───────┬───────┘ └───────┬───────┘
-        │                 │                 │
-        └────────────────┬┴─────────────────┘
-                         │ 各自回覆
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Router Agent (彙整)                        │
-└─────────────────────────────┬───────────────────────────────┘
-                              │ 最終回覆
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                        使用者                                │
-└─────────────────────────────────────────────────────────────┘</div>
+      <h3>架構圖</h3>
+      <div class="diagram">
+        ┌─────────────────────────────────────────────────────────────┐ │ 使用者
+        │ └─────────────────────────────┬───────────────────────────────┘ │
+        提問/任務 ▼
+        ┌─────────────────────────────────────────────────────────────┐ │ Router
+        Agent (主代理者) │ │
+        ┌─────────────────────────────────────────────────────┐ │ │ │ 1.
+        分析任務 │ │ │ │ 2. 決定參與的子代理者 │ │ │ │ 3. 生成子任務 prompt │ │
+        │ │ 4. 彙整結果 │ │ │
+        └─────────────────────────────────────────────────────┘ │
+        └───────┬─────────────────┬─────────────────┬─────────────────┘ │ │ │ ▼
+        ▼ ▼ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ │ Agent A │ │
+        Agent B │ │ Agent C │ │ (程式專家) │ │ (測試專家) │ │ (文件專家) │
+        └───────┬───────┘ └───────┬───────┘ └───────┬───────┘ │ │ │
+        └────────────────┬┴─────────────────┘ │ 各自回覆 ▼
+        ┌─────────────────────────────────────────────────────────────┐ │ Router
+        Agent (彙整) │
+        └─────────────────────────────┬───────────────────────────────┘ │
+        最終回覆 ▼
+        ┌─────────────────────────────────────────────────────────────┐ │ 使用者
+        │ └─────────────────────────────────────────────────────────────┘
+      </div>
 
-    <h3>執行流程（虛擬碼）</h3>
-    <pre><code>async def router_handle_message(user_message: str):
+      <h3>執行流程（虛擬碼）</h3>
+      <pre><code>async def router_handle_message(user_message: str):
     # Step 1: 分析任務，決定需要哪些代理者
     analysis = await router_llm.analyze(f"""
         使用者任務: {user_message}
@@ -225,8 +315,8 @@
 
     return final_response</code></pre>
 
-    <h3>Router 設定</h3>
-    <pre><code>{
+      <h3>Router 設定</h3>
+      <pre><code>{
   "is_router": true,
   "router_config": {
     "mode": "parallel",           // parallel | sequential | adaptive
@@ -238,66 +328,54 @@
   }
 }</code></pre>
 
-    <div class="pros-cons">
-      <div class="pros">
-        <h4>優點</h4>
-        <ul>
-          <li>架構清晰，易於理解</li>
-          <li>使用者只需與一個入口互動</li>
-          <li>子代理者可以並行執行，效率高</li>
-          <li>Router 可以過濾/重組子代理者的回覆</li>
-        </ul>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>優點</h4>
+          <ul>
+            <li>架構清晰，易於理解</li>
+            <li>使用者只需與一個入口互動</li>
+            <li>子代理者可以並行執行，效率高</li>
+            <li>Router 可以過濾/重組子代理者的回覆</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>缺點</h4>
+          <ul>
+            <li>Router 成為單點瓶頸</li>
+            <li>子代理者間無法直接對話</li>
+            <li>Router 的 prompt 設計複雜度高</li>
+            <li>需要額外的 token 消耗（Router 分析 + 彙整）</li>
+          </ul>
+        </div>
       </div>
-      <div class="cons">
-        <h4>缺點</h4>
-        <ul>
-          <li>Router 成為單點瓶頸</li>
-          <li>子代理者間無法直接對話</li>
-          <li>Router 的 prompt 設計複雜度高</li>
-          <li>需要額外的 token 消耗（Router 分析 + 彙整）</li>
-        </ul>
+    </section>
+
+    <section id="mode-b">
+      <h2>3. 模式 B：對話鏈模式</h2>
+
+      <h3>概念</h3>
+      <p>
+        代理者之間可以互相「@mention」進行對話，形成討論鏈。類似 Slack/Discord
+        的體驗。
+      </p>
+
+      <h3>架構圖</h3>
+      <div class="diagram">
+        ┌─────────────────────────────────────────────────────────────┐ │
+        共享對話空間 │
+        ├─────────────────────────────────────────────────────────────┤ │ │ │
+        [使用者] 請幫我設計一個登入系統 │ │ │ │ │ ▼ │ │ [Agent A - 架構師] │ │
+        我建議使用 JWT + OAuth2，@Agent_B 你覺得安全性如何？ │ │ │ │ │ ▼ │ │
+        [Agent B - 資安專家] │ │ JWT 需要注意 token 過期和刷新機制。建議加上
+        refresh token。 │ │ @Agent_C 請根據這個方向實作。 │ │ │ │ │ ▼ │ │ [Agent
+        C - 開發者] │ │ 好的，我開始實作。以下是程式碼： │ │ ```python │ │ class
+        AuthService: │ │ ... │ │ ``` │ │ │ │ │ ▼ │ │ [Agent A - 架構師] │ │
+        程式碼看起來不錯。@使用者 以上是我們團隊的討論結果。 │ │ │
+        └─────────────────────────────────────────────────────────────┘
       </div>
-    </div>
-  </section>
 
-  <section id="mode-b">
-    <h2>3. 模式 B：對話鏈模式</h2>
-
-    <h3>概念</h3>
-    <p>代理者之間可以互相「@mention」進行對話，形成討論鏈。類似 Slack/Discord 的體驗。</p>
-
-    <h3>架構圖</h3>
-    <div class="diagram">┌─────────────────────────────────────────────────────────────┐
-│                     共享對話空間                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  [使用者] 請幫我設計一個登入系統                              │
-│           │                                                 │
-│           ▼                                                 │
-│  [Agent A - 架構師]                                         │
-│  我建議使用 JWT + OAuth2，@Agent_B 你覺得安全性如何？         │
-│           │                                                 │
-│           ▼                                                 │
-│  [Agent B - 資安專家]                                        │
-│  JWT 需要注意 token 過期和刷新機制。建議加上 refresh token。  │
-│  @Agent_C 請根據這個方向實作。                               │
-│           │                                                 │
-│           ▼                                                 │
-│  [Agent C - 開發者]                                          │
-│  好的，我開始實作。以下是程式碼：                             │
-│  ```python                                                  │
-│  class AuthService:                                         │
-│      ...                                                    │
-│  ```                                                        │
-│           │                                                 │
-│           ▼                                                 │
-│  [Agent A - 架構師]                                         │
-│  程式碼看起來不錯。@使用者 以上是我們團隊的討論結果。          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘</div>
-
-    <h3>執行流程（虛擬碼）</h3>
-    <pre><code>async def handle_message_chain(conversation_id: str, sender: str, message: str):
+      <h3>執行流程（虛擬碼）</h3>
+      <pre><code>async def handle_message_chain(conversation_id: str, sender: str, message: str):
     # Step 1: 解析 @mention
     mentions = parse_mentions(message)  # ["Agent_B", "Agent_C"]
 
@@ -315,17 +393,32 @@
         # 遞迴處理（可能包含新的 @mention）
         await handle_message_chain(conversation_id, mentioned_agent, response)</code></pre>
 
-    <h3>@mention 語法</h3>
-    <table>
-      <tr><th>語法</th><th>說明</th></tr>
-      <tr><td><code>@Agent_Name</code></td><td>指定代理者</td></tr>
-      <tr><td><code>@all</code></td><td>所有代理者</td></tr>
-      <tr><td><code>@team:dev</code></td><td>標籤為 "dev" 的代理者群組</td></tr>
-      <tr><td><code>@user</code></td><td>回覆使用者</td></tr>
-    </table>
+      <h3>@mention 語法</h3>
+      <table>
+        <tr>
+          <th>語法</th>
+          <th>說明</th>
+        </tr>
+        <tr>
+          <td><code>@Agent_Name</code></td>
+          <td>指定代理者</td>
+        </tr>
+        <tr>
+          <td><code>@all</code></td>
+          <td>所有代理者</td>
+        </tr>
+        <tr>
+          <td><code>@team:dev</code></td>
+          <td>標籤為 "dev" 的代理者群組</td>
+        </tr>
+        <tr>
+          <td><code>@user</code></td>
+          <td>回覆使用者</td>
+        </tr>
+      </table>
 
-    <h3>對話鏈設定</h3>
-    <pre><code>{
+      <h3>對話鏈設定</h3>
+      <pre><code>{
   "chain_config": {
     "max_chain_depth": 10,        // 最大對話深度，防止無限迴圈
     "max_agents_per_turn": 3,     // 每輪最多觸發幾個代理者
@@ -335,74 +428,63 @@
   }
 }</code></pre>
 
-    <div class="pros-cons">
-      <div class="pros">
-        <h4>優點</h4>
-        <ul>
-          <li>對話自然，類似人類團隊討論</li>
-          <li>代理者可以互相補充、質疑、改進</li>
-          <li>適合需要多輪討論的複雜任務</li>
-          <li>使用者可以觀察整個討論過程</li>
-        </ul>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>優點</h4>
+          <ul>
+            <li>對話自然，類似人類團隊討論</li>
+            <li>代理者可以互相補充、質疑、改進</li>
+            <li>適合需要多輪討論的複雜任務</li>
+            <li>使用者可以觀察整個討論過程</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>缺點</h4>
+          <ul>
+            <li>可能產生過多對話（token 消耗高）</li>
+            <li>需要防止無限迴圈（A → B → A → B...）</li>
+            <li>對話順序管理複雜</li>
+            <li>延遲可能較高（需要等待每個代理者回覆）</li>
+          </ul>
+        </div>
       </div>
-      <div class="cons">
-        <h4>缺點</h4>
-        <ul>
-          <li>可能產生過多對話（token 消耗高）</li>
-          <li>需要防止無限迴圈（A → B → A → B...）</li>
-          <li>對話順序管理複雜</li>
-          <li>延遲可能較高（需要等待每個代理者回覆）</li>
-        </ul>
+    </section>
+
+    <section id="mode-c">
+      <h2>4. 模式 C：共享記憶體模式</h2>
+
+      <h3>概念</h3>
+      <p>
+        所有代理者共享一個「任務板（Task
+        Board）」或「知識庫」，各自讀寫資訊。類似 Notion/Trello 協作。
+      </p>
+
+      <h3>架構圖</h3>
+      <div class="diagram">
+        ┌─────────────────────────────────────────────────────────────┐ │
+        共享任務板 (Task Board) │
+        ├─────────────────────────────────────────────────────────────┤ │ │ │
+        ┌─────────────────────────────────────────────────────┐ │ │ │
+        任務：設計登入系統 │ │ │ │ 狀態：進行中 │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │ ┌─
+        分析區 ─────────────────────────────────────────────┐ │ │ │ [Agent A]
+        需求分析： │ │ │ │ • 需要支援 OAuth2 │ │ │ │ • 需要 MFA 支援 │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │ ┌─
+        設計區 ─────────────────────────────────────────────┐ │ │ │ [Agent B]
+        技術設計： │ │ │ │ • 架構圖：[連結] │ │ │ │ • API 規格：[連結] │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │ ┌─
+        實作區 ─────────────────────────────────────────────┐ │ │ │ [Agent C]
+        程式碼： │ │ │ │ • auth_service.py ✅ │ │ │ │ • token_manager.py ✅ │ │
+        │ │ • tests/ 🔄 進行中 │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │
+        └─────────────────────────────────────────────────────────────┘ ▲ ▲ ▲ ▲
+        │ │ │ │ ┌────┴────┐ ┌────┴────┐ ┌────┴────┐ ┌────┴────┐ │ Agent A │ │
+        Agent B │ │ Agent C │ │ Agent D │ │ (分析) │ │ (設計) │ │ (實作) │ │
+        (審查) │ └─────────┘ └─────────┘ └─────────┘ └─────────┘
       </div>
-    </div>
-  </section>
 
-  <section id="mode-c">
-    <h2>4. 模式 C：共享記憶體模式</h2>
-
-    <h3>概念</h3>
-    <p>所有代理者共享一個「任務板（Task Board）」或「知識庫」，各自讀寫資訊。類似 Notion/Trello 協作。</p>
-
-    <h3>架構圖</h3>
-    <div class="diagram">┌─────────────────────────────────────────────────────────────┐
-│                    共享任務板 (Task Board)                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ 任務：設計登入系統                                    │   │
-│  │ 狀態：進行中                                         │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─ 分析區 ─────────────────────────────────────────────┐   │
-│  │ [Agent A] 需求分析：                                  │   │
-│  │ • 需要支援 OAuth2                                     │   │
-│  │ • 需要 MFA 支援                                       │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─ 設計區 ─────────────────────────────────────────────┐   │
-│  │ [Agent B] 技術設計：                                  │   │
-│  │ • 架構圖：[連結]                                      │   │
-│  │ • API 規格：[連結]                                    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─ 實作區 ─────────────────────────────────────────────┐   │
-│  │ [Agent C] 程式碼：                                    │   │
-│  │ • auth_service.py ✅                                  │   │
-│  │ • token_manager.py ✅                                 │   │
-│  │ • tests/ 🔄 進行中                                    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-
-         ▲              ▲              ▲              ▲
-         │              │              │              │
-    ┌────┴────┐    ┌────┴────┐    ┌────┴────┐    ┌────┴────┐
-    │ Agent A │    │ Agent B │    │ Agent C │    │ Agent D │
-    │ (分析)   │    │ (設計)   │    │ (實作)   │    │ (審查)   │
-    └─────────┘    └─────────┘    └─────────┘    └─────────┘</div>
-
-    <h3>任務板結構</h3>
-    <pre><code>{
+      <h3>任務板結構</h3>
+      <pre><code>{
   "task_id": "uuid",
   "title": "設計登入系統",
   "status": "in_progress",
@@ -429,99 +511,100 @@
   }
 }</code></pre>
 
-    <div class="pros-cons">
-      <div class="pros">
-        <h4>優點</h4>
-        <ul>
-          <li>結構化，易於追蹤進度</li>
-          <li>各代理者可以非同步工作</li>
-          <li>支援複雜的工作流程（依賴關係）</li>
-          <li>所有資訊集中，便於回顧</li>
-        </ul>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>優點</h4>
+          <ul>
+            <li>結構化，易於追蹤進度</li>
+            <li>各代理者可以非同步工作</li>
+            <li>支援複雜的工作流程（依賴關係）</li>
+            <li>所有資訊集中，便於回顧</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>缺點</h4>
+          <ul>
+            <li>需要額外的「任務板」資料結構</li>
+            <li>代理者需要理解任務板操作</li>
+            <li>即時性較差（輪詢 vs 推送）</li>
+            <li>衝突處理（多代理者同時寫入）</li>
+          </ul>
+        </div>
       </div>
-      <div class="cons">
-        <h4>缺點</h4>
-        <ul>
-          <li>需要額外的「任務板」資料結構</li>
-          <li>代理者需要理解任務板操作</li>
-          <li>即時性較差（輪詢 vs 推送）</li>
-          <li>衝突處理（多代理者同時寫入）</li>
-        </ul>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <section id="comparison">
-    <h2>5. 模式比較</h2>
+    <section id="comparison">
+      <h2>5. 模式比較</h2>
 
-    <table>
-      <thead>
-        <tr>
-          <th>特性</th>
-          <th>Router 協調</th>
-          <th>對話鏈</th>
-          <th>共享記憶體</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>複雜度</strong></td>
-          <td><span class="badge badge-warning">中</span></td>
-          <td><span class="badge badge-danger">高</span></td>
-          <td><span class="badge badge-danger">高</span></td>
-        </tr>
-        <tr>
-          <td><strong>即時性</strong></td>
-          <td><span class="badge badge-success">高</span></td>
-          <td><span class="badge badge-warning">中</span></td>
-          <td><span class="badge badge-danger">低</span></td>
-        </tr>
-        <tr>
-          <td><strong>Token 消耗</strong></td>
-          <td><span class="badge badge-warning">中</span></td>
-          <td><span class="badge badge-danger">高</span></td>
-          <td><span class="badge badge-warning">中</span></td>
-        </tr>
-        <tr>
-          <td><strong>可追蹤性</strong></td>
-          <td><span class="badge badge-warning">中</span></td>
-          <td><span class="badge badge-success">高</span></td>
-          <td><span class="badge badge-success">高</span></td>
-        </tr>
-        <tr>
-          <td><strong>擴展性</strong></td>
-          <td><span class="badge badge-warning">中</span></td>
-          <td><span class="badge badge-warning">中</span></td>
-          <td><span class="badge badge-success">高</span></td>
-        </tr>
-        <tr>
-          <td><strong>適用場景</strong></td>
-          <td>明確分工任務</td>
-          <td>討論型任務</td>
-          <td>長期專案</td>
-        </tr>
-        <tr>
-          <td><strong>實作難度</strong></td>
-          <td>★★☆</td>
-          <td>★★★</td>
-          <td>★★★</td>
-        </tr>
-      </tbody>
-    </table>
+      <table>
+        <thead>
+          <tr>
+            <th>特性</th>
+            <th>Router 協調</th>
+            <th>對話鏈</th>
+            <th>共享記憶體</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>複雜度</strong></td>
+            <td><span class="badge badge-warning">中</span></td>
+            <td><span class="badge badge-danger">高</span></td>
+            <td><span class="badge badge-danger">高</span></td>
+          </tr>
+          <tr>
+            datetime.now
+            <td><strong>即時性</strong></td>
+            <td><span class="badge badge-success">高</span></td>
+            <td><span class="badge badge-warning">中</span></td>
+            <td><span class="badge badge-danger">低</span></td>
+          </tr>
+          <tr>
+            <td><strong>Token 消耗</strong></td>
+            <td><span class="badge badge-warning">中</span></td>
+            <td><span class="badge badge-danger">高</span></td>
+            <td><span class="badge badge-warning">中</span></td>
+          </tr>
+          <tr>
+            <td><strong>可追蹤性</strong></td>
+            <td><span class="badge badge-warning">中</span></td>
+            <td><span class="badge badge-success">高</span></td>
+            <td><span class="badge badge-success">高</span></td>
+          </tr>
+          <tr>
+            <td><strong>擴展性</strong></td>
+            <td><span class="badge badge-warning">中</span></td>
+            <td><span class="badge badge-warning">中</span></td>
+            <td><span class="badge badge-success">高</span></td>
+          </tr>
+          <tr>
+            <td><strong>適用場景</strong></td>
+            <td>明確分工任務</td>
+            <td>討論型任務</td>
+            <td>長期專案</td>
+          </tr>
+          <tr>
+            <td><strong>實作難度</strong></td>
+            <td>★★☆</td>
+            <td>★★★</td>
+            <td>★★★</td>
+          </tr>
+        </tbody>
+      </table>
 
-    <h3>建議優先順序</h3>
-    <ol>
-      <li><strong>Phase 1</strong>: 實作 Router 協調模式（MVP）</li>
-      <li><strong>Phase 2</strong>: 加入對話鏈模式（進階功能）</li>
-      <li><strong>Phase 3</strong>: 實作共享記憶體模式（完整方案）</li>
-    </ol>
-  </section>
+      <h3>建議優先順序</h3>
+      <ol>
+        <li><strong>Phase 1</strong>: 實作 Router 協調模式（MVP）</li>
+        <li><strong>Phase 2</strong>: 加入對話鏈模式（進階功能）</li>
+        <li><strong>Phase 3</strong>: 實作共享記憶體模式（完整方案）</li>
+      </ol>
+    </section>
 
-  <section id="data-model">
-    <h2>6. 資料模型擴充</h2>
+    <section id="data-model">
+      <h2>6. 資料模型擴充</h2>
 
-    <h3>Agent 模型擴充</h3>
-    <pre><code>class Agent(Base):
+      <h3>Agent 模型擴充</h3>
+      <pre><code>class Agent(Base):
     # ... 現有欄位 ...
 
     # 新增欄位
@@ -534,8 +617,8 @@
     # 可被哪些代理者呼叫
     callable_by = Column(JSON, default=list)  # ["*"] 或 ["uuid1", "uuid2"]</code></pre>
 
-    <h3>新增：多代理者對話模型</h3>
-    <pre><code>class MultiAgentConversation(Base):
+      <h3>新增：多代理者對話模型</h3>
+      <pre><code>class MultiAgentConversation(Base):
     """多代理者協作對話"""
     __tablename__ = 'multi_agent_conversations'
 
@@ -552,8 +635,8 @@
     # 設定
     config = Column(JSON, default=dict)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class MultiAgentMessage(Base):
@@ -575,7 +658,7 @@ class MultiAgentMessage(Base):
     parent_message_id = Column(GUID(), nullable=True)
     metadata = Column(JSON, default=dict)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class TaskBoard(Base):
@@ -595,15 +678,15 @@ class TaskBoard(Base):
     # 各區塊內容
     sections = Column(JSON, default=dict)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)</code></pre>
-  </section>
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)</code></pre>
+    </section>
 
-  <section id="api">
-    <h2>7. API 設計</h2>
+    <section id="api">
+      <h2>7. API 設計</h2>
 
-    <h3>Router 協調模式 API</h3>
-    <pre><code>POST /multi-agent/router/chat
+      <h3>Router 協調模式 API</h3>
+      <pre><code>POST /multi-agent/router/chat
 {
   "router_agent_id": "uuid",
   "message": "請幫我設計登入系統",
@@ -626,8 +709,8 @@ data: {"agent_id": "uuid1", "content": "建議使用..."}
 event: final_response
 data: {"content": "根據團隊討論，我們建議..."}</code></pre>
 
-    <h3>對話鏈模式 API</h3>
-    <pre><code>POST /multi-agent/chain/message
+      <h3>對話鏈模式 API</h3>
+      <pre><code>POST /multi-agent/chain/message
 {
   "conversation_id": "uuid",
   "sender_type": "user",
@@ -651,8 +734,8 @@ data: {"message_id": "uuid2", "agent_name": "架構師", "content": "我建議..
 event: chain_complete
 data: {"conversation_id": "uuid", "message_count": 4}</code></pre>
 
-    <h3>共享記憶體模式 API</h3>
-    <pre><code>POST /multi-agent/board/create
+      <h3>共享記憶體模式 API</h3>
+      <pre><code>POST /multi-agent/board/create
 {
   "title": "設計登入系統",
   "participant_agent_ids": ["uuid1", "uuid2", "uuid3"],
@@ -670,114 +753,109 @@ POST /multi-agent/board/{board_id}/trigger
 
 WebSocket /multi-agent/board/{board_id}/subscribe
 -> 即時接收任務板更新</code></pre>
-  </section>
+    </section>
 
-  <section id="ui">
-    <h2>8. 前端 UI 考量</h2>
+    <section id="ui">
+      <h2>8. 前端 UI 考量</h2>
 
-    <h3>Router 模式 UI</h3>
-    <div class="diagram">┌─────────────────────────────────────────────────────────────┐
-│ 智能助理（多代理者協作）                              [設定] │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ [使用者] 請幫我設計登入系統                          │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ [Router] 正在協調團隊...                             │   │
-│  │                                                       │   │
-│  │ ├─ [架構師] 🔄 設計架構中...                         │   │
-│  │ ├─ [資安專家] ✅ 已提供安全建議                      │   │
-│  │ └─ [開發者] ⏳ 等待中                                │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ [Router] 彙整結果：                                  │   │
-│  │ 根據團隊討論，建議採用以下方案...                     │   │
-│  │ [展開詳細討論 ▼]                                     │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│ [輸入訊息...]                                    [發送]     │
-└─────────────────────────────────────────────────────────────┘</div>
+      <h3>Router 模式 UI</h3>
+      <div class="diagram">
+        ┌─────────────────────────────────────────────────────────────┐ │
+        智能助理（多代理者協作） [設定] │
+        ├─────────────────────────────────────────────────────────────┤ │ │ │
+        ┌─────────────────────────────────────────────────────┐ │ │ │ [使用者]
+        請幫我設計登入系統 │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │
+        ┌─────────────────────────────────────────────────────┐ │ │ │ [Router]
+        正在協調團隊... │ │ │ │ │ │ │ │ ├─ [架構師] 🔄 設計架構中... │ │ │ │ ├─
+        [資安專家] ✅ 已提供安全建議 │ │ │ │ └─ [開發者] ⏳ 等待中 │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │
+        ┌─────────────────────────────────────────────────────┐ │ │ │ [Router]
+        彙整結果： │ │ │ │ 根據團隊討論，建議採用以下方案... │ │ │ │
+        [展開詳細討論 ▼] │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │
+        ├─────────────────────────────────────────────────────────────┤ │
+        [輸入訊息...] [發送] │
+        └─────────────────────────────────────────────────────────────┘
+      </div>
 
-    <h3>對話鏈模式 UI</h3>
-    <div class="diagram">┌─────────────────────────────────────────────────────────────┐
-│ 團隊討論室                                          [成員] │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  [使用者] 10:00                                             │
-│  請幫我設計登入系統 @架構師                                  │
-│                                                             │
-│  [架構師] 10:01                                             │
-│  我建議使用 JWT + OAuth2。                                  │
-│  @資安專家 你覺得這個方案的安全性如何？                      │
-│                                                             │
-│  [資安專家] 10:02                                           │
-│  JWT 方案 OK，但要注意：                                    │
-│  1. Token 過期時間不要太長                                  │
-│  2. 建議加上 refresh token                                  │
-│  @開發者 可以開始實作了                                     │
-│                                                             │
-│  [開發者] 10:05                                             │
-│  收到！以下是初步程式碼...                                   │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│ @  [輸入訊息...]                                  [發送]    │
-└─────────────────────────────────────────────────────────────┘</div>
+      <h3>對話鏈模式 UI</h3>
+      <div class="diagram">
+        ┌─────────────────────────────────────────────────────────────┐ │
+        團隊討論室 [成員] │
+        ├─────────────────────────────────────────────────────────────┤ │ │ │
+        [使用者] 10:00 │ │ 請幫我設計登入系統 @架構師 │ │ │ │ [架構師] 10:01 │ │
+        我建議使用 JWT + OAuth2。 │ │ @資安專家 你覺得這個方案的安全性如何？ │ │
+        │ │ [資安專家] 10:02 │ │ JWT 方案 OK，但要注意： │ │ 1. Token
+        過期時間不要太長 │ │ 2. 建議加上 refresh token │ │ @開發者
+        可以開始實作了 │ │ │ │ [開發者] 10:05 │ │ 收到！以下是初步程式碼... │ │
+        │ ├─────────────────────────────────────────────────────────────┤ │ @
+        [輸入訊息...] [發送] │
+        └─────────────────────────────────────────────────────────────┘
+      </div>
 
-    <h3>任務板模式 UI</h3>
-    <div class="diagram">┌─────────────────────────────────────────────────────────────┐
-│ 任務板：設計登入系統                    狀態：進行中  [設定] │
-├──────────┬──────────┬──────────┬──────────┬─────────────────┤
-│  需求分析 │  技術設計 │   實作    │   審查   │     總結       │
-│    ✅    │    ✅    │    🔄    │    ⏳    │      ⏳        │
-├──────────┴──────────┴──────────┴──────────┴─────────────────┤
-│                                                             │
-│  ┌─ 需求分析 (by 分析師) ───────────────────────────────┐   │
-│  │ • 支援 OAuth2 登入                                    │   │
-│  │ • 支援 MFA                                            │   │
-│  │ • 密碼強度檢查                                        │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─ 技術設計 (by 架構師) ───────────────────────────────┐   │
-│  │ [架構圖] [API 規格] [資料庫設計]                       │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─ 實作進度 (by 開發者) ───────────────────────────────┐   │
-│  │ ■■■■■■■□□□ 70%                                        │   │
-│  │ • auth_service.py ✅                                  │   │
-│  │ • token_manager.py ✅                                 │   │
-│  │ • tests/ 🔄                                           │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│ [新增項目]  [推進到下一階段]  [結束任務]                     │
-└─────────────────────────────────────────────────────────────┘</div>
-  </section>
+      <h3>任務板模式 UI</h3>
+      <div class="diagram">
+        ┌─────────────────────────────────────────────────────────────┐ │
+        任務板：設計登入系統 狀態：進行中 [設定] │
+        ├──────────┬──────────┬──────────┬──────────┬─────────────────┤ │
+        需求分析 │ 技術設計 │ 實作 │ 審查 │ 總結 │ │ ✅ │ ✅ │ 🔄 │ ⏳ │ ⏳ │
+        ├──────────┴──────────┴──────────┴──────────┴─────────────────┤ │ │ │ ┌─
+        需求分析 (by 分析師) ───────────────────────────────┐ │ │ │ • 支援
+        OAuth2 登入 │ │ │ │ • 支援 MFA │ │ │ │ • 密碼強度檢查 │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │ ┌─
+        技術設計 (by 架構師) ───────────────────────────────┐ │ │ │ [架構圖]
+        [API 規格] [資料庫設計] │ │ │
+        └─────────────────────────────────────────────────────┘ │ │ │ │ ┌─
+        實作進度 (by 開發者) ───────────────────────────────┐ │ │ │ ■■■■■■■□□□
+        70% │ │ │ │ • auth_service.py ✅ │ │ │ │ • token_manager.py ✅ │ │ │ │ •
+        tests/ 🔄 │ │ │ └─────────────────────────────────────────────────────┘
+        │ │ │ ├─────────────────────────────────────────────────────────────┤ │
+        [新增項目] [推進到下一階段] [結束任務] │
+        └─────────────────────────────────────────────────────────────┘
+      </div>
+    </section>
 
-  <section>
-    <h2>下一步</h2>
-    <ol>
-      <li><strong>討論確認</strong>：決定優先實作哪種模式</li>
-      <li><strong>詳細設計</strong>：針對選定模式進行 API 詳細設計</li>
-      <li><strong>資料庫遷移</strong>：新增必要的資料表</li>
-      <li><strong>後端實作</strong>：實作 API 和協作邏輯</li>
-      <li><strong>前端實作</strong>：實作對應的 UI</li>
-      <li><strong>測試驗證</strong>：單元測試 + 整合測試</li>
-    </ol>
-  </section>
+    <section>
+      <h2>下一步</h2>
+      <ol>
+        <li><strong>討論確認</strong>：決定優先實作哪種模式</li>
+        <li><strong>詳細設計</strong>：針對選定模式進行 API 詳細設計</li>
+        <li><strong>資料庫遷移</strong>：新增必要的資料表</li>
+        <li><strong>後端實作</strong>：實作 API 和協作邏輯</li>
+        <li><strong>前端實作</strong>：實作對應的 UI</li>
+        <li><strong>測試驗證</strong>：單元測試 + 整合測試</li>
+      </ol>
+    </section>
 
-  <section>
-    <h2>參考資料</h2>
-    <ul>
-      <li><a href="https://github.com/langchain-ai/langgraph" target="_blank">LangGraph</a> - Multi-agent orchestration</li>
-      <li><a href="https://github.com/joaomdmoura/crewAI" target="_blank">CrewAI</a> - Role-based agent collaboration</li>
-      <li><a href="https://github.com/microsoft/autogen" target="_blank">AutoGen</a> - Multi-agent conversation framework</li>
-      <li><a href="https://github.com/OpenBMB/ChatDev" target="_blank">ChatDev</a> - Software development via agent collaboration</li>
-    </ul>
-  </section>
-
-</body>
+    <section>
+      <h2>參考資料</h2>
+      <ul>
+        <li>
+          <a href="https://github.com/langchain-ai/langgraph" target="_blank"
+            >LangGraph</a
+          >
+          - Multi-agent orchestration
+        </li>
+        <li>
+          <a href="https://github.com/joaomdmoura/crewAI" target="_blank"
+            >CrewAI</a
+          >
+          - Role-based agent collaboration
+        </li>
+        <li>
+          <a href="https://github.com/microsoft/autogen" target="_blank"
+            >AutoGen</a
+          >
+          - Multi-agent conversation framework
+        </li>
+        <li>
+          <a href="https://github.com/OpenBMB/ChatDev" target="_blank"
+            >ChatDev</a
+          >
+          - Software development via agent collaboration
+        </li>
+      </ul>
+    </section>
+  </body>
 </html>

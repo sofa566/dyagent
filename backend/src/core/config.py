@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # 資料快取目錄（ZIP 解壓縮、暫存檔）
     DATA_CACHE_PATH: str = '/tmp/dyagent-cache'
 
+    # HTML 技能互動設定
+    SKILL_INTERACTION_TTL_SEC: int = 1800
+    SKILL_UI_TOKEN_TTL_SEC: int = 600
+    SKILL_UI_TOKEN_SECRET: str = 'change-this-skill-ui-token-secret'
+
     # Secrets provider 設定
     # env | vault | aws | gcp | k8s
     SECRETS_PROVIDER: str = 'env'

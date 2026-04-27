@@ -49,8 +49,8 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     role = Column(Enum('admin', 'agent_admin', 'user', name='user_role'), nullable=False, default='user')
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 提醒：如需存取使用者日誌，請於查詢層以 user_id 過濾 Log 表（為避免測試環境多重映射，暫不在此建立關聯）
 
@@ -70,7 +70,7 @@ class Workspace(Base):
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     name = Column(String(50), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
     # 為降低測試環境之映射衝突風險，暫不在此建立到 Agent 的關聯
     # 如需查詢某工作區的代理者，請於查詢層以 workspace_id 過濾 Agent 表
 
@@ -95,8 +95,8 @@ class Agent(Base):
     tools = Column(JSON, default=list)
     rag_config = Column(JSON, default=dict)
     workspace_id = Column(GUID(), ForeignKey('workspaces.id'), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 簡化關聯以避免測試環境重複映射衝突（如需反向關聯，於查詢層處理）
 
@@ -109,8 +109,8 @@ class Conversation(Base):
     user_id = Column(GUID(), ForeignKey('users.id'), nullable=True)  # 一般使用者的會話歸屬
     agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=False)
     title = Column(String(200), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_interacted_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    last_interacted_at = Column(DateTime, default=datetime.now)
     # 簡化：避免在測試環境建立 ORM 關聯，改以查詢層透過外鍵進行串接
 
 
@@ -122,7 +122,7 @@ class Message(Base):
     conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=False)
     role = Column(Enum('user', 'assistant', name='message_role'), nullable=False)
     content = Column(Text, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.now)
 
     # 以 conversation_id 關聯，測試中不建立 ORM relationship，避免重複映射
 
@@ -139,7 +139,7 @@ class Document(Base):
     status = Column(String(20), nullable=False, default='uploaded')
     last_error = Column(Text, nullable=True)
     indexed_at = Column(DateTime, nullable=True)
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    uploaded_at = Column(DateTime, default=datetime.now)
 
     # 同上：查詢時以 agent_id 過濾
 
@@ -156,7 +156,7 @@ class Log(Base):
     resource_id = Column(GUID(), nullable=True)
     details = Column(JSON, default=dict)
     ip_address = Column(String(45), nullable=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.now)
 
     # 反向關聯由 User.logs 的 backref 提供
 
@@ -183,8 +183,8 @@ class MCPConnection(Base):
     env = Column(JSON, default=dict)
     # 輸入結構（JSON Schema，可選，用於表單渲染與驗證）
     input_schema = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # 全域 Skill 註冊表（由管理者維護）- 相容 Claude Skills
@@ -214,8 +214,8 @@ class SkillEntry(Base):
     prompt_template = Column(Text, nullable=True)  # SKILL.md 內容（提示詞模板）
     zip_bundle = Column(LargeBinary, nullable=True)  # 完整 ZIP 檔案
     references = Column(JSON, nullable=True)  # 解壓後的 references/ 內容（JSON 快取）
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # 全域函式協定模板（Functions）- 相容 OpenAI Function Calling
@@ -235,8 +235,8 @@ class FunctionProfile(Base):
     parameters = Column(JSON, nullable=True)  # OpenAI JSON Schema 格式
     handler_type = Column(String(20), nullable=True, default='internal')  # internal | webhook | mcp
     handler_config = Column(JSON, nullable=True)  # 執行配置（endpoint URL、MCP server 等）
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # RAG 資料集註冊表（公有/代理者私有）
@@ -253,8 +253,8 @@ class RagDataset(Base):
     vector_backend = Column(String(50), nullable=True)
     index_name = Column(String(150), nullable=True)
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # 多代理協作 Session（Orchestrator ReAct 生命週期）
@@ -278,8 +278,8 @@ class MultiAgentSession(Base):
     plan_json       = Column(JSON, default=dict)    # 本輪 LLM 分解計畫（每次重試覆寫）
     synthesis       = Column(Text, nullable=True)   # 最終合成回覆
     eval_ok         = Column(Boolean, nullable=True)  # 最後一次自評結果
-    created_at      = Column(DateTime, default=datetime.utcnow)
-    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at      = Column(DateTime, default=datetime.now)
+    updated_at      = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # 多代理協作子任務（每個 Session 可有多個 Task）
@@ -326,4 +326,24 @@ class LlmTurn(Base):
     latency_ms = Column(Integer, nullable=True)
     status = Column(String(20), nullable=False, default='success')
     error = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class SkillInteraction(Base):
+    """目的：儲存 HTML 技能的多步驟互動狀態。
+    為什麼：executable skill 每次為新 subprocess，需將流程狀態持久化以支援 submit/back/resume。
+    """
+    __tablename__ = 'skill_interactions'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=False)
+    tool_name = Column(String(100), nullable=False)
+    skill_id = Column(GUID(), ForeignKey('skills.id'), nullable=True)
+    status = Column(String(20), nullable=False, default='active')
+    current_step = Column(String(50), nullable=True)
+    state_json = Column(JSON, default=dict)
+    ui_session_nonce = Column(String(120), nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

@@ -11,7 +11,7 @@ import subprocess
 import os
 
 from src.core.database import get_db
-from src.models import SkillEntry, User, Log, Agent
+from src.models import SkillEntry, SkillInteraction, User, Log, Agent
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import require_role, Role
 from src.middleware.rbac import check_permission
@@ -996,6 +996,13 @@ async def delete_skill(
     row = db.query(SkillEntry).filter(SkillEntry.id == skill_id).first()
     if not row:
         raise not_found_error('Skill', skill_id)
+
+    # 目的：刪除技能前先解除互動紀錄的外鍵依賴。
+    # 為什麼：skill_interactions 會保留歷史流程，若直接刪技能會觸發 FK violation。
+    db.query(SkillInteraction).filter(SkillInteraction.skill_id == row.id).update(
+        {SkillInteraction.skill_id: None},
+        synchronize_session=False,
+    )
     db.delete(row)
     db.commit()
     return {'ok': True}

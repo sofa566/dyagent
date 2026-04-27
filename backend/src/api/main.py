@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from src.api.errors import (
     general_exception_handler,
 )
-from src.api.routes import agents, auth, chat, logs, mcp, rag, users, admin_dashboard
+from src.api.routes import agents, auth, chat, logs, mcp, rag, users, admin_dashboard, skill_ui
 from src.api.routes import mcps_admin, skills_admin
 from src.api.routes import functions_admin
 from src.core.config import settings
@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 logger = get_logger(__name__)
 
+logger.debug(f"API settings loaded: ")
 
 def _seed_router_agent(db):
     # 目的：確保系統存在主代理（Router）供 /api/chat 統一入口使用。
@@ -167,6 +168,7 @@ app.include_router(admin_dashboard.router, prefix='/api', tags=['管理儀表板
 app.include_router(mcps_admin.router, prefix='/api', tags=['MCP 管理'])
 app.include_router(skills_admin.router, prefix='/api', tags=['技能管理'])
 app.include_router(functions_admin.router, prefix='/api', tags=['Functions 管理'])
+app.include_router(skill_ui.router, prefix='/api', tags=['技能 UI'])
 
 
 @app.get('/')

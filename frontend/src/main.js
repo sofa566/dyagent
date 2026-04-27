@@ -9,6 +9,20 @@ const API_BASE = (__override
   || (window.location.port === '5173' ? __devDefault : '/api'));
 try { console.info('[dyagent] API_BASE =', API_BASE); } catch {}
 
+function sanitizeRuntimeText(rawText) {
+  let text = String(rawText || '');
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
+  text = text.replace(/<\/?system-reminder>/gi, '');
+  text = text.replace(
+    /Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\./gi,
+    '',
+  );
+  text = text.replace(/^\s*Your operational mode has changed from plan to build\.\s*$/gim, '');
+  text = text.replace(/^\s*You are no longer in read-only mode\.\s*$/gim, '');
+  text = text.replace(/^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$/gim, '');
+  return text.trim();
+}
+
 const api = {
   async request(endpoint, options = {}) {
     const token = localStorage.getItem('auth_token');
@@ -41,7 +55,7 @@ const api = {
         || (error && error.detail && typeof error.detail === 'string' ? error.detail : '')
         || (error && error.message)
         || `HTTP ${response.status}`;
-      throw new Error(message);
+      throw new Error(sanitizeRuntimeText(message) || `HTTP ${response.status}`);
     }
 
     if (response.status === 204) {
@@ -135,12 +149,13 @@ const auth = {
 };
 
 function showError(message) {
+  const cleanedMessage = sanitizeRuntimeText(message) || '發生未知錯誤';
   const errorDiv = document.getElementById('error-message');
   if (errorDiv) {
-    errorDiv.textContent = message;
+    errorDiv.textContent = cleanedMessage;
     errorDiv.style.display = 'block';
   }
-  console.error(message);
+  console.error(cleanedMessage);
 }
 
 function showSuccess(message) {
@@ -338,4 +353,4 @@ document.addEventListener('DOMContentLoaded', () => {
   arrangeNavMenu(user);
 });
 
-export { api, auth, showError, showSuccess };
+export { api, auth, showError, showSuccess, API_BASE };

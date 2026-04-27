@@ -391,6 +391,53 @@
       background: #fcfcfe;
     }
 
+    .skill-ui-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 23, 42, 0.52);
+      z-index: 60;
+      padding: 20px;
+    }
+    .skill-ui-backdrop.open { display: flex; }
+    .skill-ui-modal {
+      width: min(960px, 96vw);
+      max-height: 92vh;
+      background: #fff;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      box-shadow: 0 20px 42px rgba(15, 23, 42, 0.26);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .skill-ui-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e2e8f0;
+      background: #f8fafc;
+    }
+    .skill-ui-title { font-weight: 700; color: #1e293b; font-size: 0.95rem; }
+    .skill-ui-close {
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      border-radius: 8px;
+      padding: 4px 10px;
+      cursor: pointer;
+      color: #334155;
+    }
+    .skill-ui-frame {
+      width: 100%;
+      height: min(70vh, 760px);
+      border: 0;
+      background: #fff;
+    }
+
     @media (max-width: 900px) {
       .chat-layout { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 220px); }
       .chat-container { min-height: calc(100vh - 340px); }
@@ -402,6 +449,14 @@
         right: auto;
         bottom: 44px;
       }
+      .skill-ui-backdrop { padding: 0; }
+      .skill-ui-modal {
+        width: 100vw;
+        height: 100vh;
+        max-height: 100vh;
+        border-radius: 0;
+      }
+      .skill-ui-frame { height: calc(100vh - 48px); }
     }
   </style>
 </head>
@@ -480,9 +535,19 @@
         </div>
       </div>
     </div>
+
+    <div id="skill-ui-backdrop" class="skill-ui-backdrop" aria-hidden="true">
+      <div class="skill-ui-modal" role="dialog" aria-modal="true">
+        <div class="skill-ui-header">
+          <span id="skill-ui-title" class="skill-ui-title">技能互動</span>
+          <button id="skill-ui-close" class="skill-ui-close" type="button">關閉</button>
+        </div>
+        <iframe id="skill-ui-frame" class="skill-ui-frame" sandbox="allow-scripts allow-forms"></iframe>
+      </div>
+    </div>
   </main>
   <script type="module">
-    import { api, auth, showError } from '/main.js';
+    import { api, auth, showError, API_BASE } from '/main.js';
     import { marked } from 'marked';
     marked.setOptions({ breaks: true, gfm: true });
 
@@ -520,6 +585,10 @@
     const datasetSearchInput = document.getElementById('dataset-search-input');
     const datasetDialogCancel = document.getElementById('dataset-dialog-cancel');
     const datasetDialogSave = document.getElementById('dataset-dialog-save');
+    const skillUiBackdrop = document.getElementById('skill-ui-backdrop');
+    const skillUiTitle = document.getElementById('skill-ui-title');
+    const skillUiCloseBtn = document.getElementById('skill-ui-close');
+    const skillUiFrame = document.getElementById('skill-ui-frame');
 
     const TEXT_FILE_MAX_BYTES = 200 * 1024;
     const ATTACHMENT_TEXT_TOTAL_MAX = 600 * 1024;
@@ -535,6 +604,7 @@
     let googleTokenClient = null;
     let googlePickerReady = false;
     let googlePickerConfigCache = null;
+    let activeSkillUiContext = null;
 
     function closeAttachPopover() {
       attachPopover.classList.remove('open');
@@ -1544,12 +1614,251 @@
     function toLocalTimeStringSafe(timestampText) {
       const raw = String(timestampText || '').trim();
       if (!raw) return '';
-      const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
-      const normalized = hasTimezone ? raw : `${raw}Z`;
-      const dateObj = new Date(normalized);
+      const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+      let dateObj = new Date(normalized);
+      if (Number.isNaN(dateObj.getTime())) {
+        dateObj = new Date(`${normalized}Z`);
+      }
       if (Number.isNaN(dateObj.getTime())) return '';
       return dateObj.toLocaleTimeString();
     }
+
+    function openSkillUi(payload) {
+      const uiUrl = resolveSkillUiUrl(String(payload.ui_url || '').trim());
+      if (!uiUrl) return;
+      let interactionId = String(payload.interaction_id || '').trim();
+      if (!interactionId) {
+        const match = uiUrl.match(/\/skills\/ui\/([^/]+)\//);
+        if (match && match[1]) interactionId = String(match[1]);
+      }
+      if (!interactionId) return;
+      const channelNonce = String(payload.channel_nonce || '').trim();
+      if (!channelNonce) return;
+
+      const payloadConversationId = String(payload.conversation_id || '').trim();
+      activeSkillUiContext = {
+        tool: String(payload.tool || '').trim(),
+        title: String(payload.title || payload.tool || '技能互動'),
+        interactionId,
+        channelNonce,
+        step: payload.step || null,
+        state: (payload.state && typeof payload.state === 'object') ? payload.state : {},
+        conversationId: payloadConversationId || currentConversationId,
+      };
+      skillUiTitle.textContent = activeSkillUiContext.title;
+      skillUiBackdrop.classList.add('open');
+      skillUiBackdrop.setAttribute('aria-hidden', 'false');
+      skillUiFrame.src = uiUrl;
+    }
+
+    function resolveSkillUiUrl(rawUrl) {
+      const inputUrl = String(rawUrl || '').trim();
+      if (!inputUrl) return '';
+      if (/^https?:\/\//i.test(inputUrl)) return inputUrl;
+      if (!inputUrl.startsWith('/')) return inputUrl;
+      if (!inputUrl.startsWith('/api/')) return inputUrl;
+      const base = String(API_BASE || '').trim();
+      if (!base) return inputUrl;
+      const normalizedBase = base.replace(/\/$/, '');
+      if (normalizedBase.endsWith('/api')) {
+        return `${normalizedBase}${inputUrl.slice(4)}`;
+      }
+      return `${normalizedBase}${inputUrl}`;
+    }
+
+    function closeSkillUi() {
+      skillUiFrame.removeAttribute('src');
+      skillUiBackdrop.classList.remove('open');
+      skillUiBackdrop.setAttribute('aria-hidden', 'true');
+      activeSkillUiContext = null;
+    }
+
+    function extractSkillModeResult(frameObj) {
+      const visited = new Set();
+      let current = frameObj;
+      for (let depth = 0; depth < 4; depth += 1) {
+        if (!current || typeof current !== 'object') return null;
+        if (visited.has(current)) return null;
+        visited.add(current);
+        const modeText = String(current.mode || '').trim().toLowerCase();
+        if (modeText === 'ui' || modeText === 'final' || modeText === 'error') return current;
+        if (current.result && typeof current.result === 'object') {
+          current = current.result;
+          continue;
+        }
+        return null;
+      }
+      return null;
+    }
+
+    async function submitSkillUiAction(actionName, msgData) {
+      if (!activeSkillUiContext || !activeSkillUiContext.tool) return;
+      const targetConversationId = activeSkillUiContext.conversationId || currentConversationId;
+      if (!targetConversationId) return;
+      const requestPayload = {
+        action: actionName,
+        interaction_id: activeSkillUiContext.interactionId,
+        step: (msgData && msgData.step) ? msgData.step : activeSkillUiContext.step,
+        form_data: (msgData && typeof msgData.form_data === 'object' && msgData.form_data) ? msgData.form_data : {},
+      };
+      if (requestPayload.form_data && typeof requestPayload.form_data === 'object') {
+        activeSkillUiContext.state = { ...(activeSkillUiContext.state || {}), ...requestPayload.form_data };
+      }
+
+      try {
+        const result = await api.post(`/conversations/${targetConversationId}/tools/${activeSkillUiContext.tool}`, requestPayload);
+        if (!result || result.ok !== true) {
+          skillUiFrame.contentWindow?.postMessage({
+            type: 'host.error',
+            error: String((result && result.error) || 'skill_action_failed'),
+            channel_nonce: activeSkillUiContext.channelNonce,
+          }, '*');
+          return;
+        }
+
+        const resultObj = (result && result.result && typeof result.result === 'object') ? result.result : {};
+        const modeText = String(resultObj.mode || '').trim().toLowerCase();
+        if (modeText === 'ui') {
+          const nextUi = (resultObj.ui && typeof resultObj.ui === 'object') ? resultObj.ui : {};
+          if (typeof resultObj.step !== 'undefined') {
+            activeSkillUiContext.step = resultObj.step;
+          }
+          if (nextUi.state && typeof nextUi.state === 'object') {
+            activeSkillUiContext.state = nextUi.state;
+          }
+          if (nextUi.title) {
+            activeSkillUiContext.title = String(nextUi.title);
+            skillUiTitle.textContent = activeSkillUiContext.title;
+          }
+          if (nextUi.ui_url) {
+            const nextUrl = String(nextUi.ui_url || '').trim();
+            if (nextUrl && nextUrl !== skillUiFrame.src) {
+              skillUiFrame.src = nextUrl;
+            }
+          }
+          skillUiFrame.contentWindow?.postMessage({
+            type: 'host.update',
+            mode: 'ui',
+            interaction_id: activeSkillUiContext.interactionId,
+            channel_nonce: activeSkillUiContext.channelNonce,
+            step: resultObj.step,
+            state: (nextUi.state && typeof nextUi.state === 'object') ? nextUi.state : (activeSkillUiContext.state || {}),
+          }, '*');
+          return;
+        }
+
+        if (modeText === 'final') {
+          const finalConversationId = activeSkillUiContext ? (activeSkillUiContext.conversationId || currentConversationId) : currentConversationId;
+          const fallbackAssistantText = stripToolProtocolText(String(resultObj.assistant_message || '').trim());
+          skillUiFrame.contentWindow?.postMessage({
+            type: 'host.close',
+            channel_nonce: activeSkillUiContext.channelNonce,
+          }, '*');
+          closeSkillUi();
+          try {
+            const previousConversations = Array.isArray(currentConversations) ? [...currentConversations] : [];
+            const refreshed = await api.get('/conversations');
+            const refreshedList = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
+            currentConversations = mergeConversationsWithLocalFallback(
+              refreshedList,
+              previousConversations,
+              finalConversationId,
+            );
+            if (finalConversationId) {
+              currentConversationId = finalConversationId;
+            }
+            renderSidebar(currentConversations);
+            if (currentConversationId) {
+              await renderMessagesById(currentConversationId);
+            }
+          } catch {
+            if (fallbackAssistantText) {
+              const box = document.createElement('div');
+              box.className = 'message assistant';
+              box.innerHTML = `<p>${escapeHTML(fallbackAssistantText)}</p><small style="opacity:0.7;">${new Date().toLocaleTimeString()}</small>`;
+              chatMessages.appendChild(box);
+              chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+          }
+          return;
+        }
+
+        if (modeText === 'error') {
+          const errText = String(resultObj.error || 'skill_ui_error');
+          skillUiFrame.contentWindow?.postMessage({
+            type: 'host.error',
+            error: errText,
+            channel_nonce: activeSkillUiContext.channelNonce,
+          }, '*');
+          return;
+        }
+      } catch (error) {
+        skillUiFrame.contentWindow?.postMessage({
+          type: 'host.error',
+          error: String((error && error.message) || 'network_error'),
+          channel_nonce: activeSkillUiContext.channelNonce,
+        }, '*');
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      if (!activeSkillUiContext || !skillUiFrame.contentWindow) return;
+      if (event.source !== skillUiFrame.contentWindow) return;
+      const msgData = (event && event.data && typeof event.data === 'object') ? event.data : null;
+      if (!msgData) return;
+
+      const messageType = String(msgData.type || '').trim();
+      if (messageType === 'skill.ready') {
+        skillUiFrame.contentWindow.postMessage({
+          type: 'host.init',
+          interaction_id: activeSkillUiContext.interactionId,
+          channel_nonce: activeSkillUiContext.channelNonce,
+          step: activeSkillUiContext.step,
+          state: activeSkillUiContext.state || {},
+        }, '*');
+        return;
+      }
+      if (String(msgData.channel_nonce || '') !== String(activeSkillUiContext.channelNonce || '')) return;
+      if (messageType === 'skill.submit') {
+        submitSkillUiAction('submit', msgData);
+        return;
+      }
+      if (messageType === 'skill.back') {
+        submitSkillUiAction('back', msgData);
+        return;
+      }
+      if (messageType === 'skill.cancel') {
+        submitSkillUiAction('cancel', msgData);
+        closeSkillUi();
+        return;
+      }
+      if (messageType === 'skill.heartbeat') {
+        // 目的：暫停 heartbeat 的後端回寫。
+        // 為什麼：部分技能腳本未合併前端暫存資料，heartbeat 會把舊 state 回灌導致欄位被清空。
+        return;
+      }
+      if (messageType === 'skill.resize') {
+        const nextHeight = Number(msgData.height || 0);
+        if (Number.isFinite(nextHeight) && nextHeight >= 280 && nextHeight <= 1200) {
+          skillUiFrame.style.height = `${Math.round(nextHeight)}px`;
+        }
+      }
+    });
+
+    skillUiCloseBtn.addEventListener('click', async () => {
+      if (activeSkillUiContext) {
+        await submitSkillUiAction('cancel', { step: activeSkillUiContext.step, form_data: {} });
+      }
+      closeSkillUi();
+    });
+
+    skillUiBackdrop.addEventListener('click', async (event) => {
+      if (event.target !== skillUiBackdrop) return;
+      if (activeSkillUiContext) {
+        await submitSkillUiAction('cancel', { step: activeSkillUiContext.step, form_data: {} });
+      }
+      closeSkillUi();
+    });
 
     function _extractJsonToolCallsBlocks(text) {
       let cleaned = String(text || '');
@@ -1810,7 +2119,9 @@
             'Authorization': `Bearer ${token}`,
             ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
           },
-          body: useUnifiedEntry ? JSON.stringify({ message: composedMessage }) : undefined,
+          body: useUnifiedEntry
+            ? JSON.stringify({ message: composedMessage, conversation_id: currentConversationId || null })
+            : undefined,
           signal: controller.signal,
         });
         if (!resp.ok && resp.status === 503) {
@@ -1822,7 +2133,9 @@
               'Authorization': `Bearer ${token}`,
               ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
             },
-            body: useUnifiedEntry ? JSON.stringify({ message: composedMessage }) : undefined,
+            body: useUnifiedEntry
+              ? JSON.stringify({ message: composedMessage, conversation_id: currentConversationId || null })
+              : undefined,
             signal: controller.signal,
           });
         }
@@ -1990,6 +2303,32 @@
                   currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
                   renderSidebar(currentConversations);
                 } catch {}
+              } else if (payload.type === 'skill_ui_open') {
+                const skillTitle = String(payload.title || payload.tool || '技能互動');
+                routeInfo.textContent = `技能互動中：${skillTitle}`;
+                openSkillUi(payload || {});
+                if (!activeToolCard) {
+                  const built = createToolCard(payload.tool || 'skill-ui');
+                  built._toolName = payload.tool || 'skill-ui';
+                  built._convId = currentConversationId || built._convId;
+                  activeToolCard = built;
+                  assistantMsg.appendChild(built.card);
+                }
+                if (activeToolCard) {
+                  appendFrame(activeToolCard.body, payload);
+                  setCardStatus(activeToolCard, 'running', '等待技能互動畫面提交');
+                }
+              } else if (payload.type === 'skill_ui_close') {
+                closeSkillUi();
+                if (activeToolCard) {
+                  appendFrame(activeToolCard.body, payload);
+                  setCardStatus(activeToolCard, 'ok', '技能互動流程完成');
+                }
+              } else if (payload.type === 'skill_ui_error') {
+                if (activeToolCard) {
+                  appendFrame(activeToolCard.body, payload);
+                  setCardStatus(activeToolCard, 'error', payload.error || '技能互動流程失敗');
+                }
               } else if (payload.type === 'tool_start') {
                 hidingToolProtocol = false;
                 const built = createToolCard(payload.name);
@@ -2006,13 +2345,41 @@
                   activeToolCard.progMeta.textContent = pct + '% · 仍在處理…';
                 }
               } else if (payload.type === 'tool') {
+                const f = payload.frame || {};
+                const directResult = extractSkillModeResult(f);
+                const modeText = String((directResult && directResult.mode) || '').trim().toLowerCase();
+                if (modeText === 'ui') {
+                  const uiObj = (directResult && typeof directResult.ui === 'object' && directResult.ui) ? directResult.ui : {};
+                  const fallbackNonce = `local-${Date.now()}`;
+                  const interactionIdText = String(directResult.interaction_id || '');
+                  const entryPathText = String(uiObj.entry || '').replace(/^\/+/, '');
+                  const fallbackUiUrl = (interactionIdText && entryPathText)
+                    ? `/api/skills/ui/${interactionIdText}/${entryPathText}`
+                    : '';
+                  const synthesizedPayload = {
+                    type: 'skill_ui_open',
+                    tool: payload.name || (activeToolCard && activeToolCard._toolName) || 'skill-ui',
+                    interaction_id: interactionIdText,
+                    conversation_id: currentConversationId,
+                    channel_nonce: String(directResult.channel_nonce || fallbackNonce),
+                    title: String(uiObj.title || payload.name || '技能互動'),
+                    ui_url: String(uiObj.ui_url || fallbackUiUrl),
+                    entry: String(uiObj.entry || ''),
+                    state: (uiObj && typeof uiObj.state === 'object' && uiObj.state) ? uiObj.state : {},
+                    step: directResult.step,
+                  };
+                  if (synthesizedPayload.ui_url && synthesizedPayload.interaction_id) {
+                    openSkillUi(synthesizedPayload);
+                    routeInfo.textContent = `技能互動中：${synthesizedPayload.title}`;
+                  }
+                }
+
                 if (activeToolCard) {
                   appendFrame(activeToolCard.body, payload.frame);
                   if (payload.frame && payload.frame.ok === false)
                     setCardStatus(activeToolCard, 'error', payload.frame.error || '執行失敗');
                   else if (payload.frame && payload.frame.ok === true)
                     setCardStatus(activeToolCard, 'ok');
-                  const f = payload.frame || {};
                   const cand = (typeof f.progress === 'number' ? f.progress
                     : (typeof f.percent === 'number' ? f.percent
                     : (typeof f.value === 'number' ? f.value : null)));
@@ -2020,21 +2387,26 @@
                     : (typeof f.eta === 'number' ? f.eta
                     : (typeof f.remaining_ms === 'number' ? f.remaining_ms / 1000 : null)));
                   if (cand !== null) updateProgress(activeToolCard, cand, eta);
+                  if (modeText === 'ui') setCardStatus(activeToolCard, 'running', '等待技能互動畫面提交');
                 }
               } else if (payload.type === 'text_clear_tool') {
                 hidingToolProtocol = false;
                 const extracted = extractProtocolBlocks(accText);
                 appendProtocolBlocks(extracted.blocks);
-                accText = extracted.cleaned;
+                const cleanedText = String(extracted.cleaned || '');
+                if (cleanedText.trim().length > 0 || String(accText || '').trim().length === 0) {
+                  accText = cleanedText;
+                }
                 if (p) p.innerHTML = marked.parse(accText);
               } else if (payload.type === 'done') {
                 sawDoneEvent = true;
                 doneConversationId = payload.conversation_id ? String(payload.conversation_id) : null;
+                const optimisticAssistantText = String(accText || '').trim() || stripToolProtocolText(String((p && p.textContent) || '')).trim();
                 // 完成
                 if (activeToolCard && activeToolCard._state === 'running') setCardStatus(activeToolCard, 'ok');
                 if (activeToolCard && (!activeToolCard._convId) && payload.conversation_id) activeToolCard._convId = payload.conversation_id;
                 const doneConvId = doneConversationId || currentConversationId;
-                if (doneConvId && accText.trim()) {
+                if (doneConvId && optimisticAssistantText) {
                   const doneConv = (currentConversations || []).find((c) => c.id === doneConvId);
                   if (doneConv) {
                     if (!Array.isArray(doneConv.messages)) doneConv.messages = [];
@@ -2043,7 +2415,7 @@
                       doneConv.messages.push({
                         id: `temp-assistant-${Date.now()}`,
                         role: 'assistant',
-                        content: accText,
+                        content: optimisticAssistantText,
                         timestamp: new Date().toISOString(),
                       });
                     }
@@ -2068,6 +2440,17 @@
                   renderSidebar(currentConversations);
                   if (currentConversationId) {
                     await renderMessagesById(currentConversationId);
+                    if (optimisticAssistantText) {
+                      const latestMessages = currentConversations.find((c) => c.id === currentConversationId)?.messages || [];
+                      const hasAssistant = latestMessages.some((m) => m && m.role === 'assistant' && String(m.content || '').trim().length > 0);
+                      if (!hasAssistant) {
+                        const box = document.createElement('div');
+                        box.className = 'message assistant';
+                        box.innerHTML = `<p>${escapeHTML(optimisticAssistantText)}</p><small style="opacity:0.7;">${new Date().toLocaleTimeString()}</small>`;
+                        chatMessages.appendChild(box);
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                      }
+                    }
                   }
                 } catch {}
               }

@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from src.core.database import get_db
-from src.models import User, Agent, Conversation, Message, LlmTurn, MultiAgentSession, MultiAgentTask, SkillEntry
+from src.models import User, Agent, Conversation, Message, LlmTurn, MultiAgentSession, MultiAgentTask, SkillEntry, SkillInteraction
 from src.models.events import EventPart
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
@@ -26,6 +26,8 @@ from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
 from src.core.logging import get_logger
 from src.core.config import settings
+
+from src.api.routes.chat_tools import _classify_routing, _cosine_similarity
 
 router = APIRouter()
 _log = get_logger("api.chat")
@@ -90,6 +92,7 @@ async def _stream_complete_async(llm_client: Any, *, prompt: str, tier: str | No
     def _producer() -> None:
         try:
             for delta in llm_client.stream_complete(prompt=prompt, tier=tier):
+                _log.debug(f'LLM stream produced delta: {delta}')
                 asyncio.run_coroutine_threadsafe(queue.put(("delta", str(delta))), loop).result()
         except Exception as e:
             asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop).result()
@@ -170,7 +173,7 @@ def _save_message_with_touch_fallback(*, db: Session, conversation: Conversation
     """
     db.add(message_obj)
     try:
-        setattr(conversation, 'last_interacted_at', datetime.utcnow())
+        setattr(conversation, 'last_interacted_at', datetime.now())
         db.commit()
     except (ProgrammingError, OperationalError) as e:
         _log.warning("db.migration.missing_columns", hint="conversations.last_interacted_at", error=str(e))
@@ -579,16 +582,6 @@ def _get_by_path(obj: dict, path: str):
         return None
 
 
-def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
-    if not v1 or not v2 or len(v1) != len(v2):
-        return -1.0
-    dot = sum((a * b) for a, b in zip(v1, v2))
-    n1 = sum((a * a) for a in v1) ** 0.5
-    n2 = sum((b * b) for b in v2) ** 0.5
-    if n1 <= 0 or n2 <= 0:
-        return -1.0
-    return float(dot / (n1 * n2))
-
 
 def _pick_worker_by_rules(*, workers: list[Agent], message: str) -> Agent | None:
     """目的：用名稱與描述關鍵詞做快速規則匹配。
@@ -788,6 +781,7 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
         Agent.agent_class == 'public',
     ).all()
 
+    # 若使用者明確提到代理名稱，直接命中
     explicit = _pick_explicit_named_worker(message=message, workers=(public_workers + tasked_workers))
     if explicit is not None:
         worker_class = str(getattr(explicit, 'agent_class', '') or '')
@@ -797,14 +791,35 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
             return explicit, 'tasked_explicit_mention'
         return explicit, 'explicit_mention'
 
+    # TODO: 後續可考慮將 humanizer-zh-tw 的優先邏輯改為技能提示詞比對，但目前先用快路徑規則降低延遲，避免每輪都要走向量/LLM 判斷。
     if _should_prefer_humanizer_public(message=message):
         preferred_public = _pick_public_with_skill(db=db, public_workers=public_workers, skill_name='humanizer-zh-tw')
         if preferred_public is not None:
             return preferred_public, 'public_skill_hint_humanizer'
 
-    short_plain_message = len(str(message or '').strip()) <= 10
-    if short_plain_message and public_workers:
-        return public_workers[0], 'public_short_message_prefer'
+    all_worker_skill_names: list[str] = []
+    for worker in (public_workers + tasked_workers):
+        worker_skill_names = _extract_agent_skill_names(db=db, agent=worker)
+        all_worker_skill_names.extend([str(name) for name in worker_skill_names if str(name or '').strip()])
+    _log.debug(f'candidate_skill_names={all_worker_skill_names}')
+
+    # 從候選代理綁定技能的 `name + description` 抽 token，與使用者訊息比對。
+    intent_skill_name = _detect_intent_skill_name(
+        db=db,
+        message=message,
+        candidate_skill_names=all_worker_skill_names,
+    )
+    _log.debug(f'intent_skill_name={intent_skill_name}')
+
+    if intent_skill_name:
+        for worker in (public_workers + tasked_workers):
+            names = _extract_agent_skill_names(db=db, agent=worker)
+            if any(str(n).strip().lower() == intent_skill_name for n in names):
+                worker_class = str(getattr(worker, 'agent_class', '') or '')
+                _log.debug(f'intent_skill_matched_worker id={worker.id} class={worker_class} name={worker.name}')
+                if worker_class == 'public' or worker_class == 'tasked' :
+                    return worker, f'public_skill_hint_{intent_skill_name}'
+                return worker, f'skill_hint_{intent_skill_name}'
 
     worker, reason = _pick_worker_without_default(workers=tasked_workers, message=message)
     if worker is not None:
@@ -833,6 +848,127 @@ def _should_prefer_humanizer_public(*, message: str) -> bool:
         '像真人', '人味', '口語', '改寫', '潤稿', '修文', '文案', 'humanizer',
     ]
     return any(h in text for h in hints)
+
+
+def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_names: list[str]) -> str | None:
+    """目的：從訊息與技能描述動態推斷最可能技能。
+    為什麼：避免在程式碼硬編技能關鍵詞，讓路由可隨技能配置演進。
+    """
+    normalized_message = str(message or '').strip().lower()
+    if not normalized_message:
+        _log.debug('detect_intent_skill_name.empty_message')
+        return None
+
+    unique_skill_names: list[str] = []
+    seen_names: set[str] = set()
+    for raw_name in (candidate_skill_names or []):
+        name = str(raw_name or '').strip()
+        if not name:
+            continue
+        lowered = name.lower()
+        if lowered in seen_names:
+            continue
+        seen_names.add(lowered)
+        unique_skill_names.append(name)
+
+    _log.debug(f'detect_intent_skill_name.candidate_skills={unique_skill_names}')
+    if not unique_skill_names:
+        return None
+
+    skill_rows = db.query(SkillEntry).filter(SkillEntry.name.in_(unique_skill_names)).all()
+    if not skill_rows:
+        return None
+
+    # 先收集所有技能的名稱 token，用於避免描述詞跨技能誤判
+    all_name_tokens: set[str] = set()
+    for row in skill_rows:
+        name_text = str(getattr(row, 'name', '') or '').strip().lower()
+        all_name_tokens.add(name_text)
+        for part in re.split(r'[-_\s]+', name_text):
+            if len(part.strip()) >= 2:
+                all_name_tokens.add(part.strip())
+
+    best_skill_name = None
+    best_score = 0
+    for row in skill_rows:
+        skill_name = str(getattr(row, 'name', '') or '').strip()
+        if not skill_name:
+            continue
+        name_tokens, desc_tokens = _extract_skill_intent_tokens(row)
+        # 名稱 token 得分 x2，描述 token 得 x1
+        # 描述 token 若與其他技能的名稱重疊，跳過（避免 expense-request 描述含「請假」誤判）
+        for token in name_tokens:
+            if token in normalized_message:
+                score = len(token) * 2
+                if score > best_score:
+                    best_score = score
+                    best_skill_name = skill_name
+        for token in desc_tokens:
+            # 若描述 token 也是其他技能的名稱詞，跳過
+            if token in all_name_tokens and token not in name_tokens:
+                continue
+            if token in normalized_message:
+                score = len(token)
+                if score > best_score:
+                    best_score = score
+                    best_skill_name = skill_name
+
+    _log.debug(f'detect_intent_skill_name.best_skill={best_skill_name} best_score={best_score}')
+    return best_skill_name
+
+
+def _extract_skill_intent_tokens(skill_row: SkillEntry) -> tuple[list[str], list[str]]:
+    """目的：從技能名稱與描述分別抽取可匹配的意圖詞。
+    為什麼：名稱詞可信度高，描述詞可能提及其他技能造成誤判，需分開處理給呼叫端加權。
+    回傳：(名稱 tokens, 描述 tokens)
+    """
+    name_text = str(getattr(skill_row, 'name', '') or '').strip().lower()
+    description_text = str(getattr(skill_row, 'description', '') or '').strip().lower()
+
+    _log.debug(f'extract_skill_intent_tokens skill_id={skill_row.id} name="{name_text}" description="{description_text}"')
+
+    stopwords = {
+        'skill', 'skills', 'tool', 'tools', 'agent', 'html', 'zip', 'mcp',
+        '功能', '技能', '工具', '代理', '處理', '提供', '支援', '系統',
+    }
+
+    def _tokenize(text: str) -> list[str]:
+        token_set: set[str] = set()
+        _log.debug(f'using jieba tokenize text="{text}"')
+        try:
+            import jieba  # type: ignore
+            for piece in jieba.lcut(text):
+                cleaned = str(piece or '').strip().lower()
+                if len(cleaned) >= 2 and cleaned not in stopwords:
+                    token_set.add(cleaned)
+        except Exception:
+            for match in re.findall(r'[\u4e00-\u9fff]{2,}', text):
+                if match not in stopwords:
+                    token_set.add(match)
+            for match in re.findall(r'[a-zA-Z][a-zA-Z0-9_\-]{2,}', text):
+                t = match.lower()
+                if t not in stopwords:
+                    token_set.add(t)
+        _log.debug(f'jieba output tokenized to {token_set}')
+        return sorted(token_set, key=len, reverse=True)
+
+    # 名稱 tokens：包含完整名稱、以 - / _ 分割的各段
+    name_token_set: set[str] = set()
+    if name_text:
+        name_token_set.add(name_text)
+        for part in re.split(r'[-_\s]+', name_text):
+            cleaned = part.strip()
+            if len(cleaned) >= 2 and cleaned not in stopwords:
+                name_token_set.add(cleaned)
+        name_token_set.update(_tokenize(name_text))
+
+    name_tokens = sorted(name_token_set, key=len, reverse=True)
+
+    # 描述 tokens：排除已在名稱 tokens 中的詞
+    desc_tokens = [t for t in _tokenize(description_text) if t not in name_token_set]
+
+    _log.debug(f'_extract_skill_intent_tokens output skill_id={skill_row.id} name_tokens={name_tokens} desc_tokens={desc_tokens}')
+    return name_tokens, desc_tokens
 
 
 def _pick_explicit_named_worker(*, message: str, workers: list[Agent]) -> Agent | None:
@@ -1083,6 +1219,19 @@ async def invoke_tool(
     if conv is None:
         raise not_found_error('Conversation', conversation_id)
 
+    interaction_id_text = str((payload or {}).get('interaction_id') or '').strip()
+    if interaction_id_text:
+        try:
+            interaction_row = db.query(SkillInteraction).filter(SkillInteraction.id == interaction_id_text).first()
+        except Exception:
+            interaction_row = None
+        if interaction_row is None:
+            return {"ok": False, "error": "interaction_not_found"}
+        if str(interaction_row.tool_name or '') != str(tool_name):
+            return {"ok": False, "error": "interaction_tool_mismatch"}
+        if str(interaction_row.conversation_id or '') != str(conv.id):
+            return {"ok": False, "error": "interaction_conversation_mismatch"}
+
     agent = db.query(Agent).filter(Agent.id == conv.agent_id).first()
     if agent is None:
         raise not_found_error('Agent', str(conv.agent_id))
@@ -1090,6 +1239,38 @@ async def invoke_tool(
     router = ChatRouter()
     # 工具呼叫：優先走 WS 串流（若不可用則回退 HTTP），並強制白名單
     result = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload=payload or {}, db=db, agent_id=str(agent.id))
+
+    try:
+        result_obj = result.get('result') if isinstance(result, dict) and isinstance(result.get('result'), dict) else None
+        mode_text = str((result_obj or {}).get('mode') or '').strip().lower()
+        if mode_text == 'final':
+            raw_assistant_text = str((result_obj or {}).get('assistant_message') or '').strip()
+            assistant_text = _strip_system_reminder_text(_strip_tool_protocol_text(raw_assistant_text))
+            if assistant_text:
+                route_payload = {
+                    'router_agent_id': str(agent.id),
+                    'target_agent_id': str(agent.id),
+                    'target_agent_name': str(agent.name or ''),
+                    'reason': f'public_skill_hint_{tool_name}',
+                }
+                _write_event_part_safe(
+                    db=db,
+                    conversation_id=str(conv.id),
+                    type_='route.decision',
+                    payload=route_payload,
+                )
+                assistant_message = Message(
+                    conversation_id=conv.id,
+                    role='assistant',
+                    content=assistant_text,
+                    timestamp=datetime.now(),
+                )
+                db.add(assistant_message)
+                conv.last_interacted_at = datetime.now()
+                db.commit()
+    except Exception:
+        db.rollback()
+
     return result
 
 
@@ -1252,6 +1433,9 @@ async def stream_tool(
                     return
             # 回退：單段結果
             res = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload={}, db=db, agent_id=str(agent.id))
+
+            _log.debug(f'End call_tool_async  result={res}')
+
             await _emit({'type': 'tool', 'name': tool_name, 'frame': res})
             await _emit({'type': 'done'})
             running = False
@@ -1273,10 +1457,13 @@ async def chat_stream(
     message: str,  # 用户输入的消息内容，需要AI代理处理和回应
     conversation_id: str | None = None,
     persist_user_message: bool = True,
+    persist_message: str | None = None,  # 若提供，DB 儲存此值而非 message（避免系統注入內容洩漏到畫面）
     db: Session = Depends(get_db),  # 数据库会话依赖，用于数据库操作
     current_user: User = Depends(get_current_user),  # 当前用户依赖，获取当前登录用户信息
 ):
     """SSE 串流聊天：以 LLM 串流文字增量，遇到工具呼叫（[[CALL tool=...]]+JSON）即時串流工具結果。"""
+
+    _log.debug(f'chat_stream.start agent_id={agent_id} conversation_id={conversation_id} persist_user_message={persist_user_message}')
     _require_chat_permission(current_user)
     _validate_uuid_or_not_found('Agent', agent_id)
 
@@ -1300,6 +1487,8 @@ async def chat_stream(
             ).first()
         except Exception:
             conversation = None
+        if conversation is None:
+            raise not_found_error('Conversation', conversation_id)
     if conversation is None:
         conversation = _query_latest_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
     if not conversation:
@@ -1307,7 +1496,8 @@ async def chat_stream(
 
     user_message: Message | None = None
     if persist_user_message:
-        user_message = Message(conversation_id=conversation.id, role='user', content=message)
+        stored_content = persist_message if persist_message is not None else message
+        user_message = Message(conversation_id=conversation.id, role='user', content=stored_content)
         _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_message)
 
     router = ChatRouter()
@@ -1331,6 +1521,9 @@ async def chat_stream(
             include_tool_text=bool(getattr(settings, 'CHAT_HISTORY_INCLUDE_TOOL_TEXT', False)),
             exclude_message_id=(user_message.id if user_message is not None else None),
         )
+
+    _log.debug(f'chat_stream prepared agent_ctx={agent_ctx} history_context_length={len(history_context)}')
+
     composed_user_message = _build_capability_prompt(
         router_obj=router,
         agent_ctx=agent_ctx,
@@ -1341,6 +1534,8 @@ async def chat_stream(
     system_prompt_snapshot = _resolve_agent_system_prompt_snapshot(agent)
     turn_status = 'success'
     turn_error: str | None = None
+
+    _log.debug(f'chat_stream composed_user_message_length={len(composed_user_message)} system_prompt_snapshot_length={len(system_prompt_snapshot)}')
 
     # 無可用模型路由時，依設定採硬失敗
     if getattr(settings, 'LLM_HARD_FAIL_ON_NO_ROUTE', False):
@@ -1358,6 +1553,7 @@ async def chat_stream(
             usage = _normalize_usage_payload(usage_raw=route_info.get('usage'), user_text=message, assistant_text='')
             provider = str(route_info.get('provider') or overrides.get('provider') or '')
             model = str(route_info.get('model') or overrides.get('model') or '')
+            # 寫入 llm_turns 審計資
             _create_llm_turn_record(
                 db=db,
                 conversation_id=str(conversation.id),
@@ -1381,6 +1577,8 @@ async def chat_stream(
                 text = f"模型路由暫時不可用（{reason}）。請稍後重試。"
                 yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(text, ensure_ascii=False)} }}\n\n"
                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+
+            _log.debug(f'chat_stream no route available, reason={reason}, route_info={route_info}, context_snapshot={context_snapshot}')
             return StreamingResponse(_gen_unavailable(), media_type='text/event-stream')
 
     async def _gen():
@@ -1391,6 +1589,8 @@ async def chat_stream(
         tool_payload: dict[str, Any] = {}
         react_step = 0
         max_steps = int(getattr(settings, 'REACT_MAX_STEPS', 3) or 3)
+
+        _log.debug('_gen started with message: %s', message)
 
         def _react_event(phase: str, message: str, extra: dict[str, Any] | None = None) -> str:
             payload = {"type": "react", "phase": phase, "message": message}
@@ -1408,6 +1608,7 @@ async def chat_stream(
             try:
                 chunks: list[str] = []
                 async for part in _stream_complete_async(router._llm, prompt=prompt, tier=overrides.get('tier')):
+                    _log.debug(f'After stream_complete_async _fallback_general_answer received part: {part}')
                     if isinstance(part, str) and part:
                         chunks.append(part)
                         if sum(len(x) for x in chunks) >= 600:
@@ -1418,7 +1619,7 @@ async def chat_stream(
                     return cleaned
             except Exception:
                 pass
-            return "目前工具暫時不可用，我先用一般知識回覆：今天台北通常為多雲到晴，實際降雨與溫度請以氣象署最新公告為準。"
+            return "目前工具暫時不可用。"
 
         def _normalize_mcp_frame(frame: dict) -> dict:
             """將標準 JSON-RPC tools/call 回應正規化為 {ok, result, _result_text} 格式。
@@ -1457,6 +1658,7 @@ async def chat_stream(
                 "4) 請以簡單、重點式方式回答。"
             )
             async for obs_delta in _stream_complete_async(router._llm, prompt=observe_prompt, tier=overrides.get('tier')):
+                _log.debug(f'After stream_complete_async _observe_and_answer received obs_delta: {obs_delta}')
                 if isinstance(obs_delta, str) and obs_delta:
                     cleaned_obs = _strip_system_reminder_text(obs_delta)
                     if cleaned_obs:
@@ -1515,7 +1717,178 @@ async def chat_stream(
             except Exception:
                 return None
 
+        async def _handle_skill_mode_result(tool_name: str, tool_response: dict[str, Any]) -> tuple[bool, list[str]]:
+            # 目的：統一處理技能回傳的 UI/FINAL/ERROR 模式事件。
+            # 為什麼：避免多條工具呼叫分支各自重複判斷，造成行為不一致。
+            nonlocal turn_status, turn_error
+            event_chunks: list[str] = []
+
+            def _append_sse_payload(payload_obj: dict[str, Any]) -> None:
+                event_chunks.append(f"data: {_json.dumps(payload_obj, ensure_ascii=False)}\\n\\n")
+
+            def _append_sse_raw(raw_text: str) -> None:
+                event_chunks.append(raw_text)
+
+            if not isinstance(tool_response, dict):
+                return False, event_chunks
+            if not bool(tool_response.get('ok')):
+                return False, event_chunks
+
+            result_obj = tool_response.get('result')
+            if not isinstance(result_obj, dict):
+                return False, event_chunks
+
+            mode_text = str(result_obj.get('mode') or '').strip().lower()
+            if mode_text == 'ui':
+                interaction_id = str(result_obj.get('interaction_id') or '')
+                ui_obj = result_obj.get('ui') if isinstance(result_obj.get('ui'), dict) else {}
+                ui_event = {
+                    'type': 'skill_ui_open',
+                    'tool': tool_name,
+                    'interaction_id': interaction_id,
+                    'conversation_id': str(conversation.id),
+                    'channel_nonce': str(result_obj.get('channel_nonce') or ''),
+                    'title': str(ui_obj.get('title') or ''),
+                    'ui_url': str(ui_obj.get('ui_url') or ''),
+                    'entry': str(ui_obj.get('entry') or ''),
+                    'state': ui_obj.get('state') if isinstance(ui_obj.get('state'), dict) else {},
+                    'step': result_obj.get('step'),
+                }
+                _append_sse_raw(_react_event(
+                    "act_result",
+                    f"技能 {tool_name} 回傳互動畫面",
+                    {"step": react_step, "tool": tool_name, "ok": True, "mode": "ui"},
+                ))
+                _append_sse_payload(ui_event)
+                _append_sse_raw(f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\\n\\n")
+                return True, event_chunks
+
+            if mode_text == 'final':
+                interaction_id = str(result_obj.get('interaction_id') or '')
+                close_event = {
+                    'type': 'skill_ui_close',
+                    'tool': tool_name,
+                    'interaction_id': interaction_id,
+                    'conversation_id': str(conversation.id),
+                }
+                _append_sse_payload(close_event)
+                _append_sse_raw("data: {\"type\":\"text_clear_tool\"}\\n\\n")
+                assistant_message = str(result_obj.get('assistant_message') or '').strip()
+                if assistant_message:
+                    _append_sse_raw(f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(assistant_message, ensure_ascii=False)} }}\\n\\n")
+                else:
+                    output_obj = result_obj.get('output') if isinstance(result_obj.get('output'), dict) else {'output': result_obj.get('output')}
+                    output_text = _json.dumps(output_obj, ensure_ascii=False)
+                    async for evt in _observe_and_answer(tool_name, output_text):
+                        _append_sse_raw(evt)
+                _append_sse_raw(_react_event(
+                    "act_result",
+                    f"技能 {tool_name} 完成流程",
+                    {"step": react_step, "tool": tool_name, "ok": True, "mode": "final"},
+                ))
+                _append_sse_raw(f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\\n\\n")
+                return True, event_chunks
+
+            if mode_text == 'error':
+                error_text = str(result_obj.get('error') or 'skill_ui_error')
+                turn_status = 'tool_error'
+                turn_error = error_text
+                interaction_id = str(result_obj.get('interaction_id') or '')
+                error_event = {
+                    'type': 'skill_ui_error',
+                    'tool': tool_name,
+                    'interaction_id': interaction_id,
+                    'conversation_id': str(conversation.id),
+                    'error': error_text,
+                }
+                _append_sse_payload(error_event)
+                _append_sse_raw(_react_event(
+                    "act_result",
+                    f"技能 {tool_name} 流程失敗",
+                    {"step": react_step, "tool": tool_name, "ok": False, "mode": "error", "error": error_text},
+                ))
+                fb = await _fallback_general_answer(error_text)
+                _append_sse_raw(f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\\n\\n")
+                _append_sse_raw(f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\\n\\n")
+                return True, event_chunks
+
+            return False, event_chunks
+
+        def _infer_intent_skill_tool() -> str | None:
+            # 目的：以技能描述動態推斷是否可直接啟動技能。
+            # 為什麼：避免模型未輸出 tool call 時卡住，且不在程式碼硬編特定技能詞。
+            allowed_tools = set(getattr(router, '_allowed_tools', set()) or set())
+            if not allowed_tools:
+                return None
+
+            # 優先從 chat_entry_router 注入的系統提示中直接取得技能名稱
+            # 避免重新跑 token 比對而選到錯誤技能
+            _HINT_MARKER = '[系統提示：請優先呼叫技能 `'
+            if message.startswith(_HINT_MARKER):
+                rest = message[len(_HINT_MARKER):]
+                end_idx = rest.find('`')
+                if end_idx > 0:
+                    hinted = rest[:end_idx].strip()
+                    if hinted in allowed_tools:
+                        return hinted
+
+            return _detect_intent_skill_name(
+                db=db,
+                message=message,
+                candidate_skill_names=[str(name) for name in allowed_tools],
+            )
+
+        intent_skill_tool = _infer_intent_skill_tool()
+        if intent_skill_tool:
+            react_step = 1
+            start_payload = {'action': 'start', 'form_data': {}}
+            yield _react_event(
+                phase='plan',
+                message=f'規劃第 {react_step} 步，意圖命中直接呼叫工具 {intent_skill_tool}',
+                extra={'step': react_step, 'tool': intent_skill_tool, 'intent_shortcut': True},
+            )
+            yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+            yield _react_event(
+                phase='act_start',
+                message=f'開始執行工具 {intent_skill_tool}',
+                extra={'step': react_step, 'tool': intent_skill_tool, 'intent_shortcut': True},
+            )
+            yield f"data: {_json.dumps({'type': 'tool_start', 'name': intent_skill_tool, 'args': start_payload}, ensure_ascii=False)}\n\n"
+
+            _log.debug(f'Calling intent skill tool {intent_skill_tool} with payload: {start_payload}')
+            res = await router.call_tool_async(
+                session_id=str(conversation.id),
+                tool=intent_skill_tool,
+                payload=start_payload,
+                db=db,
+                agent_id=str(agent.id),
+            )
+            yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(intent_skill_tool)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
+            handled_mode, handled_events = await _handle_skill_mode_result(intent_skill_tool, res)
+            for handled_event in handled_events:
+                yield handled_event
+            if handled_mode:
+                return
+
+            ok_flag = bool((res or {}).get('ok', False))
+            yield _react_event('act_result', f'工具 {intent_skill_tool} 已回傳結果', {'step': react_step, 'tool': intent_skill_tool, 'ok': ok_flag})
+            if ok_flag:
+                yield "data: {\"type\":\"text_clear_tool\"}\n\n"
+                result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
+                async for evt in _observe_and_answer(intent_skill_tool, result_text):
+                    yield evt
+                yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                return
+
+            turn_status = 'tool_error'
+            turn_error = str((res or {}).get('error') or 'skill_shortcut_failed')
+            fb = await _fallback_general_answer(turn_error)
+            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
+            yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+            return
+
         async for delta in _stream_complete_async(router._llm, prompt=composed_user_message, tier=overrides.get('tier')):
+            _log.debug(f'After stream_complete_async received delta: {delta}')
             if not isinstance(delta, str):
                 continue
             delta = _strip_system_reminder_text(delta)
@@ -1636,6 +2009,11 @@ async def chat_stream(
                         except Exception:
                             res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                             yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
+                            handled_mode, handled_events = await _handle_skill_mode_result(tool_name, res)
+                            for handled_event in handled_events:
+                                yield handled_event
+                            if handled_mode:
+                                return
                             ok_flag = bool((res or {}).get('ok', False))
                             yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                             if ok_flag:
@@ -1711,6 +2089,11 @@ async def chat_stream(
                         except Exception:
                             res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                             yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
+                            handled_mode, handled_events = await _handle_skill_mode_result(tool_name, res)
+                            for handled_event in handled_events:
+                                yield handled_event
+                            if handled_mode:
+                                return
                             ok_flag = bool((res or {}).get('ok', False))
                             yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                             if ok_flag:
@@ -1742,6 +2125,11 @@ async def chat_stream(
                 else:
                     res = await router.call_tool_async(session_id=str(conversation.id), tool=tool_name, payload=tool_payload or {}, db=db, agent_id=str(agent.id))
                     yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(res, ensure_ascii=False)} }}\n\n"
+                    handled_mode, handled_events = await _handle_skill_mode_result(tool_name, res)
+                    for handled_event in handled_events:
+                        yield handled_event
+                    if handled_mode:
+                        return
                     ok_flag = bool((res or {}).get('ok', False))
                     yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                     if ok_flag:
@@ -1775,6 +2163,7 @@ async def chat_stream(
     # 加入帶心跳版本的包裝，以避免長時間無資料時被中間層斷線
     async def _gen_hb():
         import asyncio, time
+        nonlocal turn_status, turn_error
         HEARTBEAT_SEC = 10.0
         STREAM_TIMEOUT_SEC = float(getattr(settings, 'CHAT_STREAM_TIMEOUT_SEC', 120) or 120)
         last_emit = time.monotonic()
@@ -1783,8 +2172,11 @@ async def chat_stream(
         running = True
         assistant_chunks: list[str] = []
 
+        _log.debug('_gen_hb started for conversation_id=%s', conversation.id)
+
         def _sanitize_text(text: str) -> str:
             out = str(text or '')
+            # 目的：移除工具呼叫協定殘留，避免回覆內容被內部協定污染
             return _strip_tool_protocol_text(out)
 
         async def _hb_loop():
@@ -1823,7 +2215,9 @@ async def chat_stream(
                 # 完成後結束
                 await queue.put('__DONE__')
 
+
         prod_task = asyncio.create_task(_push_chunks())
+        _log.debug('_gen_hb setup complete, entering main loop for conversation_id=%s', conversation.id)
         try:
             while True:
                 if (time.monotonic() - started_at) > STREAM_TIMEOUT_SEC:
@@ -1853,13 +2247,14 @@ async def chat_stream(
                 pass
             try:
                 merged = _sanitize_text(''.join(assistant_chunks))
+                merged = _strip_system_reminder_text(merged)
                 if (not merged) and assistant_chunks:
                     merged = '系統已完成處理，但回覆內容被安全過濾。請再試一次，或改用更明確的問題。'
                 assistant_message_id: str | None = None
                 if merged:
-                    assistant_message = Message(conversation_id=conversation.id, role='assistant', content=merged, timestamp=datetime.utcnow())
+                    assistant_message = Message(conversation_id=conversation.id, role='assistant', content=merged, timestamp=datetime.now())
                     db.add(assistant_message)
-                    conversation.last_interacted_at = datetime.utcnow()
+                    conversation.last_interacted_at = datetime.now()
                     db.commit()
                     db.refresh(assistant_message)
                     assistant_message_id = str(assistant_message.id)
@@ -1898,7 +2293,6 @@ async def chat_stream(
                 )
             except Exception:
                 pass
-
     return StreamingResponse(_gen_hb(), media_type='text/event-stream')
 
 
@@ -1906,52 +2300,6 @@ async def chat_stream(
 # 多代理 Orchestrator：輔助函式
 # ─────────────────────────────────────────────────────────────────────────────
 
-_COMPOUND_SIGNALS = [
-    '並且', '同時', '另外', '然後', '接著', '以及', '也要', '還要', '順便',
-    'and then', 'also', 'additionally', 'as well',
-]
-
-
-def _classify_routing(*, message: str, workers: list[Agent]) -> str:
-    """目的：三層策略判斷單代理 vs 多代理路徑。
-    為什麼：優先用零成本快路徑，僅必要時才呼叫 LLM，降低延遲與費用。
-    回傳 'single' 或 'multi'。
-    """
-    # 第一層：快速排除（零成本）
-    if len(message.strip()) < 15:
-        return 'single'
-    if len(workers) < 2:
-        return 'single'
-    lower_msg = message.lower()
-    has_compound = any(sig in lower_msg for sig in _COMPOUND_SIGNALS)
-    has_mention = any(f'@{str(w.name or "").lower()}' in lower_msg for w in workers)
-
-    # 直接點名 2 個以上 worker：不需要 embedding，直接走多代理
-    named_workers = [w for w in workers if str(w.name or '').strip() and str(w.name or '').strip() in message]
-    if len(named_workers) >= 2:
-        return 'multi'
-
-    if not has_compound and not has_mention:
-        return 'single'
-
-    # 第二層：Embedding 能力距離（無 LLM 費用）
-    try:
-        msg_vec = embedding_service.embed_one(message)
-        if msg_vec:
-            scores: list[tuple[float, Agent]] = []
-            for w in workers:
-                profile = f"{str(w.name or '').strip()}\n{str(w.description or '').strip()}"
-                wvec = embedding_service.embed_one(profile)
-                scores.append((_cosine_similarity(msg_vec, wvec), w))
-            scores.sort(key=lambda x: x[0], reverse=True)
-            if len(scores) >= 2:
-                top_gap = scores[0][0] - scores[1][0]
-                if top_gap > 0.2:
-                    return 'single'  # 某個 Worker 明顯更適合
-    except Exception:
-        pass
-
-    return 'multi'
 
 
 def _decompose_tasks(*, message: str, workers: list[Agent], router_agent: Agent) -> dict[str, Any] | None:
@@ -2084,31 +2432,34 @@ async def _run_subtask_stream(
             continue
         if isinstance(raw_chunk, bytes):
             raw_chunk = raw_chunk.decode('utf-8', errors='replace')
-        if not raw_chunk.startswith('data: '):
-            continue
-        try:
-            event_payload = _json.loads(raw_chunk[6:].strip())
-        except Exception:
-            continue
+        raw_events = [chunk for chunk in str(raw_chunk).split('\n\n') if chunk.strip()]
+        for event_text in raw_events:
+            normalized_event = event_text.strip()
+            if not normalized_event.startswith('data: '):
+                continue
+            try:
+                event_payload = _json.loads(normalized_event[6:].strip())
+            except Exception:
+                continue
 
-        ptype = (event_payload or {}).get('type')
+            ptype = (event_payload or {}).get('type')
 
-        if ptype == 'text':
-            delta = event_payload.get('delta', '')
-            if delta:
-                result_chunks.append(delta)
-            yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': agent_id, 'agent_name': agent_name, 'task_index': task_index, 'delta': delta}, ensure_ascii=False)}\n\n"
-        elif ptype == 'done':
-            pass  # 由 orchestrator 統一發 done
-        elif ptype == 'error':
-            ok = False
-            error_msg = event_payload.get('message') or 'subtask_error'
-        elif ptype in ('react', 'tool_start', 'tool', 'progress', 'heartbeat'):
-            # route.decision 屬子代理內部路由，不對外轉發（避免覆蓋 orchestrator.plan UI）
-            event_payload['agent_id'] = agent_id
-            event_payload['agent_name'] = agent_name
-            event_payload['task_index'] = task_index
-            yield f"data: {_json.dumps(event_payload, ensure_ascii=False)}\n\n"
+            if ptype == 'text':
+                delta = event_payload.get('delta', '')
+                if delta:
+                    result_chunks.append(delta)
+                yield f"data: {_json.dumps({'type': 'agent.text', 'agent_id': agent_id, 'agent_name': agent_name, 'task_index': task_index, 'delta': delta}, ensure_ascii=False)}\n\n"
+            elif ptype == 'done':
+                pass  # 由 orchestrator 統一發 done
+            elif ptype == 'error':
+                ok = False
+                error_msg = event_payload.get('message') or 'subtask_error'
+            elif ptype in ('react', 'tool_start', 'tool', 'progress', 'heartbeat', 'skill_ui_open', 'skill_ui_close', 'skill_ui_error'):
+                # route.decision 屬子代理內部路由，不對外轉發（避免覆蓋 orchestrator.plan UI）
+                event_payload['agent_id'] = agent_id
+                event_payload['agent_name'] = agent_name
+                event_payload['task_index'] = task_index
+                yield f"data: {_json.dumps(event_payload, ensure_ascii=False)}\n\n"
 
     # 寫入結果
     task_row.result_text = ''.join(result_chunks)
@@ -2177,6 +2528,7 @@ async def _synthesize_and_evaluate(
     synthesis_chunks: list[str] = []
     try:
         async for delta in _stream_complete_async(llm, prompt=synth_prompt, tier=overrides.get('tier')):
+            _log.debug('synthesis delta: %s', delta)
             if isinstance(delta, str) and delta:
                 synthesis_chunks.append(delta)
     except Exception as e:
@@ -2475,6 +2827,17 @@ async def chat_entry_router(
         raise validation_error('Message cannot be empty')
     enriched_message = _inject_reference_content(message)
 
+    requested_conversation_id = str((payload or {}).get('conversation_id') or '').strip()
+    requested_conversation: Conversation | None = None
+    if requested_conversation_id:
+        _validate_uuid_or_not_found('Conversation', requested_conversation_id)
+        requested_conversation = db.query(Conversation).filter(
+            Conversation.id == requested_conversation_id,
+            Conversation.user_id == current_user.id,
+        ).first()
+        if requested_conversation is None:
+            raise not_found_error('Conversation', requested_conversation_id)
+
     router_agent = db.query(Agent).filter(Agent.is_router == True, Agent.enabled == True).first()  # noqa: E712
     if router_agent is None:
         router_agent = db.query(Agent).filter(Agent.enabled == True).first()  # noqa: E712
@@ -2487,6 +2850,8 @@ async def chat_entry_router(
         Agent.enabled == True,  # noqa: E712
         Agent.agent_class.in_(['tasked', 'public']),
     ).all()
+
+    #判斷：multi：進多代理 orchestrator，single：走單代理挑選 _pick_worker_agent
     routing = _classify_routing(message=enriched_message, workers=workers)
     debug_trace_enabled = bool(getattr(settings, 'CHAT_DEBUG_TRACE', False)) or bool((payload or {}).get('debug'))
     if routing == 'multi':
@@ -2495,6 +2860,7 @@ async def chat_entry_router(
 
         async def _orchestrate_stream() -> AsyncGenerator[str, None]:
             _decompose_started_at = time.monotonic()
+            _log.debug('orchestrator_start multi start', user_message=message, router_agent_id=str(router_agent.id), worker_count=len(workers), debug=debug_trace_enabled)
             # 立即發送第一個事件，讓前端知道已進入多代理模式
             yield f"data: {_json.dumps({'type': 'orchestrator.thinking', 'message': '正在分析任務分派…'}, ensure_ascii=False)}\n\n"
             if debug_trace_enabled:
@@ -2514,9 +2880,11 @@ async def chat_entry_router(
                 yield f"data: {_json.dumps({'type': 'debug', 'phase': 'decompose', 'elapsed_ms': int((time.monotonic() - _decompose_started_at) * 1000), 'plan': plan if isinstance(plan, dict) else None}, ensure_ascii=False)}\n\n"
 
             if plan and plan.get('multi') and len(plan.get('tasks', [])) >= 2:
-                conversation = _query_latest_conversation_with_fallback(
-                    db=db, agent_id=str(router_agent.id), user_id=current_user.id
-                )
+                conversation = requested_conversation
+                if conversation is None:
+                    conversation = _query_latest_conversation_with_fallback(
+                        db=db, agent_id=str(router_agent.id), user_id=current_user.id
+                    )
                 if conversation is None:
                     conversation = _create_conversation_with_fallback(
                         db=db, agent_id=str(router_agent.id), user_id=current_user.id
@@ -2559,9 +2927,25 @@ async def chat_entry_router(
                 if debug_trace_enabled:
                     route_payload['debug'] = {'routing': routing, 'decompose_plan': plan}
                 yield f"data: {_json.dumps(route_payload, ensure_ascii=False)}\n\n"
+                degrade_conversation = requested_conversation
+                if degrade_conversation is None:
+                    degrade_conversation = _query_latest_conversation_with_fallback(
+                        db=db, agent_id=str(worker.id), user_id=current_user.id
+                    )
+                if degrade_conversation is None:
+                    degrade_conversation = _create_conversation_with_fallback(
+                        db=db, agent_id=str(worker.id), user_id=current_user.id
+                    )
+                if str(getattr(degrade_conversation, 'agent_id', '') or '') != str(worker.id):
+                    degrade_conversation.agent_id = worker.id
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
                 routed_response = await chat_stream(
                     agent_id=str(worker.id),
                     message=enriched_message,
+                    conversation_id=str(degrade_conversation.id),
                     db=db,
                     current_user=current_user,
                 )
@@ -2572,6 +2956,7 @@ async def chat_entry_router(
 
     # ── 單代理路徑（原有邏輯不變）──
 
+    _log.debug('single_agent_routing', user_message=message, router_agent_id=str(router_agent.id), debug=debug_trace_enabled)
     worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=enriched_message)
     is_fallback = False
     if worker is None:
@@ -2587,9 +2972,18 @@ async def chat_entry_router(
             is_fallback = True
             route_reason = f'{worker_class}_not_ready_master_fallback'
 
-    conversation = _query_latest_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
+    conversation = requested_conversation
+    if conversation is None:
+        conversation = _query_latest_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
     if conversation is None:
         conversation = _create_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
+
+    if str(getattr(conversation, 'agent_id', '') or '') != str(worker.id):
+        conversation.agent_id = worker.id
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
 
     route_decision_payload = {
         'router_agent_id': str(router_agent.id),
@@ -2617,9 +3011,25 @@ async def chat_entry_router(
             payload={'reason': route_reason, 'target_agent_id': str(worker.id)},
         )
 
+    # 若路由偵測到技能意圖，將技能名稱注入訊息讓 Worker LLM 知道要呼叫哪個技能
+    # persist_message 保留原始訊息存 DB，避免系統提示內容顯示在聊天畫面
+    # 同時涵蓋 tasked_skill_hint_ 與 public_skill_hint_ 兩種路由原因
+    _HINT_PREFIXES = ('tasked_skill_hint_', 'public_skill_hint_')
+    llm_message = enriched_message
+    for _prefix in _HINT_PREFIXES:
+        if route_reason and route_reason.startswith(_prefix):
+            hinted_skill = route_reason[len(_prefix):]
+            llm_message = (
+                f'[系統提示：請優先呼叫技能 `{hinted_skill}` 來處理此請求，不要只用文字回覆]\n\n'
+                + enriched_message
+            )
+            break
+
+    _log.debug('Before chat_stream: final_routing_decision', user_message=message, router_agent_id=str(router_agent.id), worker_agent_id=str(worker.id), route_reason=route_reason, debug=debug_trace_enabled)
     routed_response = await chat_stream(
         agent_id=str(worker.id),
-        message=enriched_message,
+        message=llm_message,
+        persist_message=enriched_message,
         conversation_id=str(conversation.id),
         persist_user_message=True,
         db=db,

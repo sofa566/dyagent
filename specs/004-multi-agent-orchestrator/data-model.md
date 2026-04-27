@@ -21,8 +21,8 @@ class MultiAgentSession(Base):
     plan_json       = Column(JSON, default=dict)        # LLM 分解出的任務計畫（每輪覆寫）
     synthesis       = Column(Text, nullable=True)       # 最終合成回覆
     eval_ok         = Column(Boolean, nullable=True)    # 最後一次自評結果
-    created_at      = Column(DateTime, default=datetime.utcnow)
-    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at      = Column(DateTime, default=datetime.now)
+    updated_at      = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 ```
 
 ## 2) multi_agent_tasks（新表）
@@ -93,6 +93,7 @@ pending → running → done
 檔案：`backend/alembic/versions/20260328_0002_multi_agent_session_task.py`
 
 操作：
+
 - CREATE TABLE `multi_agent_sessions`
 - CREATE TABLE `multi_agent_tasks`
 - CREATE TYPE `mas_status`（若 PostgreSQL Enum）

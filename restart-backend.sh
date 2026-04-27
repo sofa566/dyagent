@@ -45,9 +45,10 @@ if [ -n "$pids" ]; then
   done <<< "$pids"
 fi
 
+echo "[info] starting backend..."
 (
   cd "$BACKEND_DIR"
-  nohup "$ROOT/.venv/bin/python" -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 2 > "$LOG_FILE" 2>&1 &
+  nohup "$ROOT/.venv/bin/python" -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --no-use-colors --workers 2 > "$LOG_FILE" 2>&1 &
 )
 
 ok=0

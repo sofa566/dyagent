@@ -317,7 +317,7 @@ async def upload_document(
     try:
         doc.status = status
         doc.last_error = last_error
-        doc.indexed_at = datetime.utcnow() if status == 'ready' else None
+        doc.indexed_at = datetime.now() if status == 'ready' else None
         db.commit()
     except Exception:
         db.rollback()

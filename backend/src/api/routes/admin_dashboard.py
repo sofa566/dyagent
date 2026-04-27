@@ -55,7 +55,7 @@ def _read_mem_info() -> dict[str, int | float | None]:
 
 
 async def _build_overview(db: Session) -> dict:
-    now = datetime.utcnow()
+    now = datetime.now()
     since_15m = now - timedelta(minutes=15)
     since_24h = now - timedelta(hours=24)
 
@@ -348,7 +348,7 @@ async def admin_dashboard_stream(
             try:
                 payload = await _build_overview(db)
                 yield f"data: {json.dumps({'type': 'overview', 'payload': payload}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'heartbeat', 'ts': datetime.utcnow().isoformat()}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'heartbeat', 'ts': datetime.now().isoformat()}, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(2.0)
             except asyncio.CancelledError:
                 break
