@@ -897,21 +897,29 @@ def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_name
         name_tokens, desc_tokens = _extract_skill_intent_tokens(row)
         # 名稱 token 得分 x2，描述 token 得 x1
         # 描述 token 若與其他技能的名稱重疊，跳過（避免 expense-request 描述含「請假」誤判）
+        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
+            _log.debug(f'skill "{skill_name}" name_tokens={name_tokens} desc_tokens={desc_tokens}')
+        score = 0
         for token in name_tokens:
             if token in normalized_message:
-                score = len(token) * 2
-                if score > best_score:
-                    best_score = score
-                    best_skill_name = skill_name
+                score += len(token) * 2
+        if score > best_score:
+            best_score = score
+            best_skill_name = skill_name
+        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
+            _log.debug(f'names token match with score {score} best_score={best_score} best_skill_name={best_skill_name}')
+        score = 0
         for token in desc_tokens:
             # 若描述 token 也是其他技能的名稱詞，跳過
             if token in all_name_tokens and token not in name_tokens:
                 continue
             if token in normalized_message:
-                score = len(token)
-                if score > best_score:
-                    best_score = score
-                    best_skill_name = skill_name
+                score += len(token)
+        if score > best_score:
+            best_score = score
+            best_skill_name = skill_name
+        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
+            _log.debug(f'desc token match with score {score} best_score={best_score} best_skill_name={best_skill_name}')
 
     _log.debug(f'detect_intent_skill_name.best_skill={best_skill_name} best_score={best_score}')
     return best_skill_name
