@@ -30,6 +30,48 @@ CITY_ALIAS = {
     "嘉義": "Chiayi",
 }
 
+WEATHER_CODE_TEXT = {
+    0: "晴朗",
+    1: "大致晴",
+    2: "局部多雲",
+    3: "陰天",
+    45: "有霧",
+    48: "有霧並有霜",
+    51: "毛毛雨",
+    53: "中度毛毛雨",
+    55: "強烈毛毛雨",
+    56: "凍毛毛雨",
+    57: "強烈凍毛毛雨",
+    61: "小雨",
+    63: "中雨",
+    65: "大雨",
+    66: "凍雨",
+    67: "強烈凍雨",
+    71: "小雪",
+    73: "中雪",
+    75: "大雪",
+    77: "雪粒",
+    80: "陣雨",
+    81: "中度陣雨",
+    82: "強烈陣雨",
+    85: "陣雪",
+    86: "強烈陣雪",
+    95: "雷雨",
+    96: "雷雨伴隨小冰雹",
+    99: "雷雨伴隨大冰雹",
+}
+
+
+def _resolve_weather_text(weather_code: Any) -> str:
+    """目的：將 Open-Meteo 天氣代碼轉為繁體中文描述。
+    為什麼：讓最終回覆直接顯示可讀天氣敘述，避免使用者看到難懂代碼。
+    """
+    try:
+        code_int = int(weather_code)
+    except Exception:
+        return "未知天氣"
+    return WEATHER_CODE_TEXT.get(code_int, "未知天氣")
+
 
 def get_weather(payload: dict[str, Any]) -> dict[str, Any]:
     q = str((payload or {}).get("q") or "").strip()
@@ -82,14 +124,27 @@ def get_weather(payload: dict[str, Any]) -> dict[str, Any]:
                 return {"ok": False, "error": "missing_current_weather"}
 
             # 與既有 chat_router 格式化器相容：提供 current_weather 別名
+            temperature = current.get("temperature_2m")
+            windspeed = current.get("wind_speed_10m")
+            weather_code = current.get("weather_code")
+            weather_text = _resolve_weather_text(weather_code)
+
             current_weather = {
-                "temperature": current.get("temperature_2m"),
-                "windspeed": current.get("wind_speed_10m"),
-                "weathercode": current.get("weather_code"),
+                "temperature": temperature,
+                "windspeed": windspeed,
+                "weather_text": weather_text,
             }
+
+            summary_parts = [f"{resolved_name}目前天氣{weather_text}"]
+            if temperature is not None:
+                summary_parts.append(f"溫度約 {temperature}°C")
+            if windspeed is not None:
+                summary_parts.append(f"風速約 {windspeed} km/h")
+            summary_text = "，".join(summary_parts) + "。"
 
             return {
                 "ok": True,
+                "text": summary_text,
                 "location": {
                     "query": q,
                     "name": resolved_name,
@@ -97,7 +152,13 @@ def get_weather(payload: dict[str, Any]) -> dict[str, Any]:
                     "latitude": lat,
                     "longitude": lon,
                 },
-                "current": current,
+                "current": {
+                    "time": current.get("time"),
+                    "interval": current.get("interval"),
+                    "temperature_2m": temperature,
+                    "wind_speed_10m": windspeed,
+                    "weather_text": weather_text,
+                },
                 "current_weather": current_weather,
                 "source": "open-meteo",
             }

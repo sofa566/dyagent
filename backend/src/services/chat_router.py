@@ -1193,6 +1193,7 @@ class ChatRouter:
             if str(getattr(row, 'type', 'webhook')) == 'python':
                 # 本地 Python handler：package.module:function
                 handler = str(getattr(row, 'python_handler', '') or '').strip()
+                _log.debug('python_handler_execution', tool=name, handler=handler, session_id=session_id)
                 if not handler or ':' not in handler:
                     self.write_event_tool_error(session_id=session_id, tool=name, error="invalid_python_handler")
                     return {"ok": False, "error": "invalid_python_handler"}
@@ -1202,8 +1203,14 @@ class ChatRouter:
                     mod = importlib.import_module(mod_name)
                     func = getattr(mod, func_name)
                     res = func(skill_payload or {})
+                    _log.debug('python_handler_execution_completed', tool=name, handler=handler, session_id=session_id, result=str(res)[:200])
                     if not isinstance(res, dict):
                         res = {"ok": True, "result": res}
+                    elif 'ok' not in res:
+                        res = {"ok": True, "result": res}
+                    elif bool(res.get('ok')) and 'result' not in res:
+                        normalized_result = {k: v for k, v in res.items() if k != 'ok'}
+                        res = {"ok": True, "result": normalized_result}
                     res = _finalize_success_if_possible(res)
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                     return res

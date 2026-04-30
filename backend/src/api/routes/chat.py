@@ -92,11 +92,11 @@ async def _stream_complete_async(llm_client: Any, *, prompt: str, tier: str | No
     def _producer() -> None:
         try:
             for delta in llm_client.stream_complete(prompt=prompt, tier=tier):
-                _log.debug(f'LLM stream produced delta: {delta}')
                 asyncio.run_coroutine_threadsafe(queue.put(("delta", str(delta))), loop).result()
         except Exception as e:
             asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop).result()
         finally:
+            _log.debug("==> LLM stream producer finished")
             asyncio.run_coroutine_threadsafe(queue.put(("done", None)), loop).result()
 
     t = threading.Thread(target=_producer, daemon=True)
@@ -1666,9 +1666,9 @@ async def chat_stream(
                 "4) 請以簡單、重點式方式回答。"
             )
             async for obs_delta in _stream_complete_async(router._llm, prompt=observe_prompt, tier=overrides.get('tier')):
-                _log.debug(f'After stream_complete_async _observe_and_answer received obs_delta: {obs_delta}')
                 if isinstance(obs_delta, str) and obs_delta:
                     cleaned_obs = _strip_system_reminder_text(obs_delta)
+                    _log.debug(f'After _strip_system_reminder_text cleaned_obs: {cleaned_obs}, obs_delta: {obs_delta}')
                     if cleaned_obs:
                         yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(cleaned_obs, ensure_ascii=False)} }}\n\n"
 
@@ -1696,6 +1696,28 @@ async def chat_stream(
                     ]
                     if parts:
                         return _strip_system_reminder_text('\n'.join(parts)).strip()
+                location = result_obj.get('location') if isinstance(result_obj.get('location'), dict) else {}
+                current_weather = result_obj.get('current_weather') if isinstance(result_obj.get('current_weather'), dict) else {}
+                current = result_obj.get('current') if isinstance(result_obj.get('current'), dict) else {}
+                location_name = str(location.get('name') or location.get('query') or '').strip()
+                temperature = current_weather.get('temperature')
+                if temperature is None:
+                    temperature = current.get('temperature_2m')
+                windspeed = current_weather.get('windspeed')
+                if windspeed is None:
+                    windspeed = current.get('wind_speed_10m')
+                weather_code = current_weather.get('weathercode')
+                if weather_code is None:
+                    weather_code = current.get('weather_code')
+                if location_name and any(value is not None for value in (temperature, windspeed, weather_code)):
+                    segments: list[str] = [f"{location_name}目前天氣"]
+                    if temperature is not None:
+                        segments.append(f"溫度約 {temperature}°C")
+                    if windspeed is not None:
+                        segments.append(f"風速約 {windspeed} km/h")
+                    if weather_code is not None:
+                        segments.append(f"天氣代碼 {weather_code}")
+                    return '，'.join(segments) + '。'
             return ''
 
         async def _try_humanizer_chain(source_tool: str, source_text: str) -> str | None:
@@ -1846,10 +1868,111 @@ async def chat_stream(
                 candidate_skill_names=[str(name) for name in allowed_tools],
             )
 
+        def _should_start_skill_interaction(tool_name: str) -> bool:
+            # 目的：判斷技能是否應以互動流程（action=start）啟動。
+            # 為什麼：非互動技能若強制走互動封裝，會導致 payload 缺失而失敗。
+            normalized_name = str(tool_name or '').strip()
+            if (not normalized_name) or normalized_name.startswith('mcp:'):
+                return False
+            skill_row = db.query(SkillEntry).filter(SkillEntry.name == normalized_name).first()
+            if skill_row is None:
+                return False
+            skill_type = str(getattr(skill_row, 'skill_type', 'executable') or 'executable').strip().lower()
+            has_zip_bundle = bool(getattr(skill_row, 'zip_bundle', None))
+            return (skill_type in {'prompt', 'hybrid'}) or has_zip_bundle
+
+        def _can_run_intent_shortcut_payload(tool_name: str, payload: dict[str, Any], should_start_interaction: bool) -> bool:
+            # 目的：驗證意圖捷徑 payload 是否滿足技能必要欄位。
+            # 為什麼：避免缺少 required 參數時直接呼叫技能導致 schema_validation_failed。
+            if should_start_interaction:
+                return True
+            normalized_name = str(tool_name or '').strip()
+            if (not normalized_name) or normalized_name.startswith('mcp:'):
+                return True
+            skill_row = db.query(SkillEntry).filter(SkillEntry.name == normalized_name).first()
+            if skill_row is None:
+                return True
+            input_schema = getattr(skill_row, 'input_schema', None)
+            if not isinstance(input_schema, dict):
+                return True
+            required_fields = input_schema.get('required')
+            if not isinstance(required_fields, list) or not required_fields:
+                return True
+            normalized_payload = payload if isinstance(payload, dict) else {}
+            for field_name in required_fields:
+                key = str(field_name or '').strip()
+                if not key:
+                    continue
+                value = normalized_payload.get(key)
+                if value is None:
+                    return False
+                if isinstance(value, str) and (not value.strip()):
+                    return False
+            return True
+
+        async def _infer_intent_shortcut_payload(tool_name: str, user_message: str) -> dict[str, Any]:
+            # 目的：在意圖捷徑缺參數時，利用 schema 從用戶原句補齊必要 payload。
+            # 為什麼：避免直接放棄捷徑導致工具未被呼叫，同時不使用關鍵詞特判。
+            normalized_name = str(tool_name or '').strip()
+            if (not normalized_name) or normalized_name.startswith('mcp:'):
+                return {}
+            skill_row = db.query(SkillEntry).filter(SkillEntry.name == normalized_name).first()
+            if skill_row is None:
+                return {}
+            input_schema = getattr(skill_row, 'input_schema', None)
+            if not isinstance(input_schema, dict) or not input_schema:
+                return {}
+            prompt = (
+                '你是工具參數抽取器。請依照提供的 JSON Schema，從使用者問題抽取參數。\n'
+                '只輸出單一 JSON 物件，不要 markdown，不要額外文字。\n\n'
+                f'工具名稱：{normalized_name}\n'
+                f'JSON Schema：{_json.dumps(input_schema, ensure_ascii=False)}\n'
+                f'使用者問題：{user_message}\n'
+            )
+            chunks: list[str] = []
+            try:
+                async for delta in _stream_complete_async(router._llm, prompt=prompt, tier=overrides.get('tier')):
+                    if isinstance(delta, str) and delta:
+                        chunks.append(delta)
+                        if sum(len(part) for part in chunks) >= 1200:
+                            break
+            except Exception:
+                return {}
+            raw = ''.join(chunks).strip()
+            if not raw:
+                return {}
+            start_idx = raw.find('{')
+            end_idx = raw.rfind('}')
+            if start_idx < 0 or end_idx <= start_idx:
+                return {}
+            try:
+                payload = _json.loads(raw[start_idx:end_idx + 1])
+            except Exception:
+                return {}
+            return payload if isinstance(payload, dict) else {}
+
         intent_skill_tool = _infer_intent_skill_tool()
         if intent_skill_tool:
             react_step = 1
-            start_payload = {'action': 'start', 'form_data': {}}
+            should_start_interaction = _should_start_skill_interaction(intent_skill_tool)
+            start_payload = {'action': 'start', 'form_data': {}} if should_start_interaction else {}
+            can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
+            if (not can_run_shortcut) and (not should_start_interaction):
+                inferred_payload = await _infer_intent_shortcut_payload(intent_skill_tool, message)
+                if isinstance(inferred_payload, dict) and inferred_payload:
+                    start_payload = inferred_payload
+                    can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
+            if not can_run_shortcut:
+                intent_skill_tool = None
+            _log.debug(
+                'intent_skill_inference',
+                tool=intent_skill_tool,
+                should_start_interaction=should_start_interaction,
+                can_run_shortcut=can_run_shortcut,
+                payload=start_payload,
+            )
+
+        if intent_skill_tool:
             yield _react_event(
                 phase='plan',
                 message=f'規劃第 {react_step} 步，意圖命中直接呼叫工具 {intent_skill_tool}',
@@ -1882,9 +2005,21 @@ async def chat_stream(
             yield _react_event('act_result', f'工具 {intent_skill_tool} 已回傳結果', {'step': react_step, 'tool': intent_skill_tool, 'ok': ok_flag})
             if ok_flag:
                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
-                async for evt in _observe_and_answer(intent_skill_tool, result_text):
-                    yield evt
+                result_obj = (res or {}).get('result', {})
+                direct_text = _extract_readable_text_from_tool_result(result_obj)
+                chained = await _try_humanizer_chain(intent_skill_tool, direct_text or _json.dumps(result_obj, ensure_ascii=False))
+                if isinstance(chained, str) and chained.strip():
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
+                elif direct_text:
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                else:
+                    result_text = _json.dumps(result_obj, ensure_ascii=False)
+                    observed_any = False
+                    async for evt in _observe_and_answer(intent_skill_tool, result_text):
+                        observed_any = True
+                        yield evt
+                    if not observed_any:
+                        yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                 return
 
@@ -2207,10 +2342,15 @@ async def chat_stream(
                     try:
                         if isinstance(chunk, str) and chunk.startswith('data: '):
                             payload = _json.loads(chunk.replace('data: ', '', 1).strip())
-                            if isinstance(payload, dict) and payload.get('type') == 'text':
-                                d = payload.get('delta')
-                                if isinstance(d, str) and d:
-                                    assistant_chunks.append(d)
+                            if isinstance(payload, dict):
+                                if payload.get('type') == 'text_clear_tool':
+                                    assistant_chunks.clear()
+                                elif payload.get('type') == 'text':
+                                    d = payload.get('delta')
+                                    if isinstance(d, str) and d:
+                                        cleaned_delta = _strip_system_reminder_text(d)
+                                        if cleaned_delta:
+                                            assistant_chunks.append(cleaned_delta)
                     except Exception:
                         pass
                     await queue.put(chunk)

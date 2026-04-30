@@ -82,7 +82,8 @@
         </div>
         <div class="form-group">
           <select id="skill_type">
-            <option value="executable" selected>executable（可執行工具）</option>
+            <option value="executable" selected>executable（Command）</option>
+            <option value="python">python（Python Handler）</option>
             <option value="webhook">webhook（HTTP 呼叫）</option>
             <option value="prompt">prompt（提示詞模板）</option>
             <option value="hybrid">hybrid（混合）</option>
@@ -183,12 +184,22 @@
     </section>
 
     <!-- Command 設定 -->
-    <section id="panel-python" class="card" style="display:none;">
+    <section id="panel-command" class="card" style="display:none;">
       <h3>Command 設定</h3>
       <div class="form-group">
         <label for="command">Command</label>
         <input id="command" type="text" placeholder="uvx mcp-server-fetch 或 npx -y @wopal/mcp-server-hotnews">
         <small style="color:var(--text-secondary);">支援白名單前綴：uvx、npx、python、node、java。</small>
+      </div>
+    </section>
+
+    <!-- Python Handler 設定 -->
+    <section id="panel-python" class="card" style="display:none;">
+      <h3>Python Handler 設定</h3>
+      <div class="form-group">
+        <label for="python_handler">Python Handler</label>
+        <input id="python_handler" type="text" placeholder="src.skills.open_meteo:get_weather">
+        <small style="color:var(--text-secondary);">格式：module_path:function_name，例如 <code>src.skills.open_meteo:get_weather</code>。</small>
       </div>
     </section>
 
@@ -293,12 +304,14 @@
     function syncTypeUI() {
       const skillType = $('skill_type').value;
       const showExecutable = skillType === 'executable';
+      const showPython = skillType === 'python';
       const showWebhook = skillType === 'webhook';
       const showPrompt = skillType === 'prompt';
       const showHybrid = skillType === 'hybrid';
 
-      $('panel-input-schema').style.display = showExecutable ? 'block' : 'none';
-      $('panel-python').style.display = showExecutable ? 'block' : 'none';
+      $('panel-input-schema').style.display = (showExecutable || showPython) ? 'block' : 'none';
+      $('panel-command').style.display = showExecutable ? 'block' : 'none';
+      $('panel-python').style.display = showPython ? 'block' : 'none';
       $('panel-webhook').style.display = showWebhook ? 'block' : 'none';
       $('panel-claude-skills').style.display = (showPrompt || showHybrid) ? 'block' : 'none';
       $('zip-upload-block').style.display = showHybrid ? 'block' : 'none';
@@ -318,10 +331,6 @@
     // ========== ZIP 上傳相關 ==========
     let parsedZipData = null;
     let hasStoredZip = false;
-
-    function shouldRequireExecutableByForm() {
-      return $('skill_type').value === 'executable';
-    }
 
     function goToSavedSkill(skillId) {
       if (!skillId) {
@@ -424,12 +433,15 @@
         $('name').value = r.name || '';
         $('enabled').checked = !!r.enabled;
         $('description').value = r.description || '';
-        $('skill_type').value = r.skill_type || 'executable';
+        const loadedSkillType = String(r.skill_type || 'executable');
+        const hasPythonHandler = !!String(r.python_handler || '').trim();
+        $('skill_type').value = (loadedSkillType === 'executable' && hasPythonHandler) ? 'python' : loadedSkillType;
         $('endpoint_url').value = r.endpoint_url || '';
         $('http_method').value = (r.http_method || 'POST').toUpperCase();
         $('timeout_ms').value = r.timeout_ms || 8000;
         $('headers').value = (r.headers && typeof r.headers === 'object') ? JSON.stringify(r.headers, null, 2) : '';
         $('command').value = r.command || '';
+        $('python_handler').value = r.python_handler || '';
         const loadedInputSchema = (r.input_schema && typeof r.input_schema === 'object') ? JSON.stringify(r.input_schema, null, 2) : '';
         if (!inputSchemaTouched) {
           $('input_schema').value = loadedInputSchema;
@@ -458,14 +470,18 @@
     // ========== 儲存技能 ==========
     async function save() {
       try {
-        const skillType = $('skill_type').value;
+        const uiSkillType = $('skill_type').value;
         const endpointUrl = $('endpoint_url').value.trim();
         const command = $('command').value.trim();
-        const executableRequired = shouldRequireExecutableByForm();
-        const webhookRequired = skillType === 'webhook';
+        const pythonHandler = $('python_handler').value.trim();
+        const webhookRequired = uiSkillType === 'webhook';
 
-        if (executableRequired && !command && !endpointUrl) {
-          showError('executable 類技能需填寫 Command 或 Endpoint URL。');
+        if (uiSkillType === 'executable' && !command) {
+          showError('executable 類技能需填寫 Command。');
+          return;
+        }
+        if (uiSkillType === 'python' && !pythonHandler) {
+          showError('python 類技能需填寫 Python Handler。');
           return;
         }
         if (webhookRequired && !endpointUrl) {
@@ -477,7 +493,7 @@
           name: $('name').value.trim(),
           enabled: $('enabled').checked,
           description: $('description').value.trim(),
-          skill_type: skillType,
+          skill_type: uiSkillType === 'python' ? 'executable' : uiSkillType,
           input_schema: (() => {
             const raw = $('input_schema').value.trim();
             if (!raw) return {};
@@ -486,10 +502,20 @@
           })(),
         };
 
-        if (skillType === 'executable' && command) body.command = command;
+        if (uiSkillType === 'executable') {
+          body.command = command;
+          body.python_handler = null;
+          body.endpoint_url = null;
+        }
+
+        if (uiSkillType === 'python') {
+          body.python_handler = pythonHandler;
+          body.command = null;
+          body.endpoint_url = null;
+        }
 
         // Claude Skills 欄位（prompt 或 hybrid）
-        if (skillType === 'prompt' || skillType === 'hybrid') {
+        if (uiSkillType === 'prompt' || uiSkillType === 'hybrid') {
           body.prompt_template = $('prompt_template').value.trim();
 
           // 若有解析的 ZIP 資料，附加 references
@@ -498,8 +524,10 @@
           }
         }
 
-        // Webhook 設定（webhook 或 executable+endpoint）
-        if (webhookRequired || (executableRequired && endpointUrl)) {
+        // Webhook 設定
+        if (webhookRequired) {
+          body.command = null;
+          body.python_handler = null;
           if (endpointUrl) {
             body.endpoint_url = endpointUrl;
             body.http_method = ($('http_method').value || 'POST').toUpperCase();
