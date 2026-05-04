@@ -1080,6 +1080,8 @@ class ChatRouter:
                     validation_payload = skill_payload if isinstance(skill_payload, dict) else {}
                     if isinstance(validation_payload, dict) and '_interaction' in validation_payload:
                         validation_payload = {k: v for k, v in validation_payload.items() if k != '_interaction'}
+                    if isinstance(validation_payload, dict) and '_attachment_context' in validation_payload:
+                        validation_payload = {k: v for k, v in validation_payload.items() if k != '_attachment_context'}
                     valid = True
                     err_msg = ''
                     try:
@@ -1104,6 +1106,13 @@ class ChatRouter:
             _log.debug("Skill type and bundle check", skill_type=skill_type, session_id=session_id)
             has_zip_bundle = bool(getattr(row, 'zip_bundle', None))
             should_use_claude_skill = skill_type in {'prompt', 'hybrid'} or has_zip_bundle
+
+            if should_use_claude_skill and isinstance(skill_payload, dict):
+                attachment_context = str(skill_payload.get('_attachment_context') or '').strip()
+                if attachment_context and not str(skill_payload.get('text') or '').strip():
+                    normalized_skill_payload = dict(skill_payload)
+                    normalized_skill_payload['text'] = attachment_context
+                    skill_payload = normalized_skill_payload
 
             _log.debug("Skill execution path decision", tool=name, skill_type=skill_type, has_zip_bundle=has_zip_bundle, should_use_claude_skill=should_use_claude_skill, session_id=session_id)
             if should_use_claude_skill:

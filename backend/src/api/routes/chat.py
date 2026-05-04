@@ -791,12 +791,6 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
             return explicit, 'tasked_explicit_mention'
         return explicit, 'explicit_mention'
 
-    # TODO: 後續可考慮將 humanizer-zh-tw 的優先邏輯改為技能提示詞比對，但目前先用快路徑規則降低延遲，避免每輪都要走向量/LLM 判斷。
-    if _should_prefer_humanizer_public(message=message):
-        preferred_public = _pick_public_with_skill(db=db, public_workers=public_workers, skill_name='humanizer-zh-tw')
-        if preferred_public is not None:
-            return preferred_public, 'public_skill_hint_humanizer'
-
     all_worker_skill_names: list[str] = []
     for worker in (public_workers + tasked_workers):
         worker_skill_names = _extract_agent_skill_names(db=db, agent=worker)
@@ -835,19 +829,6 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
         return tasked_workers[0], 'tasked_default_fallback'
 
     return None, 'worker_not_found'
-
-
-def _should_prefer_humanizer_public(*, message: str) -> bool:
-    """目的：判斷是否屬於文案潤稿/人味改寫需求。
-    為什麼：這類需求應優先交給配置 humanizer 技能的 public 代理，避免被部門任務描述誤導。
-    """
-    text = str(message or '').strip().lower()
-    if not text:
-        return False
-    hints = [
-        '像真人', '人味', '口語', '改寫', '潤稿', '修文', '文案', 'humanizer',
-    ]
-    return any(h in text for h in hints)
 
 
 def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_names: list[str]) -> str | None:
@@ -1182,6 +1163,43 @@ def _apply_tool_payload_defaults(tool_name: str, payload: dict[str, Any]) -> dic
         normalized_payload.pop('location', None)
         normalized_payload.pop('city', None)
         normalized_payload['locationName'] = normalized_location
+    return normalized_payload
+
+
+def _extract_attachment_context_for_payload(message: str) -> str:
+    """目的：從使用者訊息抽取附加輸入區塊供工具 payload 使用。
+    為什麼：上傳檔案/參考網頁/雲端檔案資訊需隨工具呼叫傳遞，避免技能看不到附件內容。
+    """
+    raw = str(message or '')
+    marker = '[附加輸入]'
+    marker_pos = raw.find(marker)
+    if marker_pos < 0:
+        return ''
+    context_text = raw[marker_pos + len(marker):].strip()
+    if not context_text:
+        return ''
+    has_supported_attachment = any(
+        label in context_text
+        for label in ('參考網頁:', 'Google 雲端檔案:', '上傳檔案:')
+    )
+    if not has_supported_attachment:
+        return ''
+    return context_text
+
+
+def _inject_attachment_context_into_payload(*, payload: dict[str, Any], message: str) -> dict[str, Any]:
+    """目的：將附加輸入上下文寫入工具 payload。
+    為什麼：讓工具在執行時可直接取得附件相關資訊，提升技能處理一致性。
+    """
+    normalized_payload = dict(payload or {})
+    context_text = _extract_attachment_context_for_payload(message)
+    _log.debug(f'extracted_attachment_context="{context_text}" from message="{message}"')
+    if not context_text:
+        return normalized_payload
+    normalized_payload['_attachment_context'] = context_text
+    existing_text = str(normalized_payload.get('text') or '').strip()
+    if not existing_text:
+        normalized_payload['text'] = context_text
     return normalized_payload
 
 
@@ -1656,6 +1674,7 @@ async def chat_stream(
             """工具執行成功後：以工具結果呼叫 LLM 產生最終回答。
             為什麼：ReAct 循環的 Observe 步驟，必須把工具輸出注回 LLM 才能形成完整答案。
             """
+            _log.debug(f'_observe_and_answer called with tool_nm={tool_nm} result_text={result_text} message={message}')
             observe_prompt = (
                 f"工具 {tool_nm} 已回傳以下資訊：\n{result_text}\n\n"
                 f"請根據此資訊，直接用繁體中文回答使用者：{message}\n"
@@ -1663,7 +1682,7 @@ async def chat_stream(
                 "1) 只輸出最終答案，不可輸出中間推理、規劃、檢查過程。\n"
                 "2) 不可輸出 JSON、程式碼區塊、或任何工具協定文字。\n"
                 "3) 不可再呼叫任何工具。\n"
-                "4) 請以簡單、重點式方式回答。"
+                "4) 請以簡單、重點式方式回答，若有連結請保留。"
             )
             async for obs_delta in _stream_complete_async(router._llm, prompt=observe_prompt, tier=overrides.get('tier')):
                 if isinstance(obs_delta, str) and obs_delta:
@@ -1696,56 +1715,7 @@ async def chat_stream(
                     ]
                     if parts:
                         return _strip_system_reminder_text('\n'.join(parts)).strip()
-                location = result_obj.get('location') if isinstance(result_obj.get('location'), dict) else {}
-                current_weather = result_obj.get('current_weather') if isinstance(result_obj.get('current_weather'), dict) else {}
-                current = result_obj.get('current') if isinstance(result_obj.get('current'), dict) else {}
-                location_name = str(location.get('name') or location.get('query') or '').strip()
-                temperature = current_weather.get('temperature')
-                if temperature is None:
-                    temperature = current.get('temperature_2m')
-                windspeed = current_weather.get('windspeed')
-                if windspeed is None:
-                    windspeed = current.get('wind_speed_10m')
-                weather_code = current_weather.get('weathercode')
-                if weather_code is None:
-                    weather_code = current.get('weather_code')
-                if location_name and any(value is not None for value in (temperature, windspeed, weather_code)):
-                    segments: list[str] = [f"{location_name}目前天氣"]
-                    if temperature is not None:
-                        segments.append(f"溫度約 {temperature}°C")
-                    if windspeed is not None:
-                        segments.append(f"風速約 {windspeed} km/h")
-                    if weather_code is not None:
-                        segments.append(f"天氣代碼 {weather_code}")
-                    return '，'.join(segments) + '。'
             return ''
-
-        async def _try_humanizer_chain(source_tool: str, source_text: str) -> str | None:
-            """目的：在抓取網頁後自動接續 humanizer 技能。
-            為什麼：人性化改寫需求常先 fetch 內容，再做改寫，若中斷在 fetch 會只得到摘要。
-            """
-            if source_tool != 'mcp:fetch':
-                return None
-            if 'humanizer-zh-tw' not in getattr(router, '_allowed_tools', set()):
-                return None
-            if not _should_prefer_humanizer_public(message=message):
-                return None
-            candidate_text = str(source_text or '').strip()
-            if not candidate_text:
-                return None
-            try:
-                humanizer_result = await router.call_tool_async(
-                    session_id=str(conversation.id),
-                    tool='humanizer-zh-tw',
-                    payload={'text': candidate_text},
-                    db=db,
-                    agent_id=str(agent.id),
-                )
-                if not bool((humanizer_result or {}).get('ok')):
-                    return None
-                return _extract_readable_text_from_tool_result((humanizer_result or {}).get('result')) or None
-            except Exception:
-                return None
 
         async def _handle_skill_mode_result(tool_name: str, tool_response: dict[str, Any]) -> tuple[bool, list[str]]:
             # 目的：統一處理技能回傳的 UI/FINAL/ERROR 模式事件。
@@ -1962,6 +1932,8 @@ async def chat_stream(
                 if isinstance(inferred_payload, dict) and inferred_payload:
                     start_payload = inferred_payload
                     can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
+            start_payload = _inject_attachment_context_into_payload(payload=start_payload, message=message)
+            can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
             if not can_run_shortcut:
                 intent_skill_tool = None
             _log.debug(
@@ -2007,19 +1979,13 @@ async def chat_stream(
                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                 result_obj = (res or {}).get('result', {})
                 direct_text = _extract_readable_text_from_tool_result(result_obj)
-                chained = await _try_humanizer_chain(intent_skill_tool, direct_text or _json.dumps(result_obj, ensure_ascii=False))
-                if isinstance(chained, str) and chained.strip():
-                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
-                elif direct_text:
-                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
-                else:
-                    result_text = _json.dumps(result_obj, ensure_ascii=False)
-                    observed_any = False
-                    async for evt in _observe_and_answer(intent_skill_tool, result_text):
-                        observed_any = True
-                        yield evt
-                    if not observed_any:
-                        yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
+                result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
+                observed_any = False
+                async for evt in _observe_and_answer(intent_skill_tool, result_text):
+                    observed_any = True
+                    yield evt
+                if not observed_any:
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                 return
 
@@ -2046,6 +2012,8 @@ async def chat_stream(
                 if has_call:
                     tool_name = parsed_tool_name
                     tool_payload = _apply_tool_payload_defaults(parsed_tool_name, parsed_payload)
+                    tool_payload = _inject_attachment_context_into_payload(payload=tool_payload, message=message)
+                    _log.debug(f'Detected tool call: {tool_name} with payload: {tool_payload}')
                     detected_tool = True
                     react_step += 1
                     if react_step > max_steps:
@@ -2130,12 +2098,8 @@ async def chat_stream(
                             if successful_result_text is not None:
                                 yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                                chained = await _try_humanizer_chain(tool_name, successful_result_text)
-                                if isinstance(chained, str) and chained.strip():
-                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
-                                else:
-                                    async for evt in _observe_and_answer(tool_name, successful_result_text):
-                                        yield evt
+                                async for evt in _observe_and_answer(tool_name, successful_result_text):
+                                    yield evt
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                         except TimeoutError:
@@ -2210,12 +2174,8 @@ async def chat_stream(
                             if successful_result_text is not None:
                                 yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
-                                chained = await _try_humanizer_chain(tool_name, successful_result_text)
-                                if isinstance(chained, str) and chained.strip():
-                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
-                                else:
-                                    async for evt in _observe_and_answer(tool_name, successful_result_text):
-                                        yield evt
+                                async for evt in _observe_and_answer(tool_name, successful_result_text):
+                                    yield evt
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                         except TimeoutError:
@@ -2243,15 +2203,13 @@ async def chat_stream(
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 result_obj = (res or {}).get('result', {})
                                 direct_text = _extract_readable_text_from_tool_result(result_obj)
-                                chained = await _try_humanizer_chain(tool_name, direct_text or _json.dumps(result_obj, ensure_ascii=False))
-                                if isinstance(chained, str) and chained.strip():
-                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
-                                elif direct_text:
-                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
-                                else:
-                                    result_text = _json.dumps(result_obj, ensure_ascii=False)
-                                    async for evt in _observe_and_answer(tool_name, result_text):
-                                        yield evt
+                                result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
+                                observed_any = False
+                                async for evt in _observe_and_answer(tool_name, result_text):
+                                    observed_any = True
+                                    yield evt
+                                if not observed_any:
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                     else:
@@ -2279,15 +2237,13 @@ async def chat_stream(
                         yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                         result_obj = (res or {}).get('result', {})
                         direct_text = _extract_readable_text_from_tool_result(result_obj)
-                        chained = await _try_humanizer_chain(tool_name, direct_text or _json.dumps(result_obj, ensure_ascii=False))
-                        if isinstance(chained, str) and chained.strip():
-                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(chained, ensure_ascii=False)} }}\n\n"
-                        elif direct_text:
-                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
-                        else:
-                            result_text = _json.dumps(result_obj, ensure_ascii=False)
-                            async for evt in _observe_and_answer(tool_name, result_text):
-                                yield evt
+                        result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
+                        observed_any = False
+                        async for evt in _observe_and_answer(tool_name, result_text):
+                            observed_any = True
+                            yield evt
+                        if not observed_any:
+                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                         return
                     if not ok_flag:

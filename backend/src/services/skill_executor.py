@@ -374,8 +374,9 @@ def execute_skill(
 
     try:
         _log.debug("Starting skill execution", skill_id=skill_id, has_zip_bundle=bool(zip_bundle), prompt_template_present=bool(prompt_template), input_data_keys=list(input_data.keys()) if input_data else None, execute_scripts=execute_scripts, timeout_seconds=timeout_seconds)
-        
+
         script_name, script_args, pure_input_data = _extract_script_controls(input_data)
+        _log.debug(f"Extracted script controls: script_name={script_name}, script_args={script_args}, pure_input_data_keys={list(pure_input_data.keys()) if pure_input_data else None}, input_data={input_data}")
 
         # 解壓 ZIP（若有）
         if zip_bundle:
@@ -387,6 +388,7 @@ def execute_skill(
                 if scripts_dir:
                     entry_script = _resolve_entry_script(scripts_dir, script_name)
                     if script_name and entry_script is None:
+                        _log.error("Entry script not found", script_name=script_name, scripts_dir=scripts_dir)
                         return SkillExecutionResult(
                             ok=False,
                             error=f'script_not_found: {script_name}',
@@ -403,6 +405,7 @@ def execute_skill(
                         )
                         script_outputs.append(output)
 
+        _log.debug("Finished script execution", script_outputs=script_outputs)
         # 組合最終提示詞
         final_prompt = prompt_template or ''
 
