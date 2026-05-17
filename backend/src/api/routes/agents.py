@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, Body, Request
 import uuid
+
+from fastapi import APIRouter, Depends, Body, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.database import get_db
-from src.models import User, Agent, Workspace, SkillEntry, FunctionProfile, RagDataset
+from src.models import User, Agent, Workspace, SkillEntry, FunctionProfile, RagDataset, MCPConnection
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
@@ -15,6 +16,17 @@ from src.services.qdrant_service import qdrant_service
 from src.services.embedding_service import embedding_service
 
 router = APIRouter()
+
+
+def _can_read_agent_integrations(current_user: User) -> bool:
+    """目的：統一判斷代理者整合設定的讀取權限。
+    為什麼：US3 要求一般 user 具唯讀能力，需與 update 權限邏輯分離。
+    """
+    return bool(
+        check_permission(current_user, 'read_agent')
+        or check_permission(current_user, 'update_agent')
+        or check_permission(current_user, 'chat')
+    )
 
 
 @router.get('/agents/public')
@@ -51,7 +63,7 @@ async def get_agent_integrations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not _can_read_agent_integrations(current_user):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -197,6 +209,8 @@ async def get_agent_integrations(
         'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
         'function_profile_id': function_profile_id,
         'rag_dataset_ids': rag_dataset_ids,
+        'can_read': True,
+        'can_update': bool(check_permission(current_user, 'update_agent')),
     }
 
 
@@ -219,6 +233,19 @@ async def update_agent_integrations(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
+
+    before_model_config = dict(agent.model_config or {}) if isinstance(agent.model_config, dict) else {}
+    before_rag_config = dict(agent.rag_config or {}) if isinstance(agent.rag_config, dict) else {}
+    before_snapshot = {
+        'mcp_count': len(agent.mcp_config or []),
+        'skills': list(agent.skills or []),
+        'mcp_ids': list(before_model_config.get('mcp_ids') or []),
+        'skill_ids': list(before_model_config.get('skill_ids') or []),
+        'function_profile_id': before_model_config.get('function_profile_id'),
+        'rag_enabled': bool(before_rag_config.get('enabled', False)),
+        'rag_sources': list(before_rag_config.get('sources') or []),
+        'rag_topk': int(before_rag_config.get('topK', 5) or 5),
+    }
 
     # 讀取欄位並做基本驗證
     mcp_cfg = payload.get('mcp_config', []) if isinstance(payload, dict) else []
@@ -318,19 +345,33 @@ async def update_agent_integrations(
     # 簡易審計（以 Log 表）
     try:
         from src.models import Log
+        after_model_config = dict(agent.model_config or {}) if isinstance(agent.model_config, dict) else {}
+        after_rag_config = dict(agent.rag_config or {}) if isinstance(agent.rag_config, dict) else {}
+        after_snapshot = {
+            'mcp_count': len(agent.mcp_config or []),
+            'skills': list(agent.skills or []),
+            'mcp_ids': list(after_model_config.get('mcp_ids') or []),
+            'skill_ids': list(after_model_config.get('skill_ids') or []),
+            'function_profile_id': after_model_config.get('function_profile_id'),
+            'rag_enabled': bool(after_rag_config.get('enabled', False)),
+            'rag_sources': list(after_rag_config.get('sources') or []),
+            'rag_topk': int(after_rag_config.get('topK', 5) or 5),
+        }
+        changed_fields: list[str] = []
+        for field_name in before_snapshot.keys():
+            if before_snapshot.get(field_name) != after_snapshot.get(field_name):
+                changed_fields.append(field_name)
         log = Log(
             user_id=current_user.id,
             level='info',
             action='agent.integrations.update',
             resource_type='agent',
             resource_id=agent.id,
-            details={'counts': {
-                'mcp': len(agent.mcp_config or []),
-                'skills': len(agent.skills or []),
-                'sources': len(rag_out['sources']),
-                'mcp_ids': len((agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else []),
-                'skill_ids': len((agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else []),
-            }},
+            details={
+                'changed_fields': changed_fields,
+                'before': before_snapshot,
+                'after': after_snapshot,
+            },
             ip_address=None,
         )
         db.add(log)
@@ -347,6 +388,48 @@ async def update_agent_integrations(
         'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
         'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
         'function_profile_id': (agent.model_config or {}).get('function_profile_id') if isinstance(agent.model_config, dict) else None,
+    }
+
+
+@router.get('/agents/{agent_id}/integrations/audit')
+async def list_agent_integrations_audit(
+    agent_id: str,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'read_logs'):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+
+    try:
+        uuid.UUID(str(agent_id))
+    except ValueError:
+        raise not_found_error('Agent', agent_id)
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    safe_limit = max(1, min(int(limit or 20), 100))
+    from src.models import Log
+
+    rows = db.query(Log).filter(
+        Log.action == 'agent.integrations.update',
+        Log.resource_type == 'agent',
+        Log.resource_id == agent.id,
+    ).order_by(Log.timestamp.desc()).limit(safe_limit).all()
+
+    return {
+        'entries': [
+            {
+                'id': str(row.id),
+                'user_id': str(row.user_id) if row.user_id else None,
+                'timestamp': row.timestamp.isoformat() if row.timestamp else None,
+                'details': row.details if isinstance(row.details, dict) else {},
+            }
+            for row in rows
+        ]
     }
 
 
@@ -563,11 +646,44 @@ async def test_agent_mcp(
     if not agent:
         raise not_found_error('Agent', agent_id)
 
-    conn = (payload or {}).get('connection') if isinstance(payload, dict) else None
+    # 目的：允許以 mcp_id 或 inline connection 兩種方式測試 MCP。
+    # 為什麼：LLM 設定頁主要綁定 mcp_ids，不應要求前端重組完整連線資料。
+    payload_obj = payload if isinstance(payload, dict) else {}
+    conn = payload_obj.get('connection') if isinstance(payload_obj.get('connection'), dict) else None
+    mcp_id = str(payload_obj.get('mcp_id') or '').strip()
+    if conn is None and mcp_id:
+        try:
+            uuid.UUID(mcp_id)
+        except Exception:
+            return {'ok': False, 'error': 'mcp_id 格式不正確'}
+        row = db.query(MCPConnection).filter(MCPConnection.id == mcp_id, MCPConnection.enabled == True).first()  # noqa: E712
+        if not row:
+            return {'ok': False, 'error': 'mcp_id 無效或未啟用'}
+        conn = {
+            'name': row.name,
+            'transport': row.transport,
+            'base_url': row.base_url,
+            'auth': row.auth,
+            'command': row.command,
+            'args': row.args,
+            'env': row.env,
+        }
+
+    if not isinstance(conn, dict):
+        return {'ok': False, 'error': '缺少 connection 或 mcp_id'}
+
     name = (conn or {}).get('name') if isinstance(conn, dict) else None
-    base_url = (conn or {}).get('base_url') if isinstance(conn, dict) else None
     if not name or not isinstance(name, str):
         return {'ok': False, 'error': '缺少連線名稱'}
+
+    transport = str((conn or {}).get('transport') or 'remote').strip().lower()
+    if transport == 'stdio':
+        command = str((conn or {}).get('command') or '').strip()
+        if not command:
+            return {'ok': False, 'error': '缺少 command'}
+        return {'ok': True, 'transport': 'stdio', 'error': None}
+
+    base_url = (conn or {}).get('base_url') if isinstance(conn, dict) else None
     if not base_url or not isinstance(base_url, str):
         return {'ok': False, 'error': '缺少 base_url'}
 

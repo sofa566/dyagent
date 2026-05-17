@@ -347,3 +347,25 @@ class SkillInteraction(Base):
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ChatAttachment(Base):
+    """目的：保存聊天附件的二進位檔案 metadata。
+    為什麼：聊天請求僅傳遞 attachment_id，工具執行時再依需求載入與轉換內容。
+    """
+
+    __tablename__ = 'chat_attachments'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=True)
+    user_id = Column(GUID(), ForeignKey('users.id'), nullable=False)
+    filename = Column(String(255), nullable=False)
+    ext = Column(String(20), nullable=False, default='')
+    mime_type = Column(String(120), nullable=False, default='application/octet-stream')
+    file_path = Column(String(700), nullable=False)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default='uploaded')
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    expires_at = Column(DateTime, nullable=True)

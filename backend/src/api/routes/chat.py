@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, File, Form, UploadFile
 from typing import Any, AsyncGenerator
 import uuid
 from sqlalchemy.orm import Session
@@ -24,6 +24,8 @@ from src.api.errors import not_found_error, validation_error, forbidden_error
 from src.services.chat_router import ChatRouter
 from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
+from src.services.chat_attachment_service import chat_attachment_service
+from src.services.skill_registry import get_skill_registry, get_skill_rule_router
 from src.core.logging import get_logger
 from src.core.config import settings
 
@@ -44,27 +46,24 @@ def _strip_system_reminder_text(text: str) -> str:
     raw = str(text or '')
     if not raw:
         return ''
+
     cleaned = re.sub(r'<system-reminder>[\s\S]*?</system-reminder>', '', raw, flags=re.IGNORECASE)
     cleaned = re.sub(r'</?system-reminder>', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(
-        r'Your operational mode has changed[\s\S]{0,400}?tools as needed\.',
-        '',
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(
-        r'Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.',
+        r'Your operational mode has changed from plan to build\.[\s\S]*?tools as needed\.',
         '',
         cleaned,
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(r'^\s*Your operational mode has changed from plan to build\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
     cleaned = re.sub(r'^\s*You are no longer in read-only mode\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
-    cleaned = re.sub(r'^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
-    marker = cleaned.lower().find('<system-reminder>')
-    if marker >= 0:
-        cleaned = cleaned[:marker]
-    return cleaned
+    cleaned = re.sub(
+        r'^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$',
+        '',
+        cleaned,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    return cleaned.strip()
 
 
 def _strip_tool_protocol_text(text: str) -> str:
@@ -770,6 +769,7 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
     """目的：以混合路由策略挑選工作代理者。
     為什麼：先用快路徑降低延遲，再以語意比對與模型裁決補齊準確率。
     """
+    routing_message = _extract_routing_message(message)
     tasked_workers = db.query(Agent).filter(
         Agent.id != router_agent.id,
         Agent.enabled == True,  # noqa: E712
@@ -782,7 +782,7 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
     ).all()
 
     # 若使用者明確提到代理名稱，直接命中
-    explicit = _pick_explicit_named_worker(message=message, workers=(public_workers + tasked_workers))
+    explicit = _pick_explicit_named_worker(message=routing_message, workers=(public_workers + tasked_workers))
     if explicit is not None:
         worker_class = str(getattr(explicit, 'agent_class', '') or '')
         if worker_class == 'public':
@@ -800,7 +800,7 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
     # 從候選代理綁定技能的 `name + description` 抽 token，與使用者訊息比對。
     intent_skill_name = _detect_intent_skill_name(
         db=db,
-        message=message,
+        message=routing_message,
         candidate_skill_names=all_worker_skill_names,
     )
     _log.debug(f'intent_skill_name={intent_skill_name}')
@@ -815,11 +815,11 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
                     return worker, f'public_skill_hint_{intent_skill_name}'
                 return worker, f'skill_hint_{intent_skill_name}'
 
-    worker, reason = _pick_worker_without_default(workers=tasked_workers, message=message)
+    worker, reason = _pick_worker_without_default(workers=tasked_workers, message=routing_message)
     if worker is not None:
         return worker, f'tasked_{reason}'
 
-    public_worker, public_reason = _pick_worker_without_default(workers=public_workers, message=message)
+    public_worker, public_reason = _pick_worker_without_default(workers=public_workers, message=routing_message)
     if public_worker is not None:
         return public_worker, f'public_{public_reason}'
     if public_workers:
@@ -829,6 +829,18 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
         return tasked_workers[0], 'tasked_default_fallback'
 
     return None, 'worker_not_found'
+
+
+def _extract_routing_message(message: str) -> str:
+    raw_message = str(message or '').strip()
+    marker = '[附加輸入]'
+    marker_index = raw_message.find(marker)
+    if marker_index < 0:
+        return raw_message
+    primary_message = raw_message[:marker_index].strip()
+    if primary_message:
+        return primary_message
+    return raw_message
 
 
 def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_names: list[str]) -> str | None:
@@ -855,10 +867,77 @@ def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_name
     _log.debug(f'detect_intent_skill_name.candidate_skills={unique_skill_names}')
     if not unique_skill_names:
         return None
+    candidate_lower_names = {name.lower() for name in unique_skill_names}
 
     skill_rows = db.query(SkillEntry).filter(SkillEntry.name.in_(unique_skill_names)).all()
-    if not skill_rows:
-        return None
+
+    # 先走 SKILL.md 動態規則路由（以 prompt_template 原文為主）；失敗才回退舊 token 比對。
+    try:
+        registry = get_skill_registry()
+        rule_router = get_skill_rule_router()
+        manifests = []
+        included_names: set[str] = set()
+        for row in skill_rows:
+            skill_name = str(getattr(row, 'name', '') or '').strip()
+            if not skill_name:
+                continue
+            included_names.add(skill_name.lower())
+            prompt_markdown = str(getattr(row, 'prompt_template', '') or '').strip()
+            if not prompt_markdown:
+                description_text = str(getattr(row, 'description', '') or '').strip()
+                prompt_markdown = f"# {skill_name}\n\n{description_text}".strip()
+            manifest = registry.build_manifest_from_markdown(
+                skill_md_text=prompt_markdown,
+                source_id=f"db:{getattr(row, 'id', skill_name)}",
+                source_path=f"db://skills/{skill_name}",
+            )
+            _log.debug(f'skill manifest loaded from db id={row.id} name={skill_name} description="{row.description}" manifest={manifest}')
+
+            # 執行期欄位優先權：name/description/prompt_template 以 DB 為準。
+            # 若 DB 有值，覆蓋解析結果；DB 空值時才保留解析出的內容。
+            manifest.name = skill_name
+            db_description = str(getattr(row, 'description', '') or '').strip()
+            if db_description:
+                manifest.description = db_description
+            manifests.append(manifest)
+
+        filesystem_manifests = registry.list_manifests()
+        for manifest in filesystem_manifests:
+            manifest_name = str(manifest.name or '').strip()
+            if not manifest_name:
+                continue
+            lowered_name = manifest_name.lower()
+            if lowered_name in included_names:
+                continue
+            if lowered_name not in candidate_lower_names:
+                continue
+            manifests.append(manifest)
+            included_names.add(lowered_name)
+
+        if not manifests:
+            return None
+
+        route_result = rule_router.match(
+            message=normalized_message,
+            manifests=manifests,
+            candidate_skill_names=unique_skill_names,
+        )
+        selected_skill_name = str(route_result.get('skill_name') or '').strip()
+        if selected_skill_name:
+            _log.debug(
+                'detect_intent_skill_name.rule_router_matched',
+                selected_skill=selected_skill_name,
+                score=int(route_result.get('score') or 0),
+                matched_rules=route_result.get('matched_rules') or [],
+            )
+            return selected_skill_name
+        _log.debug(
+            'detect_intent_skill_name.rule_router_no_match',
+            score=int(route_result.get('score') or 0),
+            matched_rules=route_result.get('matched_rules') or [],
+        )
+    except Exception as error:
+        _log.warning('detect_intent_skill_name.rule_router_failed_fallback', error=str(error))
 
     # 先收集所有技能的名稱 token，用於避免描述詞跨技能誤判
     all_name_tokens: set[str] = set()
@@ -1029,12 +1108,21 @@ def _extract_agent_skill_names(*, db: Session, agent: Agent) -> list[str]:
             if name:
                 names.append(name)
 
-    # 兼容 agent.skills 內直接放技能名稱，但需過濾停用技能
+    # 兼容 agent.skills 內直接放技能名稱。
+    # 若 DB 尚未有對應技能列，但檔案系統有 SKILL.md，允許保留給動態路由使用。
     text_names = [n for n in names if n]
     if text_names:
         rows3 = db.query(SkillEntry).filter(SkillEntry.name.in_(list(dict.fromkeys(text_names))), SkillEntry.enabled == True).all()  # noqa: E712
         valid_names = {str(r.name or '').strip() for r in rows3 if str(r.name or '').strip()}
-        names = [n for n in names if n in valid_names]
+        try:
+            registry_names = {
+                str(manifest.name or '').strip()
+                for manifest in get_skill_registry().list_manifests()
+                if str(manifest.name or '').strip()
+            }
+        except Exception:
+            registry_names = set()
+        names = [n for n in names if (n in valid_names) or (n in registry_names)]
 
     return list(dict.fromkeys([n for n in names if n]))
 
@@ -1203,6 +1291,51 @@ def _inject_attachment_context_into_payload(*, payload: dict[str, Any], message:
     return normalized_payload
 
 
+def _normalize_attachment_ids(raw_attachment_ids: Any) -> list[str]:
+    normalized_ids: list[str] = []
+    for raw_item in list(raw_attachment_ids or []):
+        normalized_item = str(raw_item or '').strip()
+        if not normalized_item:
+            continue
+        try:
+            uuid.UUID(normalized_item)
+        except Exception:
+            continue
+        normalized_ids.append(normalized_item)
+    return list(dict.fromkeys(normalized_ids))
+
+
+def _inject_attachment_markdowns_into_payload(
+    *,
+    payload: dict[str, Any],
+    attachment_markdowns: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    # 目的：把附件 markdown 分檔注入工具 payload。
+    # 為什麼：附件注入需與技能解耦，任何工具都可讀取 `_attachments` 並自行決定使用方式。
+    normalized_payload = dict(payload or {})
+    rows = list(attachment_markdowns or [])
+    if not rows:
+        return normalized_payload
+
+    normalized_payload['_attachments'] = rows
+    text_fragments: list[str] = []
+    for item in rows:
+        markdown_text = str((item or {}).get('markdown') or '').strip()
+        if not markdown_text:
+            continue
+        filename = str((item or {}).get('filename') or 'attachment')
+        text_fragments.append(f'<附件內容 {filename}>\n{markdown_text}\n</附件內容 {filename}>')
+
+    existing_text = str(normalized_payload.get('text') or '').strip()
+    if text_fragments:
+        attachment_text = '\n\n'.join(text_fragments)
+        if existing_text:
+            normalized_payload['text'] = f'{existing_text}\n\n{attachment_text}'
+        else:
+            normalized_payload['text'] = attachment_text
+    return normalized_payload
+
+
 def _extract_progress_value(frame: dict[str, Any]) -> float | None:
     """目的：從工具 frame 取進度值。
     為什麼：stdio/ws 事件欄位命名可能不同，集中回退邏輯避免重複。
@@ -1263,8 +1396,35 @@ async def invoke_tool(
         raise not_found_error('Agent', str(conv.agent_id))
 
     router = ChatRouter()
+    attachment_ids = _normalize_attachment_ids((payload or {}).get('attachment_ids'))
+    if not attachment_ids:
+        bound_rows = chat_attachment_service.list_user_attachments(
+            db=db,
+            user_id=str(current_user.id),
+            conversation_id=str(conv.id),
+        )
+        attachment_ids = [str(row.id) for row in bound_rows]
+    prepared_payload = dict(payload or {})
+    if attachment_ids:
+        bundles = chat_attachment_service.build_markdown_bundle(
+            db=db,
+            user_id=str(current_user.id),
+            attachment_ids=attachment_ids,
+        )
+        prepared_payload = _inject_attachment_markdowns_into_payload(
+            payload=prepared_payload,
+            attachment_markdowns=[
+                {
+                    'attachment_id': bundle.attachment_id,
+                    'filename': bundle.filename,
+                    'markdown': bundle.markdown,
+                    'error': bundle.error,
+                }
+                for bundle in bundles
+            ],
+        )
     # 工具呼叫：優先走 WS 串流（若不可用則回退 HTTP），並強制白名單
-    result = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload=payload or {}, db=db, agent_id=str(agent.id))
+    result = await router.call_tool_async(session_id=str(conv.id), tool=tool_name, payload=prepared_payload, db=db, agent_id=str(agent.id))
 
     try:
         result_obj = result.get('result') if isinstance(result, dict) and isinstance(result.get('result'), dict) else None
@@ -1482,6 +1642,7 @@ async def chat_stream(
     agent_id: str,  # 代理者的唯一标识符，用于识别具体的AI代理
     message: str,  # 用户输入的消息内容，需要AI代理处理和回应
     conversation_id: str | None = None,
+    attachment_ids: list[str] | None = None,
     persist_user_message: bool = True,
     persist_message: str | None = None,  # 若提供，DB 儲存此值而非 message（避免系統注入內容洩漏到畫面）
     db: Session = Depends(get_db),  # 数据库会话依赖，用于数据库操作
@@ -1519,6 +1680,41 @@ async def chat_stream(
         conversation = _query_latest_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
     if not conversation:
         conversation = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
+
+    normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
+    if normalized_attachment_ids:
+        chat_attachment_service.bind_attachments_to_conversation(
+            db=db,
+            user_id=str(current_user.id),
+            attachment_ids=normalized_attachment_ids,
+            conversation=conversation,
+        )
+
+    attachment_markdown_cache: list[dict[str, Any]] | None = None
+
+    def _get_attachment_markdowns() -> list[dict[str, Any]]:
+        nonlocal attachment_markdown_cache
+        if attachment_markdown_cache is not None:
+            return attachment_markdown_cache
+        if not normalized_attachment_ids:
+            attachment_markdown_cache = []
+            return attachment_markdown_cache
+
+        bundles = chat_attachment_service.build_markdown_bundle(
+            db=db,
+            user_id=str(current_user.id),
+            attachment_ids=normalized_attachment_ids,
+        )
+        attachment_markdown_cache = [
+            {
+                'attachment_id': bundle.attachment_id,
+                'filename': bundle.filename,
+                'markdown': bundle.markdown,
+                'error': bundle.error,
+            }
+            for bundle in bundles
+        ]
+        return attachment_markdown_cache
 
     user_message: Message | None = None
     if persist_user_message:
@@ -1675,9 +1871,10 @@ async def chat_stream(
             為什麼：ReAct 循環的 Observe 步驟，必須把工具輸出注回 LLM 才能形成完整答案。
             """
             _log.debug(f'_observe_and_answer called with tool_nm={tool_nm} result_text={result_text} message={message}')
+            user_visible_message = _extract_routing_message(_strip_system_reminder_text(message))
             observe_prompt = (
                 f"工具 {tool_nm} 已回傳以下資訊：\n{result_text}\n\n"
-                f"請根據此資訊，直接用繁體中文回答使用者：{message}\n"
+                f"請根據此資訊，直接用繁體中文回答使用者：{user_visible_message}\n"
                 "規則：\n"
                 "1) 只輸出最終答案，不可輸出中間推理、規劃、檢查過程。\n"
                 "2) 不可輸出 JSON、程式碼區塊、或任何工具協定文字。\n"
@@ -1933,6 +2130,10 @@ async def chat_stream(
                     start_payload = inferred_payload
                     can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
             start_payload = _inject_attachment_context_into_payload(payload=start_payload, message=message)
+            start_payload = _inject_attachment_markdowns_into_payload(
+                payload=start_payload,
+                attachment_markdowns=_get_attachment_markdowns(),
+            )
             can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
             if not can_run_shortcut:
                 intent_skill_tool = None
@@ -1978,8 +2179,13 @@ async def chat_stream(
             if ok_flag:
                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                 result_obj = (res or {}).get('result', {})
+                _log.debug(f'Raw tool result for {intent_skill_tool}: {result_obj}')
                 direct_text = _extract_readable_text_from_tool_result(result_obj)
                 result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
+                if direct_text:
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                    yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                    return
                 observed_any = False
                 async for evt in _observe_and_answer(intent_skill_tool, result_text):
                     observed_any = True
@@ -2013,6 +2219,10 @@ async def chat_stream(
                     tool_name = parsed_tool_name
                     tool_payload = _apply_tool_payload_defaults(parsed_tool_name, parsed_payload)
                     tool_payload = _inject_attachment_context_into_payload(payload=tool_payload, message=message)
+                    tool_payload = _inject_attachment_markdowns_into_payload(
+                        payload=tool_payload,
+                        attachment_markdowns=_get_attachment_markdowns(),
+                    )
                     _log.debug(f'Detected tool call: {tool_name} with payload: {tool_payload}')
                     detected_tool = True
                     react_step += 1
@@ -2202,8 +2412,13 @@ async def chat_stream(
                             if ok_flag:
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 result_obj = (res or {}).get('result', {})
+                                _log.debug(f'Raw tool result for {tool_name}: {result_obj}')
                                 direct_text = _extract_readable_text_from_tool_result(result_obj)
                                 result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
+                                if direct_text:
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                                    yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                                    return
                                 observed_any = False
                                 async for evt in _observe_and_answer(tool_name, result_text):
                                     observed_any = True
@@ -2236,8 +2451,13 @@ async def chat_stream(
                     if ok_flag:
                         yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                         result_obj = (res or {}).get('result', {})
+                        _log.debug(f'Raw tool result for {tool_name}: {result_obj}')
                         direct_text = _extract_readable_text_from_tool_result(result_obj)
                         result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
+                        if direct_text:
+                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                            yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+                            return
                         observed_any = False
                         async for evt in _observe_and_answer(tool_name, result_text):
                             observed_any = True
@@ -2930,6 +3150,7 @@ async def chat_entry_router(
     if not message:
         raise validation_error('Message cannot be empty')
     enriched_message = _inject_reference_content(message)
+    attachment_ids = _normalize_attachment_ids((payload or {}).get('attachment_ids'))
 
     requested_conversation_id = str((payload or {}).get('conversation_id') or '').strip()
     requested_conversation: Conversation | None = None
@@ -2993,6 +3214,13 @@ async def chat_entry_router(
                     conversation = _create_conversation_with_fallback(
                         db=db, agent_id=str(router_agent.id), user_id=current_user.id
                     )
+                if attachment_ids:
+                    chat_attachment_service.bind_attachments_to_conversation(
+                        db=db,
+                        user_id=str(current_user.id),
+                        attachment_ids=attachment_ids,
+                        conversation=conversation,
+                    )
                 try:
                     user_msg = Message(conversation_id=conversation.id, role='user', content=enriched_message)
                     _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_msg)
@@ -3040,6 +3268,13 @@ async def chat_entry_router(
                     degrade_conversation = _create_conversation_with_fallback(
                         db=db, agent_id=str(worker.id), user_id=current_user.id
                     )
+                if attachment_ids:
+                    chat_attachment_service.bind_attachments_to_conversation(
+                        db=db,
+                        user_id=str(current_user.id),
+                        attachment_ids=attachment_ids,
+                        conversation=degrade_conversation,
+                    )
                 if str(getattr(degrade_conversation, 'agent_id', '') or '') != str(worker.id):
                     degrade_conversation.agent_id = worker.id
                     try:
@@ -3050,6 +3285,7 @@ async def chat_entry_router(
                     agent_id=str(worker.id),
                     message=enriched_message,
                     conversation_id=str(degrade_conversation.id),
+                    attachment_ids=attachment_ids,
                     db=db,
                     current_user=current_user,
                 )
@@ -3081,6 +3317,13 @@ async def chat_entry_router(
         conversation = _query_latest_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
     if conversation is None:
         conversation = _create_conversation_with_fallback(db=db, agent_id=str(worker.id), user_id=current_user.id)
+    if attachment_ids:
+        chat_attachment_service.bind_attachments_to_conversation(
+            db=db,
+            user_id=str(current_user.id),
+            attachment_ids=attachment_ids,
+            conversation=conversation,
+        )
 
     if str(getattr(conversation, 'agent_id', '') or '') != str(worker.id):
         conversation.agent_id = worker.id
@@ -3124,7 +3367,7 @@ async def chat_entry_router(
         if route_reason and route_reason.startswith(_prefix):
             hinted_skill = route_reason[len(_prefix):]
             llm_message = (
-                f'[系統提示：請優先呼叫技能 `{hinted_skill}` 來處理此請求，不要只用文字回覆]\n\n'
+                f'[系統提示：請優先呼叫技能 `{hinted_skill}` 來處理此請求，不要只用文字回覆。若目前只有附件檔名而沒有可讀文字內容，請先明確要求使用者貼上內容或提供可讀取連結，不要直接拒絕。]\n\n'
                 + enriched_message
             )
             break
@@ -3135,6 +3378,7 @@ async def chat_entry_router(
         message=llm_message,
         persist_message=enriched_message,
         conversation_id=str(conversation.id),
+        attachment_ids=attachment_ids,
         persist_user_message=True,
         db=db,
         current_user=current_user,
@@ -3151,6 +3395,89 @@ async def chat_entry_router(
             yield chunk
 
     return StreamingResponse(_with_route_event(), media_type='text/event-stream')
+
+
+@router.post('/chat/attachments')
+async def upload_chat_attachment(
+    file: UploadFile = File(...),
+    conversation_id: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 目的：以二進位方式上傳聊天附件並回傳 attachment_id。
+    # 為什麼：聊天主訊息只需帶 attachment_id，工具執行時再按需轉換內容。
+    _require_chat_permission(current_user)
+    normalized_conversation_id = str(conversation_id or '').strip() or None
+    if normalized_conversation_id:
+        _validate_uuid_or_not_found('Conversation', normalized_conversation_id)
+        conversation = db.query(Conversation).filter(
+            Conversation.id == normalized_conversation_id,
+            Conversation.user_id == current_user.id,
+        ).first()
+        if conversation is None:
+            raise not_found_error('Conversation', normalized_conversation_id)
+
+    try:
+        row = chat_attachment_service.create_attachment(
+            db=db,
+            user_id=str(current_user.id),
+            file=file,
+            conversation_id=normalized_conversation_id,
+        )
+    except ValueError as error:
+        raise validation_error(str(error))
+
+    return {
+        'ok': True,
+        'attachment': chat_attachment_service.serialize_attachment(row),
+    }
+
+
+@router.get('/chat/attachments')
+async def list_chat_attachments(
+    conversation_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_chat_permission(current_user)
+    normalized_conversation_id = str(conversation_id or '').strip() or None
+    if normalized_conversation_id:
+        _validate_uuid_or_not_found('Conversation', normalized_conversation_id)
+        conversation = db.query(Conversation).filter(
+            Conversation.id == normalized_conversation_id,
+            Conversation.user_id == current_user.id,
+        ).first()
+        if conversation is None:
+            raise not_found_error('Conversation', normalized_conversation_id)
+    rows = chat_attachment_service.list_user_attachments(
+        db=db,
+        user_id=str(current_user.id),
+        conversation_id=normalized_conversation_id,
+    )
+    return {
+        'attachments': [chat_attachment_service.serialize_attachment(row) for row in rows],
+    }
+
+
+@router.get('/chat/attachments/{attachment_id}')
+async def get_chat_attachment(
+    attachment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_chat_permission(current_user)
+    _validate_uuid_or_not_found('Attachment', attachment_id)
+    row = chat_attachment_service.get_user_attachment(
+        db=db,
+        user_id=str(current_user.id),
+        attachment_id=attachment_id,
+    )
+    if row is None:
+        raise not_found_error('Attachment', attachment_id)
+    return {
+        'ok': True,
+        'attachment': chat_attachment_service.serialize_attachment(row),
+    }
 
 
 @router.get('/chat/google-picker-config')

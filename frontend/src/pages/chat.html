@@ -590,8 +590,7 @@
     const skillUiCloseBtn = document.getElementById('skill-ui-close');
     const skillUiFrame = document.getElementById('skill-ui-frame');
 
-    const TEXT_FILE_MAX_BYTES = 200 * 1024;
-    const ATTACHMENT_TEXT_TOTAL_MAX = 600 * 1024;
+    const ATTACHMENT_UPLOAD_ERROR_PREFIX = '附件上傳失敗';
 
     const attachmentsState = {
       files: [],
@@ -647,7 +646,10 @@
       attachmentTray.innerHTML = '';
       const chips = [];
       attachmentsState.files.forEach((f) => {
-        chips.push({ kind: 'file', key: f.id, label: `檔案：${f.name}` });
+        const statusText = f.error
+          ? '（上傳失敗）'
+          : (f.uploading ? '（上傳中）' : '');
+        chips.push({ kind: 'file', key: f.id, label: `檔案：${f.name}${statusText}` });
       });
       attachmentsState.urls.forEach((u) => {
         chips.push({ kind: 'url', key: u, label: `網頁：${u}` });
@@ -671,10 +673,6 @@
         el.appendChild(close);
         attachmentTray.appendChild(el);
       });
-    }
-
-    function escapeForPrompt(text) {
-      return String(text || '').replace(/```/g, "'''\n");
     }
 
     function buildAttachmentContext() {
@@ -712,12 +710,8 @@
         summaryCount += attachmentsState.files.length;
         lines.push('上傳檔案:');
         attachmentsState.files.forEach((f) => {
-          lines.push(`- ${f.name} (${toHumanFileSize(f.size)})`);
-          if (f.textContent) {
-            lines.push(`<檔案內容 ${f.name}>`);
-            lines.push(escapeForPrompt(f.textContent));
-            lines.push(`</檔案內容 ${f.name}>`);
-          }
+          const attachmentIdText = f.attachmentId ? `, attachment_id=${f.attachmentId}` : '';
+          lines.push(`- ${f.name} (${toHumanFileSize(f.size)}${attachmentIdText})`);
         });
       }
 
@@ -750,6 +744,13 @@
       renderAttachmentTray();
     }
 
+    function getUploadedAttachmentIds() {
+      return attachmentsState.files
+        .filter((f) => !f.uploading && !f.error && f.attachmentId)
+        .map((f) => String(f.attachmentId || '').trim())
+        .filter(Boolean);
+    }
+
     function hasAnyAttachments() {
       return (
         attachmentsState.files.length > 0
@@ -759,18 +760,17 @@
       );
     }
 
-    async function readTextFileMaybe(file) {
-      const name = String(file.name || '').toLowerCase();
-      const textExt = ['.txt', '.md', '.csv', '.json', '.yaml', '.yml', '.xml', '.html', '.htm', '.js', '.ts', '.py', '.sh', '.log'];
-      const isTextMime = String(file.type || '').startsWith('text/');
-      const isTextExt = textExt.some((ext) => name.endsWith(ext));
-      if (!(isTextMime || isTextExt)) return '';
-      if (Number(file.size || 0) > TEXT_FILE_MAX_BYTES) return '';
-      return await file.text();
-    }
-
-    function totalAttachmentTextBytes() {
-      return attachmentsState.files.reduce((sum, f) => sum + (f.textContent ? f.textContent.length : 0), 0);
+    async function uploadBinaryAttachment(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (currentConversationId) {
+        formData.append('conversation_id', currentConversationId);
+      }
+      const response = await api.uploadFile('/chat/attachments', formData);
+      if (!response || response.ok !== true || !response.attachment) {
+        throw new Error(`${ATTACHMENT_UPLOAD_ERROR_PREFIX}：回應格式不正確`);
+      }
+      return response.attachment;
     }
 
     function openUrlDialog() {
@@ -1012,25 +1012,27 @@
       const files = Array.from(attachFileInput.files || []);
       for (const file of files) {
         const id = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        let textContent = '';
-        try {
-          textContent = await readTextFileMaybe(file);
-        } catch {
-          textContent = '';
-        }
-        if (textContent) {
-          const projected = totalAttachmentTextBytes() + textContent.length;
-          if (projected > ATTACHMENT_TEXT_TOTAL_MAX) {
-            textContent = '';
-          }
-        }
-        attachmentsState.files.push({
+        const fileState = {
           id,
           name: file.name,
           size: file.size,
           type: file.type,
-          textContent,
-        });
+          attachmentId: '',
+          uploading: true,
+          error: '',
+        };
+        attachmentsState.files.push(fileState);
+        renderAttachmentTray();
+        try {
+          const uploaded = await uploadBinaryAttachment(file);
+          fileState.attachmentId = String(uploaded.id || '').trim();
+          fileState.uploading = false;
+          fileState.error = '';
+        } catch (error) {
+          fileState.uploading = false;
+          fileState.error = String((error && error.message) || ATTACHMENT_UPLOAD_ERROR_PREFIX);
+          showError(`${ATTACHMENT_UPLOAD_ERROR_PREFIX}：${file.name}`);
+        }
       }
       attachFileInput.value = '';
       renderAttachmentTray();
@@ -1929,17 +1931,6 @@
       cleaned = cleaned.replace(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/gi, '');
       cleaned = cleaned.replace(/^\s*```json\s*$/gim, '');
       cleaned = cleaned.replace(/^\s*```\s*$/gim, '');
-      cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
-      cleaned = cleaned.replace(/<\/?system-reminder>/gi, '');
-      cleaned = cleaned.replace(/Your operational mode has changed[\s\S]{0,400}?tools as needed\./gi, '');
-      const reminderPos = cleaned.toLowerCase().indexOf('<system-reminder>');
-      if (reminderPos >= 0) {
-        cleaned = cleaned.slice(0, reminderPos);
-      }
-      cleaned = cleaned.replace(/Your operational mode has changed from plan to build\.\s*You are no longer in read-only mode\.\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\./gi, '');
-      cleaned = cleaned.replace(/^\s*Your operational mode has changed from plan to build\.\s*$/gim, '');
-      cleaned = cleaned.replace(/^\s*You are no longer in read-only mode\.\s*$/gim, '');
-      cleaned = cleaned.replace(/^\s*You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed\.\s*$/gim, '');
       cleaned = cleaned.replace(/\[\[CALL[^\n\r]*$/gm, '');
       cleaned = cleaned.replace(/(?:^|\s)tool\s*=\s*[a-zA-Z0-9:_\-./]+/g, ' ');
       cleaned = cleaned.replace(/^\s*(?:tool\s*=\s*)?(?:mcp|cp):[a-zA-Z0-9_\-./]+\s*/i, '');
@@ -2009,6 +2000,15 @@
       e.preventDefault();
       const msg = (messageInput.value || '').trim();
       if (!msg) return;
+      if (attachmentsState.files.some((f) => !!f.uploading)) {
+        showError('附件仍在上傳中，請稍候再送出訊息');
+        return;
+      }
+      if (attachmentsState.files.some((f) => !!f.error)) {
+        showError('有附件上傳失敗，請移除後重試');
+        return;
+      }
+      const uploadedAttachmentIds = getUploadedAttachmentIds();
       const attachmentContext = buildAttachmentContext();
       const composedMessage = `${msg}${attachmentContext.contextText}`;
       if (!currentAgentId) {
@@ -2120,7 +2120,11 @@
             ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
           },
           body: useUnifiedEntry
-            ? JSON.stringify({ message: composedMessage, conversation_id: currentConversationId || null })
+            ? JSON.stringify({
+              message: composedMessage,
+              conversation_id: currentConversationId || null,
+              attachment_ids: uploadedAttachmentIds,
+            })
             : undefined,
           signal: controller.signal,
         });
@@ -2134,7 +2138,11 @@
               ...(useUnifiedEntry ? { 'Content-Type': 'application/json' } : {}),
             },
             body: useUnifiedEntry
-              ? JSON.stringify({ message: composedMessage, conversation_id: currentConversationId || null })
+              ? JSON.stringify({
+                message: composedMessage,
+                conversation_id: currentConversationId || null,
+                attachment_ids: uploadedAttachmentIds,
+              })
               : undefined,
             signal: controller.signal,
           });

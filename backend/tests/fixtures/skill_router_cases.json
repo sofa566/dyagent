@@ -1,0 +1,22 @@
+[
+  {"message": "幫我把這段文字去 AI 味", "expected_skill": "humanizer-zh-tw"},
+  {"message": "請潤稿這篇貼文，口氣自然一點", "expected_skill": "humanizer-zh-tw"},
+  {"message": "把這份內容人性化重寫", "expected_skill": "humanizer-zh-tw"},
+  {"message": "create a polished PDF proposal", "expected_skill": "minimax-pdf"},
+  {"message": "fill in this PDF form", "expected_skill": "minimax-pdf"},
+  {"message": "reformat this markdown into a client-ready pdf", "expected_skill": "minimax-pdf"},
+  {"message": "我要一份報告的 PDF 版本", "expected_skill": "minimax-pdf"},
+  {"message": "幫我生成履歷 PDF", "expected_skill": "minimax-pdf"},
+  {"message": "make a cover page in PDF", "expected_skill": "minimax-pdf"},
+  {"message": "請建立 Word 文件", "expected_skill": "minimax-docx"},
+  {"message": "幫我輸出 docx 報告", "expected_skill": "minimax-docx"},
+  {"message": "把這份合同套模板成 word", "expected_skill": "minimax-docx"},
+  {"message": "請填寫這個 docx 表單", "expected_skill": "minimax-docx"},
+  {"message": "reformat this document to match template", "expected_skill": "minimax-docx"},
+  {"message": "draft a proposal in docx", "expected_skill": "minimax-docx"},
+  {"message": "先把文案潤稿再輸出 PDF", "expected_skill": "humanizer-zh-tw"},
+  {"message": "我要做一份公文 Word 檔", "expected_skill": "minimax-docx"},
+  {"message": "這份文字太像 AI，請改自然", "expected_skill": "humanizer-zh-tw"},
+  {"message": "convert text to professional PDF", "expected_skill": "minimax-pdf"},
+  {"message": "幫我完成文檔排版", "expected_skill": "minimax-docx"}
+]

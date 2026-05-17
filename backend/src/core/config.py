@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # - LLM_TIMEOUT_SECONDS：LLM 逾時秒數（整數）
     LITELLM_CLOUD_PROVIDER: str = 'openai'
     LITELLM_ONPREM_BASE_URL: str = ''
+    
     LLM_DEFAULT_TIER: str = 'cloud'
     LLM_TIMEOUT_SECONDS: int = 60
     # Doom loop 防護門檻（連續相同工具+輸入觸發）
@@ -102,6 +103,18 @@ class Settings(BaseSettings):
     SKILL_INTERACTION_TTL_SEC: int = 1800
     SKILL_UI_TOKEN_TTL_SEC: int = 600
     SKILL_UI_TOKEN_SECRET: str = 'change-this-skill-ui-token-secret'
+    # 以逗號分隔的 SKILL.md 掃描目錄（相對路徑以 repo root 為基準）
+    SKILL_REGISTRY_PATHS: str = 'tools,.opencode/skills'
+    # Skill 路由規則權重與優先策略（可透過環境變數調整）
+    SKILL_ROUTER_NAME_WEIGHT: int = 4
+    SKILL_ROUTER_TRIGGER_WEIGHT: int = 3
+    SKILL_ROUTER_ROUTE_INTENT_WEIGHT: int = 2
+    SKILL_ROUTER_DESCRIPTION_WEIGHT: int = 1
+    SKILL_ROUTER_FORMAT_BOOST: int = 20
+    SKILL_ROUTER_MAX_TOKEN_SCORE_LEN: int = 12
+    SKILL_ROUTER_HUMANIZER_HINTS: str = '潤稿,润稿,人性化,去 ai 味,去ai味,改自然,自然一點,自然一点'
+    SKILL_ROUTER_PDF_HINTS: str = 'pdf,報告pdf,履歷pdf,proposal pdf'
+    SKILL_ROUTER_DOCX_HINTS: str = 'docx,word,文档,文件,公文,合同,套模板'
 
     # Secrets provider 設定
     # env | vault | aws | gcp | k8s

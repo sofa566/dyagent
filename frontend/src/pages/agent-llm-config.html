@@ -37,6 +37,7 @@
     </div>
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
+    <div id="permission-hint" class="card" style="display:none;margin-bottom:1rem;background:#fff8e6;border-color:#f0d28c;color:#7a5c19;"></div>
 
     <section class="card" style="margin-bottom:1rem;">
       <h3>MCP 連線</h3>
@@ -54,9 +55,35 @@
             <strong>已加入 MCP</strong>
             <small class="muted" id="mcp-count">0 項</small>
           </div>
+          <p class="muted" style="margin-top:4px;">可針對每筆連線執行測試，確認可用性。</p>
           <div id="mcp-list" style="margin-top:6px;"></div>
         </div>
       </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>RAG 設定</h3>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input id="rag-enabled" type="checkbox"> 啟用 RAG
+        </label>
+        <div style="flex:1;min-width:280px;">
+          <label for="rag-sources">檢索來源（逗號分隔）</label>
+          <input id="rag-sources" type="text" placeholder="例如：knowledge_base, faq_docs">
+        </div>
+        <div style="width:120px;">
+          <label for="rag-topk">topK</label>
+          <input id="rag-topk" type="number" min="1" max="50" value="5">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;">
+        <div style="flex:1;min-width:260px;">
+          <label for="rag-test-query">測試檢索 Query</label>
+          <input id="rag-test-query" type="text" placeholder="例如：公司差旅報銷流程是什麼？">
+        </div>
+        <button id="btn-test-rag" class="btn" type="button">測試檢索</button>
+      </div>
+      <pre id="rag-test-result" class="code" style="display:none;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:8px;"></pre>
     </section>
 
     <section class="card" style="margin-bottom:1rem;">
@@ -167,6 +194,15 @@
       <pre id="jsonfmt-output" class="code" style="white-space:pre-wrap; margin-top:8px;"></pre>
     </section>
 
+    <section id="audit-card" class="card" style="margin-bottom:1rem;display:none;">
+      <h3>設定變更摘要（審計）</h3>
+      <p class="muted">僅管理者可檢視最近整合設定的變更紀錄。</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+        <button id="btn-refresh-audit" class="btn" type="button">重新載入摘要</button>
+      </div>
+      <pre id="audit-output" class="code" style="white-space:pre-wrap;max-height:240px;overflow:auto;">（尚未載入）</pre>
+    </section>
+
     <div style="display:flex;gap:8px;">
       <button id="save" class="btn btn-primary" type="button">儲存</button>
       <a id="back" class="btn" href="/pages/agent-list.html">返回</a>
@@ -174,7 +210,7 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, agentIntegrationApi } from '/services/api.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
@@ -196,9 +232,19 @@
     const skillRegistrySelect = document.getElementById('skill-registry-select');
     const addSkillFromRegBtn = document.getElementById('btn-add-skill-from-reg');
     const saveBtn = document.getElementById('save');
+    const permissionHint = document.getElementById('permission-hint');
     const functionProfileSelect = document.getElementById('function-profile-select');
     const functionProfileName = document.getElementById('function-profile-name');
     const refreshFunctionsBtn = document.getElementById('btn-refresh-functions');
+    const ragEnabledInput = document.getElementById('rag-enabled');
+    const ragSourcesInput = document.getElementById('rag-sources');
+    const ragTopKInput = document.getElementById('rag-topk');
+    const ragTestQueryInput = document.getElementById('rag-test-query');
+    const ragTestBtn = document.getElementById('btn-test-rag');
+    const ragTestResult = document.getElementById('rag-test-result');
+    const auditCard = document.getElementById('audit-card');
+    const auditOutput = document.getElementById('audit-output');
+    const refreshAuditBtn = document.getElementById('btn-refresh-audit');
 
     let state = {
       mcp_config: [],
@@ -209,7 +255,10 @@
       mcp_ids: [],
       skill_ids: [],
       function_profile_id: '',
+      mcp_test_results: {},
     };
+    const currentUser = auth.getUser() || {};
+    let canUpdateIntegrations = ['admin', 'agent_admin'].includes(String(currentUser.role || ''));
     let toolcallGuideEl = document.getElementById('toolcall-guide');
     const toolcallTplSelect = document.getElementById('toolcall-template');
     const toolcallTplApply = document.getElementById('apply-toolcall-template');
@@ -228,11 +277,90 @@
       clear: ''
     };
 
+    function setRagInputsFromState() {
+      // 目的：將 state.rag_config 映射回表單欄位。
+      // 為什麼：避免載入後 UI 與狀態不一致，導致儲存覆蓋錯誤。
+      const ragCfg = state.rag_config || { enabled: false, sources: [], topK: 5 };
+      ragEnabledInput.checked = !!ragCfg.enabled;
+      ragSourcesInput.value = Array.isArray(ragCfg.sources) ? ragCfg.sources.join(', ') : '';
+      ragTopKInput.value = String(ragCfg.topK || 5);
+    }
+
+    function syncRagStateFromInputs() {
+      // 目的：將 RAG 表單欄位正規化後寫回 state。
+      // 為什麼：集中處理 topK 範圍與 sources 格式，降低重複驗證邏輯。
+      const parsedTopK = Number.parseInt(String(ragTopKInput.value || '5'), 10);
+      const topK = Number.isFinite(parsedTopK) ? Math.min(50, Math.max(1, parsedTopK)) : 5;
+      const sources = String(ragSourcesInput.value || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      state.rag_config = {
+        enabled: !!ragEnabledInput.checked,
+        sources,
+        topK,
+      };
+      ragTopKInput.value = String(topK);
+    }
+
+    function applyReadOnlyState() {
+      // 目的：依權限切換頁面為可編輯或唯讀。
+      // 為什麼：在同一頁支援 read-only 與可編輯角色，避免誤操作與 403 體驗。
+      const editable = !!canUpdateIntegrations;
+      const interactiveSelectors = [
+        '#mcp-registry-select',
+        '#btn-add-mcp-from-reg',
+        '#skill-registry-select',
+        '#btn-add-skill-from-reg',
+        '#new-skill',
+        '#add-skill',
+        '#function-profile-select',
+        '#btn-refresh-functions',
+        '#toolcall-template',
+        '#apply-toolcall-template',
+        '#insert-var',
+        '#btn-insert-var',
+        '#toolcall-guide',
+        '#rag-enabled',
+        '#rag-sources',
+        '#rag-topk',
+        '#btn-test-rag',
+        '#save',
+      ];
+      interactiveSelectors.forEach((selector) => {
+        document.querySelectorAll(selector).forEach((element) => {
+          if (editable) {
+            element.removeAttribute('disabled');
+          } else {
+            element.setAttribute('disabled', 'disabled');
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-act="remove-mcp"],[data-act="remove-skill"],[data-act="remove-skill-custom"],[data-act="test-mcp"]').forEach((button) => {
+        if (editable) {
+          button.removeAttribute('disabled');
+        } else {
+          button.setAttribute('disabled', 'disabled');
+        }
+      });
+
+      if (!editable) {
+        permissionHint.style.display = 'block';
+        permissionHint.textContent = '目前為唯讀模式：你僅能檢視代理者整合設定，無法修改或儲存。';
+      } else {
+        permissionHint.style.display = 'none';
+      }
+    }
+
     function renderMcp() {
       mcpList.innerHTML = '';
       const byId = Object.fromEntries((window.__mcpRegistry||[]).map(m => [m.id, m]));
       (state.mcp_ids||[]).forEach((id, idx) => {
         const m = byId[id] || {};
+        const testState = (state.mcp_test_results && state.mcp_test_results[id]) ? state.mcp_test_results[id] : null;
+        const testText = testState ? (testState.ok ? '測試成功' : `測試失敗：${testState.error || '未知錯誤'}`) : '尚未測試';
+        const testColor = testState ? (testState.ok ? 'var(--success-color)' : 'var(--error-color)') : 'var(--text-secondary)';
         const row = document.createElement('div');
         row.style.marginBottom = '6px';
         row.innerHTML = `
@@ -240,12 +368,15 @@
             <span class="tag">${m.name || id}</span>
             <span class="muted">${m.transport || ''}</span>
             <span class="muted">${m.transport==='remote' ? (m.base_url||'') : (m.command||'')}</span>
+            <button class="btn" data-act="test-mcp" data-id="${id}">測試</button>
             <button class="btn" data-act="remove-mcp" data-i="${idx}">移除</button>
+            <span style="color:${testColor};">${testText}</span>
           </div>
         `;
         mcpList.appendChild(row);
       });
       const cnt = document.getElementById('mcp-count'); if (cnt) cnt.textContent = `${(state.mcp_ids||[]).length} 項`;
+      applyReadOnlyState();
     }
 
     function renderSkills() {
@@ -281,6 +412,7 @@
         });
       const customCount = (state.skills||[]).filter((name) => name && !selectedNames.includes(String(name))).length;
       const cnt = document.getElementById('skill-count'); if (cnt) cnt.textContent = `${(state.skill_ids||[]).length + customCount} 項`;
+      applyReadOnlyState();
     }
 
     function renderFunctionBinding() {
@@ -306,6 +438,39 @@
       renderFunctionBinding();
     }
 
+    async function loadIntegrationAuditSummary() {
+      // 目的：載入代理者整合設定的審計摘要並顯示於頁面。
+      // 為什麼：US3 要求管理者可直接查看變更記錄，快速比對前後差異。
+      const isAdmin = String((currentUser && currentUser.role) || '') === 'admin';
+      if (!isAdmin) {
+        auditCard.style.display = 'none';
+        return;
+      }
+      auditCard.style.display = 'block';
+      try {
+        const res = await agentIntegrationApi.getAgentIntegrationAudit(agentId, 20);
+        const rows = Array.isArray(res.entries) ? res.entries : [];
+        if (rows.length === 0) {
+          auditOutput.textContent = '目前沒有可顯示的變更紀錄。';
+          return;
+        }
+        const lines = rows.map((row, index) => {
+          const details = (row && typeof row.details === 'object' && row.details) ? row.details : {};
+          const changedFields = Array.isArray(details.changed_fields) ? details.changed_fields.join(', ') : '';
+          return [
+            `#${index + 1} ${String(row.timestamp || '')}`,
+            `user_id: ${String(row.user_id || '')}`,
+            `changed_fields: ${changedFields || '<none>'}`,
+            `before: ${JSON.stringify(details.before || {}, null, 2)}`,
+            `after: ${JSON.stringify(details.after || {}, null, 2)}`,
+          ].join('\n');
+        });
+        auditOutput.textContent = lines.join('\n\n---\n\n');
+      } catch (error) {
+        auditOutput.textContent = `載入審計摘要失敗：${String((error && error.message) || '未知錯誤')}`;
+      }
+    }
+
     async function load() {
       try {
         // 取得代理者名稱以顯示於標題
@@ -317,14 +482,18 @@
           try { if (agent && agent.name) document.title = `工具設定 - ${agent.name} - dyagent`; } catch {}
         } catch {}
 
-        const res = await api.get(`/agents/${agentId}/integrations`);
+        const res = await agentIntegrationApi.getAgentIntegrations(agentId);
         state.mcp_config = Array.isArray(res.mcp_config) ? res.mcp_config : [];
         state.skills = Array.isArray(res.skills) ? res.skills : [];
         state.rag_config = res.rag_config || { enabled: false, sources: [], topK: 5 };
+        state.mcp_test_results = {};
         state.skill_examples = (res.skill_examples && typeof res.skill_examples === 'object') ? res.skill_examples : {};
         state.mcp_ids = Array.isArray(res.mcp_ids) ? res.mcp_ids : [];
         state.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
         state.function_profile_id = String(res.function_profile_id || '');
+        if (typeof res.can_update === 'boolean') {
+          canUpdateIntegrations = !!res.can_update;
+        }
         const ragDatasetIds = (res.rag_dataset_ids && typeof res.rag_dataset_ids === 'object') ? res.rag_dataset_ids : {};
         state.rag_dataset_ids = {
           global_dataset_ids: Array.isArray(ragDatasetIds.global_dataset_ids) ? ragDatasetIds.global_dataset_ids.map(String) : [],
@@ -346,6 +515,7 @@
             toolcallTemplateSuggest(key);
           }
         } catch {}
+        setRagInputsFromState();
         renderMcp();
         renderSkills();
         // 載入管理清單
@@ -375,15 +545,80 @@
           showError((e && e.message) || '無法載入 MCP/Skill 管理清單');
         }
         await loadFunctionRegistry();
+        await loadIntegrationAuditSummary();
+        applyReadOnlyState();
       } catch (e) {
         showError(e.message || '載入失敗');
       }
     }
 
+    ragEnabledInput.addEventListener('change', () => {
+      syncRagStateFromInputs();
+      schedulePreview();
+    });
+    ragSourcesInput.addEventListener('input', () => {
+      syncRagStateFromInputs();
+      schedulePreview();
+    });
+    ragTopKInput.addEventListener('change', () => {
+      syncRagStateFromInputs();
+      schedulePreview();
+    });
+
+    ragTestBtn.addEventListener('click', async () => {
+      // 目的：在儲存前快速驗證 RAG 來源與檢索結果。
+      // 為什麼：縮短設定錯誤的回饋時間，避免使用者來回切頁檢查。
+      try {
+        syncRagStateFromInputs();
+        const payload = {
+          query: String(ragTestQueryInput.value || '').trim(),
+          sources: Array.isArray(state.rag_config.sources) ? state.rag_config.sources : [],
+          topK: state.rag_config.topK || 5,
+        };
+        const res = await agentIntegrationApi.testAgentRag(agentId, payload);
+        ragTestResult.style.display = 'block';
+        ragTestResult.textContent = JSON.stringify(res, null, 2);
+        if (res && res.ok) {
+          showSuccess('RAG 測試完成');
+        } else {
+          showError((res && res.error) || 'RAG 測試失敗');
+        }
+      } catch (error) {
+        ragTestResult.style.display = 'block';
+        ragTestResult.textContent = String((error && error.message) || 'RAG 測試失敗');
+        showError((error && error.message) || 'RAG 測試失敗');
+      }
+    });
+
     // 僅允許從清單加入/移除參照
     mcpList.addEventListener('click', async (e) => {
       const t = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
-      if (t && t.getAttribute('data-act') === 'remove-mcp') {
+      if (!t) return;
+      const act = t.getAttribute('data-act');
+      if (act === 'test-mcp') {
+        const mcpId = String(t.getAttribute('data-id') || '').trim();
+        if (!mcpId) return;
+        try {
+          const res = await agentIntegrationApi.testAgentMcp(agentId, { mcp_id: mcpId });
+          state.mcp_test_results[mcpId] = {
+            ok: !!(res && res.ok),
+            error: (res && res.error) ? String(res.error) : '',
+          };
+          renderMcp();
+          if (res && res.ok) {
+            showSuccess(`MCP 測試成功：${mcpId}`);
+          } else {
+            showError((res && res.error) || 'MCP 測試失敗');
+          }
+        } catch (error) {
+          state.mcp_test_results[mcpId] = { ok: false, error: String((error && error.message) || '未知錯誤') };
+          renderMcp();
+          showError((error && error.message) || 'MCP 測試失敗');
+        }
+        return;
+      }
+      if (act === 'remove-mcp') {
+        if (!canUpdateIntegrations) return;
         const i = parseInt(t.getAttribute('data-i'), 10);
         state.mcp_ids.splice(i, 1);
         renderMcp();
@@ -393,6 +628,7 @@
     });
 
     addMcpFromRegBtn.addEventListener('click', ()=>{
+      if (!canUpdateIntegrations) return;
       const id = String(mcpRegistrySelect.value || '').trim();
       if (!id) { showError('請先選擇一個 MCP'); return; }
       try {
@@ -412,6 +648,7 @@
 
     
     addSkillFromRegBtn.addEventListener('click', ()=>{
+      if (!canUpdateIntegrations) return;
       const id = String(skillRegistrySelect.value || '').trim();
       if (!id) { showError('請先選擇一個 Skill'); return; }
       try {
@@ -428,6 +665,7 @@
       }
     });
     addSkillBtn.addEventListener('click', ()=>{
+      if (!canUpdateIntegrations) return;
       const name = String((newSkillInput && newSkillInput.value) || '').trim();
       if (!name) { showError('請輸入 Skill 名稱'); return; }
       if (!Array.isArray(state.skills)) state.skills = [];
@@ -446,6 +684,7 @@
       const act = t ? t.getAttribute('data-act') : '';
       const i = t ? parseInt(t.getAttribute('data-i'), 10) : -1;
       if (act === 'remove-skill') {
+        if (!canUpdateIntegrations) return;
         const id = (state.skill_ids||[])[i];
         const byId = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
         const picked = byId[id] || {};
@@ -458,6 +697,7 @@
         schedulePreview();
         showSuccess('已移除 Skill');
       } else if (act === 'remove-skill-custom') {
+        if (!canUpdateIntegrations) return;
         const custom = (state.skills||[]).filter((name) => {
           const byId = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
           const selectedNames = (state.skill_ids||[]).map((id) => (byId[id] && byId[id].name) ? String(byId[id].name) : '').filter(Boolean);
@@ -473,6 +713,7 @@
     // 移除在此頁面編輯技能示例參數的能力
 
     functionProfileSelect.addEventListener('change', () => {
+      if (!canUpdateIntegrations) return;
       state.function_profile_id = String(functionProfileSelect.value || '');
       renderFunctionBinding();
     });
@@ -481,13 +722,19 @@
       await loadFunctionRegistry();
       showSuccess('Functions 清單已更新');
     });
+    refreshAuditBtn.addEventListener('click', async () => {
+      await loadIntegrationAuditSummary();
+      showSuccess('審計摘要已更新');
+    });
 
     toolcallTplApply.addEventListener('click', () => {
+      if (!canUpdateIntegrations) return;
       const key = toolcallTplSelect.value;
       if (!key) return;
       toolcallTemplateSuggest(key);
     });
     insertVarBtn.addEventListener('click', () => {
+      if (!canUpdateIntegrations) return;
       const v = insertVarSelect.value;
       if (!v) return;
       const el = toolcallGuideEl;
@@ -591,8 +838,9 @@
     toolcallGuideEl.addEventListener('input', schedulePreview);
 
     saveBtn.addEventListener('click', async () => {
+      if (!canUpdateIntegrations) return;
       try {
-        // RAG 設定從 state 中取得（由 agent-rag-config.html 頁面管理）
+        syncRagStateFromInputs();
         const ragConfig = state.rag_config || { enabled: false, sources: [], topK: 5 };
         const globalDatasetIds = Array.isArray(state.rag_dataset_ids.global_dataset_ids) ? state.rag_dataset_ids.global_dataset_ids.map(String) : [];
         const privateDatasetIds = Array.isArray(state.rag_dataset_ids.private_dataset_ids) ? state.rag_dataset_ids.private_dataset_ids.map(String) : [];
@@ -608,7 +856,7 @@
           skill_ids: state.skill_ids,
           function_profile_id: String(state.function_profile_id || ''),
         };
-        const res = await api.put(`/agents/${agentId}/integrations`, payload);
+        const res = await agentIntegrationApi.updateAgentIntegrations(agentId, payload);
         const savedMcpIds = Array.isArray(res && res.mcp_ids) ? res.mcp_ids.map(String) : [];
         const savedSkillIds = Array.isArray(res && res.skill_ids) ? res.skill_ids.map(String) : [];
         const wantMcpIds = (state.mcp_ids || []).map(String);
@@ -618,10 +866,11 @@
         if (!sameMcp || !sameSkill) {
           showError('儲存未完全生效，請重新整理後再試（mcp_ids/skill_ids 不一致）');
         } else {
-          await api.put(`/agents/${agentId}/rag/bindings`, {
+          await agentIntegrationApi.bindAgentRagDatasets(agentId, {
             global_dataset_ids: globalDatasetIds,
             private_dataset_ids: privateDatasetIds,
           });
+          await loadIntegrationAuditSummary();
           showSuccess('已儲存');
           setTimeout(() => {
             window.location.href = '/pages/agent-list.html';
