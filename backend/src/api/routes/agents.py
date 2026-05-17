@@ -1,19 +1,27 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Body, Request
+from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from src.api.errors import not_found_error, validation_error
 from src.core.database import get_db
-from src.models import User, Agent, Workspace, SkillEntry, FunctionProfile, RagDataset, MCPConnection
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
-from src.api.errors import not_found_error, validation_error
+from src.models import (
+    Agent,
+    FunctionProfile,
+    MCPConnection,
+    RagDataset,
+    SkillEntry,
+    User,
+    Workspace,
+)
 from src.services.chat_router import ChatRouter
+from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
 from src.services.mcp_client import MCPClient
 from src.services.qdrant_service import qdrant_service
-from src.services.embedding_service import embedding_service
 
 router = APIRouter()
 
@@ -69,8 +77,8 @@ async def get_agent_integrations(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -227,8 +235,8 @@ async def update_agent_integrations(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -318,16 +326,16 @@ async def update_agent_integrations(
             cfg['function_profile_id'] = function_profile_id.strip() or None
         # 儲存參照式清單（保持彈性：允許同時存在 mcp_config 與 mcp_ids；由準備階段合併）
         if isinstance(mcp_ids, list):
-            cfg['mcp_ids'] = [str(x) for x in mcp_ids if isinstance(x, (str,)) and x]
+            cfg['mcp_ids'] = [str(x) for x in mcp_ids if isinstance(x, str) and x]
         if isinstance(skill_ids, list):
-            cfg['skill_ids'] = [str(x) for x in skill_ids if isinstance(x, (str,)) and x]
+            cfg['skill_ids'] = [str(x) for x in skill_ids if isinstance(x, str) and x]
         # 寫入 skills 的示例參數（限制於當前啟用/選取的 skills）
         sk_ex = (payload or {}).get('skill_examples') if isinstance(payload, dict) else None
         if isinstance(sk_ex, dict):
             # 僅保留在 skills_clean 內的鍵；值可為字串(JSON)或物件
             filtered = {}
             for k, v in sk_ex.items():
-                if k in skills_clean and (isinstance(v, (str, dict))):
+                if k in skills_clean and (isinstance(v, str | dict)):
                     filtered[k] = v
             cfg['skill_examples'] = filtered
         agent.model_config = cfg
@@ -404,8 +412,8 @@ async def list_agent_integrations_audit(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -444,8 +452,8 @@ async def get_agent_prompt(
         raise forbidden_error()
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
@@ -476,8 +484,8 @@ async def update_agent_prompt(
         raise forbidden_error()
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
@@ -501,8 +509,8 @@ async def bind_agent_function_profile(
         raise forbidden_error()
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
@@ -550,8 +558,8 @@ async def create_agent_private_dataset(
         raise forbidden_error()
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
@@ -590,8 +598,8 @@ async def bind_agent_rag_datasets(
         raise forbidden_error()
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
@@ -639,8 +647,8 @@ async def test_agent_mcp(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -716,8 +724,8 @@ async def test_agent_rag(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -799,11 +807,13 @@ async def create_agent(
     model_type: str = 'cloud',
     agent_class: str = 'tasked',
     enabled: bool = True,
-    model_config: dict = {},
+    model_config: dict = None,
     system_prompt: str = '',
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if model_config is None:
+        model_config = {}
     if not check_permission(current_user, 'create_agent'):
         from src.api.errors import forbidden_error
         raise forbidden_error()
@@ -866,8 +876,8 @@ async def get_agent(
     # Validate UUID format to avoid DB type conversion errors
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -913,8 +923,8 @@ async def update_agent(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -1018,8 +1028,8 @@ async def delete_agent(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -1044,8 +1054,8 @@ async def update_agent_llm_config(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -1092,8 +1102,8 @@ async def test_agent_llm(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -1142,8 +1152,8 @@ async def health_agent_llm(
 
     try:
         uuid.UUID(str(agent_id))
-    except ValueError:
-        raise not_found_error('Agent', agent_id)
+    except ValueError as error:
+        raise not_found_error('Agent', agent_id) from error
 
     overrides = (payload or {}).get('overrides') if isinstance(payload, dict) else None
     mode = (payload or {}).get('mode') if isinstance(payload, dict) else None

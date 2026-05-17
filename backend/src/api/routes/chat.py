@@ -1,35 +1,46 @@
-from fastapi import APIRouter, Depends, Body, File, Form, UploadFile
-from typing import Any, AsyncGenerator
-import uuid
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import ProgrammingError, OperationalError
-from fastapi.responses import StreamingResponse
-import json as _json
-import time
 import asyncio
-import threading
+import json as _json
 import re
-from functools import lru_cache
-from decimal import Decimal
+import threading
+import time
+import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime
+from decimal import Decimal
+from functools import lru_cache
+from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
+from fastapi.responses import StreamingResponse
+from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.orm import Session
+
+from src.api.errors import forbidden_error, not_found_error, validation_error
+from src.api.routes.chat_tools import _classify_routing, _cosine_similarity
+from src.core.config import settings
 from src.core.database import get_db
-from src.models import User, Agent, Conversation, Message, LlmTurn, MultiAgentSession, MultiAgentTask, SkillEntry, SkillInteraction
-from src.models.events import EventPart
+from src.core.logging import get_logger
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
-from src.api.errors import not_found_error, validation_error, forbidden_error
+from src.models import (
+    Agent,
+    Conversation,
+    LlmTurn,
+    Message,
+    MultiAgentSession,
+    MultiAgentTask,
+    SkillEntry,
+    SkillInteraction,
+    User,
+)
+from src.models.events import EventPart
+from src.services.chat_attachment_service import chat_attachment_service
 from src.services.chat_router import ChatRouter
 from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
-from src.services.chat_attachment_service import chat_attachment_service
 from src.services.skill_registry import get_skill_registry, get_skill_rule_router
-from src.core.logging import get_logger
-from src.core.config import settings
-
-from src.api.routes.chat_tools import _classify_routing, _cosine_similarity
 
 router = APIRouter()
 _log = get_logger("api.chat")
@@ -126,8 +137,8 @@ def _validate_uuid_or_not_found(entity_name: str, raw_value: str) -> None:
     """
     try:
         uuid.UUID(str(raw_value))
-    except ValueError:
-        raise not_found_error(entity_name, raw_value)
+    except ValueError as error:
+        raise not_found_error(entity_name, raw_value) from error
 
 
 def _query_latest_conversation_with_fallback(*, db: Session, agent_id: str, user_id: Any) -> Conversation | None:
@@ -172,7 +183,7 @@ def _save_message_with_touch_fallback(*, db: Session, conversation: Conversation
     """
     db.add(message_obj)
     try:
-        setattr(conversation, 'last_interacted_at', datetime.now())
+        conversation.last_interacted_at = datetime.now()
         db.commit()
     except (ProgrammingError, OperationalError) as e:
         _log.warning("db.migration.missing_columns", hint="conversations.last_interacted_at", error=str(e))
@@ -377,13 +388,13 @@ def _to_json_safe(value: Any) -> Any:
     """目的：將任意物件轉為可 JSON 序列化格式。
     為什麼：llm_turns 的 JSON 欄位若含不可序列化型別，會造成整筆審計寫入失敗。
     """
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, dict):
         return {str(k): _to_json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [_to_json_safe(v) for v in value]
     try:
         _json.dumps(value, ensure_ascii=False)
@@ -1341,24 +1352,24 @@ def _extract_progress_value(frame: dict[str, Any]) -> float | None:
     為什麼：stdio/ws 事件欄位命名可能不同，集中回退邏輯避免重複。
     """
     val = None
-    if isinstance(frame.get('progress'), (int, float)):
+    if isinstance(frame.get('progress'), int | float):
         val = frame.get('progress')
-    elif isinstance(frame.get('percent'), (int, float)):
+    elif isinstance(frame.get('percent'), int | float):
         val = frame.get('percent')
-    elif isinstance(frame.get('value'), (int, float)):
+    elif isinstance(frame.get('value'), int | float):
         val = frame.get('value')
-    return float(val) if isinstance(val, (int, float)) else None
+    return float(val) if isinstance(val, int | float) else None
 
 
 def _extract_eta_seconds(frame: dict[str, Any]) -> float | None:
     """目的：從工具 frame 取 ETA 秒數。
     為什麼：不同工具可能回傳 eta/eta_seconds/remaining_ms，需統一格式給前端。
     """
-    if isinstance(frame.get('eta_seconds'), (int, float)):
+    if isinstance(frame.get('eta_seconds'), int | float):
         return float(frame.get('eta_seconds'))
-    if isinstance(frame.get('eta'), (int, float)):
+    if isinstance(frame.get('eta'), int | float):
         return float(frame.get('eta'))
-    if isinstance(frame.get('remaining_ms'), (int, float)):
+    if isinstance(frame.get('remaining_ms'), int | float):
         return float(frame.get('remaining_ms')) / 1000.0
     return None
 
@@ -1487,7 +1498,8 @@ async def stream_tool(
     async def _gen():
         # 準備白名單/連線映射，並加入心跳機制
         router._prepare_integrations(db=db, agent_id=str(agent.id))
-        import asyncio, time
+        import asyncio
+        import time
         HEARTBEAT_SEC = 10.0
         last_emit = time.monotonic()
         queue: 'asyncio.Queue[str]' = asyncio.Queue()
@@ -1535,12 +1547,12 @@ async def stream_tool(
                         try:
                             if isinstance(frame, dict):
                                 val = _get_by_path(frame, progress_key) if progress_key else None
-                                if not isinstance(val, (int, float)):
-                                    if isinstance(frame.get('progress'), (int, float)):
+                                if not isinstance(val, int | float):
+                                    if isinstance(frame.get('progress'), int | float):
                                         val = frame.get('progress')
-                                    elif isinstance(frame.get('percent'), (int, float)):
+                                    elif isinstance(frame.get('percent'), int | float):
                                         val = frame.get('percent')
-                                    elif isinstance(frame.get('value'), (int, float)):
+                                    elif isinstance(frame.get('value'), int | float):
                                         val = frame.get('value')
                                 if val is not None:
                                     now = time.monotonic()
@@ -1551,7 +1563,7 @@ async def stream_tool(
                                         last_prog_val = fval
                                         prog_payload = { 'type': 'progress', 'name': tool_name, 'value': fval }
                                         eta = _get_by_path(frame, eta_key) if eta_key else None
-                                        if isinstance(eta, (int, float)):
+                                        if isinstance(eta, int | float):
                                             prog_payload['eta_seconds'] = float(eta)
                                         await _emit(prog_payload)
                         except Exception:
@@ -1580,23 +1592,23 @@ async def stream_tool(
                         try:
                             if isinstance(frame, dict):
                                 val = _get_by_path(frame, progress_key) if progress_key else None
-                                if not isinstance(val, (int, float)):
-                                    if isinstance(frame.get('progress'), (int, float)):
+                                if not isinstance(val, int | float):
+                                    if isinstance(frame.get('progress'), int | float):
                                         val = frame.get('progress')
-                                    elif isinstance(frame.get('percent'), (int, float)):
+                                    elif isinstance(frame.get('percent'), int | float):
                                         val = frame.get('percent')
-                                    elif isinstance(frame.get('value'), (int, float)):
+                                    elif isinstance(frame.get('value'), int | float):
                                         val = frame.get('value')
                                 if val is not None:
                                     eta = _get_by_path(frame, eta_key) if eta_key else None
-                                    if not isinstance(eta, (int, float)):
-                                        if isinstance(frame.get('eta_seconds'), (int, float)):
+                                    if not isinstance(eta, int | float):
+                                        if isinstance(frame.get('eta_seconds'), int | float):
                                             eta = frame.get('eta_seconds')
-                                        elif isinstance(frame.get('eta'), (int, float)):
+                                        elif isinstance(frame.get('eta'), int | float):
                                             eta = frame.get('eta')
-                                        elif isinstance(frame.get('remaining_ms'), (int, float)):
+                                        elif isinstance(frame.get('remaining_ms'), int | float):
                                             rem_ms = frame.get('remaining_ms')
-                                            eta = (rem_ms / 1000.0) if isinstance(rem_ms, (int, float)) else None
+                                            eta = (rem_ms / 1000.0) if isinstance(rem_ms, int | float) else None
                                     now = time.monotonic()
                                     fval = float(val)
                                     should_emit = (now - last_prog_ts >= 0.2) or (last_prog_val is None) or (abs(fval - last_prog_val) >= 1.0)
@@ -1604,7 +1616,7 @@ async def stream_tool(
                                         last_prog_ts = now
                                         last_prog_val = fval
                                         prog_payload = { 'type': 'progress', 'name': tool_name, 'value': fval }
-                                        if isinstance(eta, (int, float)):
+                                        if isinstance(eta, int | float):
                                             prog_payload['eta_seconds'] = float(eta)
                                         await _emit(prog_payload)
                         except Exception:
@@ -2481,7 +2493,8 @@ async def chat_stream(
 
     # 加入帶心跳版本的包裝，以避免長時間無資料時被中間層斷線
     async def _gen_hb():
-        import asyncio, time
+        import asyncio
+        import time
         nonlocal turn_status, turn_error
         HEARTBEAT_SEC = 10.0
         STREAM_TIMEOUT_SEC = float(getattr(settings, 'CHAT_STREAM_TIMEOUT_SEC', 120) or 120)
@@ -2752,7 +2765,7 @@ async def _run_subtask_stream(
     error_msg: str | None = None
 
     async for raw_chunk in sub_response.body_iterator:
-        if not isinstance(raw_chunk, (str, bytes)):
+        if not isinstance(raw_chunk, str | bytes):
             continue
         if isinstance(raw_chunk, bytes):
             raw_chunk = raw_chunk.decode('utf-8', errors='replace')
@@ -2910,7 +2923,6 @@ async def _multi_agent_orchestrator(
     """目的：Orchestrator ReAct 主循環：分解 → 執行子代理 → 合成 → 自評 → 必要時重試。
     為什麼：單一協調點確保任務可重試、結果可觀測、SSE 流統一。
     """
-    from datetime import datetime as _dt
 
     def _sanitize(text: str) -> str:
         """移除 LLM 工具呼叫協議殘留，避免存入 DB 的訊息含內部標記。"""
@@ -3425,7 +3437,7 @@ async def upload_chat_attachment(
             conversation_id=normalized_conversation_id,
         )
     except ValueError as error:
-        raise validation_error(str(error))
+        raise validation_error(str(error)) from error
 
     return {
         'ok': True,
@@ -3709,12 +3721,12 @@ async def rename_conversation(
 
     # 嘗試更新標題；若 title 欄位不存在，回報友善錯誤
     try:
-        setattr(conv, 'title', title)
+        conv.title = title
         db.commit()
         db.refresh(conv)
-    except (ProgrammingError, OperationalError):
+    except (ProgrammingError, OperationalError) as error:
         db.rollback()
-        raise validation_error('系統尚未啟用會話標題欄位，請聯繫管理員更新資料庫')
+        raise validation_error('系統尚未啟用會話標題欄位，請聯繫管理員更新資料庫') from error
 
     _li2 = getattr(conv, 'last_interacted_at', None)
     return {
@@ -3765,8 +3777,8 @@ async def delete_conversation(
         db.query(Message).filter(Message.conversation_id == conv.id).delete(synchronize_session=False)
         db.delete(conv)
         db.commit()
-    except Exception:
+    except Exception as error:
         db.rollback()
-        raise validation_error('刪除會話失敗，請稍後再試')
+        raise validation_error('刪除會話失敗，請稍後再試') from error
 
     return {'ok': True, 'conversation_id': str(conversation_id)}
