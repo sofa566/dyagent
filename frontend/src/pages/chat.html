@@ -1534,23 +1534,80 @@
       closeAllConversationMenus();
     });
 
+    function toEpochMilliseconds(timeText) {
+      const raw = String(timeText || '').trim();
+      if (!raw) return null;
+      const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+      let dateObj = new Date(normalized);
+      if (Number.isNaN(dateObj.getTime())) {
+        dateObj = new Date(`${normalized}Z`);
+      }
+      if (Number.isNaN(dateObj.getTime())) return null;
+      return dateObj.getTime();
+    }
+
+    function buildRouteDecisionLabel(eventRow) {
+      const payload = (eventRow && eventRow.payload) || {};
+      const target = payload.target_agent_name
+        ? String(payload.target_agent_name)
+        : (payload.target_agent_id ? String(payload.target_agent_id) : '未知代理');
+      const reason = payload.reason ? `（${String(payload.reason)}）` : '';
+      const degraded = payload.degraded ? ' [降級]' : '';
+      return `本輪由：${target} 代理者回覆${reason}${degraded}`;
+    }
+
+    function buildAssistantRouteLabels(messages, routeEvents) {
+      // 目的：依時間關聯每筆 assistant 訊息與 route.decision 事件。
+      // 為什麼：避免事件與訊息數量不一致時，UI 將上一輪 hint 套到本輪回覆。
+      const assistantLabels = [];
+      const sortedRouteEvents = (Array.isArray(routeEvents) ? routeEvents : [])
+        .map((eventRow, index) => ({
+          eventRow,
+          index,
+          eventTs: toEpochMilliseconds(eventRow && eventRow.created_at),
+        }))
+        .sort((left, right) => {
+          if (left.eventTs === null && right.eventTs === null) {
+            return left.index - right.index;
+          }
+          if (left.eventTs === null) return 1;
+          if (right.eventTs === null) return -1;
+          return left.eventTs - right.eventTs;
+        });
+
+      let eventCursor = 0;
+      (Array.isArray(messages) ? messages : []).forEach((msg) => {
+        if (!msg || msg.role !== 'assistant') return;
+        const messageTs = toEpochMilliseconds(msg.timestamp);
+        let matchedLabel = '';
+
+        while (eventCursor < sortedRouteEvents.length) {
+          const currentEvent = sortedRouteEvents[eventCursor];
+          if (messageTs !== null && currentEvent.eventTs !== null && currentEvent.eventTs > messageTs) {
+            break;
+          }
+          matchedLabel = buildRouteDecisionLabel(currentEvent.eventRow);
+          eventCursor += 1;
+          if (messageTs === null) {
+            break;
+          }
+        }
+
+        assistantLabels.push(matchedLabel);
+      });
+
+      return assistantLabels;
+    }
+
     async function renderMessagesById(convId) {
       const thisRenderRevision = ++renderRevision;
       const conv = (currentConversations || []).find(c => c.id === convId);
       if (!conv) return;
-      let routeLabels = [];
+      let assistantRouteLabels = [];
       try {
         const routeRes = await api.get(`/conversations/${convId}/events?types=route.decision`);
         const routeEvents = Array.isArray(routeRes.events) ? routeRes.events : [];
-        routeLabels = routeEvents.map((e) => {
-          const payload = (e && e.payload) || {};
-          const target = payload.target_agent_name
-            ? String(payload.target_agent_name)
-            : (payload.target_agent_id ? String(payload.target_agent_id) : '未知代理');
-          const reason = payload.reason ? `（${String(payload.reason)}）` : '';
-          const degraded = payload.degraded ? ' [降級]' : '';
-          return `本輪由：${target} 代理者回覆${reason}${degraded}`;
-        }).filter(Boolean);
+        assistantRouteLabels = buildAssistantRouteLabels(conv.messages || [], routeEvents);
       } catch {}
 
       if (thisRenderRevision !== renderRevision || convId !== currentConversationId) return;
@@ -1559,7 +1616,7 @@
       chatMessages.innerHTML = (conv.messages || []).map(msg => {
         let body = `<p>${escapeHTML(msg.content || '')}</p>`;
         if (msg.role === 'assistant') {
-          const routeLabel = routeLabels[assistantTurnIndex] || '';
+          const routeLabel = assistantRouteLabels[assistantTurnIndex] || '';
           assistantTurnIndex += 1;
           const routeBanner = routeLabel
             ? `<div class="route-info">${escapeHTML(routeLabel)}</div>`

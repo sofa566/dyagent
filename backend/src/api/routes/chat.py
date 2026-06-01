@@ -48,6 +48,11 @@ _log = get_logger("api.chat")
 REFERENCE_FETCH_TIMEOUT_SECONDS = 8
 REFERENCE_FETCH_MAX_CHARS = 6000
 REFERENCE_FETCH_MAX_URLS = 2
+DEFAULT_SKILL_INTENT_AMBIGUOUS_TOKENS = (
+    '台灣', '臺灣', 'taiwan',
+    '我要', '我想', '幫我', '請幫我', '麻煩幫我', '查詢', '查一下',
+    '有哪些', '有什麼', '什麼', '哪個', '是否',
+)
 
 
 def _strip_system_reminder_text(text: str) -> str:
@@ -814,6 +819,13 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
         message=routing_message,
         candidate_skill_names=all_worker_skill_names,
     )
+    if intent_skill_name and (not _should_hint_intent_skill(db=db, message=routing_message, skill_name=intent_skill_name)):
+        _log.debug(
+            'intent_skill_name_suppressed_by_message_intent',
+            intent_skill_name=intent_skill_name,
+            routing_message=routing_message,
+        )
+        intent_skill_name = None
     _log.debug(f'intent_skill_name={intent_skill_name}')
 
     if intent_skill_name:
@@ -822,8 +834,10 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
             if any(str(n).strip().lower() == intent_skill_name for n in names):
                 worker_class = str(getattr(worker, 'agent_class', '') or '')
                 _log.debug(f'intent_skill_matched_worker id={worker.id} class={worker_class} name={worker.name}')
-                if worker_class == 'public' or worker_class == 'tasked' :
+                if worker_class == 'public':
                     return worker, f'public_skill_hint_{intent_skill_name}'
+                if worker_class == 'tasked':
+                    return worker, f'tasked_skill_hint_{intent_skill_name}'
                 return worker, f'skill_hint_{intent_skill_name}'
 
     worker, reason = _pick_worker_without_default(workers=tasked_workers, message=routing_message)
@@ -854,34 +868,177 @@ def _extract_routing_message(message: str) -> str:
     return raw_message
 
 
-def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_names: list[str]) -> str | None:
-    """目的：從訊息與技能描述動態推斷最可能技能。
-    為什麼：避免在程式碼硬編技能關鍵詞，讓路由可隨技能配置演進。
+def _is_query_style_message(message: str) -> bool:
+    """目的：判斷使用者訊息是否偏向查詢問題而非執行指令。
+    為什麼：避免「多少人請假」這類查詢句誤觸發請假申請型技能。
     """
     normalized_message = str(message or '').strip().lower()
     if not normalized_message:
-        _log.debug('detect_intent_skill_name.empty_message')
-        return None
+        return False
 
-    unique_skill_names: list[str] = []
-    seen_names: set[str] = set()
-    for raw_name in (candidate_skill_names or []):
-        name = str(raw_name or '').strip()
-        if not name:
+    query_tokens = [
+        '多少', '幾位', '幾個', '統計', '查詢', '有沒有', '是否', '哪個', '什麼', '查一下', '?', '？',
+    ]
+    action_tokens = [
+        '我要', '我想', '幫我', '請幫我', '麻煩幫我', '申請', '送出', '提交', '建立', '新增', '開啟', '填寫',
+    ]
+
+    has_query_token = any(token in normalized_message for token in query_tokens)
+    _log.debug(f'message="{message}" has_query_token={has_query_token}')
+    has_action_token = any(token in normalized_message for token in action_tokens)
+    _log.debug(f'message="{message}" has_action_token={has_action_token}')  
+    return has_query_token and (not has_action_token)
+
+
+def _has_meaningful_skill_overlap(*, skill_row: SkillEntry, normalized_message: str) -> bool:
+    """目的：判斷訊息與技能是否存在足夠明確的語意交集。
+    為什麼：避免只因地區詞（如「台灣」）重疊就誤觸發特定技能（如台灣新聞）。
+    """
+    message_text = str(normalized_message or '').strip().lower()
+    if not message_text:
+        return False
+
+    skill_name = str(getattr(skill_row, 'name', '') or '').strip().lower()
+    if skill_name and (skill_name in message_text):
+        return True
+
+    name_tokens, desc_tokens = _extract_skill_intent_tokens(skill_row)
+    matched_tokens = {
+        token
+        for token in [*name_tokens, *desc_tokens]
+        if token and (token in message_text)
+    }
+
+    description_text = str(getattr(skill_row, 'description', '') or '').strip().lower()
+    fallback_tokens = _extract_overlap_candidate_tokens(description_text)
+    matched_tokens.update({token for token in fallback_tokens if token in message_text})
+
+    if not matched_tokens:
+        return False
+
+    ambiguous_tokens = _load_skill_intent_ambiguous_tokens()
+    meaningful_tokens = {
+        token for token in matched_tokens
+        if (len(token) >= 2) and (token not in ambiguous_tokens)
+    }
+    return bool(meaningful_tokens)
+
+
+@lru_cache(maxsize=1)
+def _load_skill_intent_ambiguous_tokens() -> set[str]:
+    """目的：載入技能意圖比對時應排除的泛詞清單。
+    為什麼：將泛詞抽成設定值，讓不同領域專案可在不改程式碼下調整誤判容忍度。
+    """
+    configured_raw = str(
+        getattr(settings, 'SKILL_INTENT_AMBIGUOUS_TOKENS', '')
+        or ','.join(DEFAULT_SKILL_INTENT_AMBIGUOUS_TOKENS)
+    )
+    configured_tokens = {
+        str(token).strip().lower()
+        for token in configured_raw.split(',')
+        if str(token).strip()
+    }
+    if configured_tokens:
+        return configured_tokens
+    return {token.lower() for token in DEFAULT_SKILL_INTENT_AMBIGUOUS_TOKENS}
+
+
+def _extract_overlap_candidate_tokens(text: str) -> set[str]:
+    """目的：從技能描述提取可比對的候選詞。
+    為什麼：jieba 在未載入詞庫時可能只回傳整句，導致「台灣新聞」無法拆出「新聞」。
+    """
+    normalized_text = str(text or '').strip().lower()
+    if not normalized_text:
+        return set()
+
+    candidates: set[str] = set()
+    for token in re.findall(r'[a-zA-Z][a-zA-Z0-9_\-]{2,}', normalized_text):
+        candidates.add(token.lower())
+
+    chinese_chunks = re.findall(r'[\u4e00-\u9fff]{2,}', normalized_text)
+    for chunk in chinese_chunks:
+        chunk_length = len(chunk)
+        if chunk_length <= 4:
+            candidates.add(chunk)
             continue
-        lowered = name.lower()
-        if lowered in seen_names:
+        for token_length in (2, 3, 4):
+            if chunk_length < token_length:
+                continue
+            for start_index in range(0, chunk_length - token_length + 1):
+                candidates.add(chunk[start_index:start_index + token_length])
+
+    return candidates
+
+
+def _should_hint_intent_skill(*, db: Session, message: str, skill_name: str) -> bool:
+    """目的：判斷當前訊息是否應注入技能 hint。
+    為什麼：技能意圖命中不代表一定要執行，查詢句需要保留一般問答路徑。
+    """
+    normalized_skill_name = str(skill_name or '').strip()
+    if not normalized_skill_name:
+        return False
+    if not _is_query_style_message(message):
+        return True
+
+    skill_row = db.query(SkillEntry).filter(SkillEntry.name == normalized_skill_name).first()
+    if skill_row is None:
+        return True
+
+    skill_type = str(getattr(skill_row, 'skill_type', 'executable') or 'executable').strip().lower()
+    has_zip_bundle = bool(getattr(skill_row, 'zip_bundle', None))
+    is_interactive_skill = (skill_type in {'prompt', 'hybrid'}) or has_zip_bundle
+    if is_interactive_skill:
+        return False
+
+    return True
+
+def _find_best_skill_name(skill_rows: list[SkillEntry], normalized_message: str) -> str | None:
+    # 先收集所有技能的名稱 token，用於避免描述詞跨技能誤判
+    all_name_tokens: set[str] = set()
+    for row in skill_rows:
+        name_text = str(getattr(row, 'name', '') or '').strip().lower()
+        all_name_tokens.add(name_text)
+        for part in re.split(r'[-_\s]+', name_text):
+            if len(part.strip()) >= 2:
+                all_name_tokens.add(part.strip())
+
+    best_skill_name = None
+    best_score = 0
+    for row in skill_rows:
+        skill_name = str(getattr(row, 'name', '') or '').strip()
+        if not skill_name:
             continue
-        seen_names.add(lowered)
-        unique_skill_names.append(name)
+        if not _has_meaningful_skill_overlap(skill_row=row, normalized_message=normalized_message):
+            continue
+        name_tokens, desc_tokens = _extract_skill_intent_tokens(row)
+        # 名稱 token 得分 x2，描述 token 得 x1
+        # 描述 token 若與其他技能的名稱重疊，跳過（避免 expense-request 描述含「請假」誤判）
+        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
+            _log.debug(f'skill "{skill_name}" name_tokens={name_tokens} desc_tokens={desc_tokens}')
+        score = 0
+        for token in name_tokens:
+            if token in normalized_message:
+                score += len(token) * 2
+        if score > best_score:
+            best_score = score
+            best_skill_name = skill_name
 
-    _log.debug(f'detect_intent_skill_name.candidate_skills={unique_skill_names}')
-    if not unique_skill_names:
-        return None
-    candidate_lower_names = {name.lower() for name in unique_skill_names}
+        score = 0
+        for token in desc_tokens:
+            # 若描述 token 也是其他技能的名稱詞，跳過
+            if token in all_name_tokens and token not in name_tokens:
+                continue
+            if token in normalized_message:
+                score += len(token)
+        if score > best_score:
+            best_score = score
+            best_skill_name = skill_name
 
-    skill_rows = db.query(SkillEntry).filter(SkillEntry.name.in_(unique_skill_names)).all()
 
+    _log.debug(f'detect_intent_skill_name.best_skill={best_skill_name} best_score={best_score}')
+    return best_skill_name
+
+def _find_prefer_skill_name(skill_rows: list[SkillEntry], candidate_lower_names: set[str], normalized_message: str, unique_skill_names: list[str]) -> str | None:
     # 先走 SKILL.md 動態規則路由（以 prompt_template 原文為主）；失敗才回退舊 token 比對。
     try:
         registry = get_skill_registry()
@@ -934,66 +1091,95 @@ def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_name
             candidate_skill_names=unique_skill_names,
         )
         selected_skill_name = str(route_result.get('skill_name') or '').strip()
-        if selected_skill_name:
+        route_score = int(route_result.get('score') or 0)
+        try:
+            min_score = int(getattr(settings, 'SKILL_RULE_ROUTER_MIN_SCORE', 10) or 10)
+        except Exception:
+            min_score = 10
+
+        if selected_skill_name and route_score >= max(1, min_score):
+            selected_row = next(
+                (
+                    row for row in skill_rows
+                    if str(getattr(row, 'name', '') or '').strip().lower() == selected_skill_name.lower()
+                ),
+                None,
+            )
+            if selected_row is not None and (not _has_meaningful_skill_overlap(skill_row=selected_row, normalized_message=normalized_message)):
+                _log.debug(
+                    'detect_intent_skill_name.rule_router_rejected_by_overlap_guard',
+                    selected_skill=selected_skill_name,
+                    score=route_score,
+                    matched_rules=route_result.get('matched_rules') or [],
+                    normalized_message=normalized_message,
+                )
+                return None
             _log.debug(
                 'detect_intent_skill_name.rule_router_matched',
                 selected_skill=selected_skill_name,
-                score=int(route_result.get('score') or 0),
+                score=route_score,
                 matched_rules=route_result.get('matched_rules') or [],
             )
             return selected_skill_name
+        if selected_skill_name:
+            _log.debug(
+                'detect_intent_skill_name.rule_router_below_threshold',
+                selected_skill=selected_skill_name,
+                score=route_score,
+                min_score=min_score,
+                matched_rules=route_result.get('matched_rules') or [],
+            )
         _log.debug(
             'detect_intent_skill_name.rule_router_no_match',
-            score=int(route_result.get('score') or 0),
+            score=route_score,
             matched_rules=route_result.get('matched_rules') or [],
         )
     except Exception as error:
         _log.warning('detect_intent_skill_name.rule_router_failed_fallback', error=str(error))
 
-    # 先收集所有技能的名稱 token，用於避免描述詞跨技能誤判
-    all_name_tokens: set[str] = set()
-    for row in skill_rows:
-        name_text = str(getattr(row, 'name', '') or '').strip().lower()
-        all_name_tokens.add(name_text)
-        for part in re.split(r'[-_\s]+', name_text):
-            if len(part.strip()) >= 2:
-                all_name_tokens.add(part.strip())
 
-    best_skill_name = None
-    best_score = 0
-    for row in skill_rows:
-        skill_name = str(getattr(row, 'name', '') or '').strip()
-        if not skill_name:
+def _detect_intent_skill_name(*, db: Session, message: str, candidate_skill_names: list[str]) -> str | None:
+    """目的：從訊息與技能描述動態推斷最可能技能。
+    方法：先以 _find_prefer_skill_name 嘗試以 SKILL.md 規則路由匹配，失敗才回退 _find_best_skill_name 的 token 比對。
+    為什麼：避免在程式碼硬編技能關鍵詞，讓路由可隨技能配置演進。
+    """
+    normalized_message = str(message or '').strip().lower()
+    if not normalized_message:
+        _log.debug('detect_intent_skill_name.empty_message')
+        return None
+
+    unique_skill_names: list[str] = []
+    seen_names: set[str] = set()
+    for raw_name in (candidate_skill_names or []):
+        name = str(raw_name or '').strip()
+        if not name:
             continue
-        name_tokens, desc_tokens = _extract_skill_intent_tokens(row)
-        # 名稱 token 得分 x2，描述 token 得 x1
-        # 描述 token 若與其他技能的名稱重疊，跳過（避免 expense-request 描述含「請假」誤判）
-        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
-            _log.debug(f'skill "{skill_name}" name_tokens={name_tokens} desc_tokens={desc_tokens}')
-        score = 0
-        for token in name_tokens:
-            if token in normalized_message:
-                score += len(token) * 2
-        if score > best_score:
-            best_score = score
-            best_skill_name = skill_name
-        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
-            _log.debug(f'names token match with score {score} best_score={best_score} best_skill_name={best_skill_name}')
-        score = 0
-        for token in desc_tokens:
-            # 若描述 token 也是其他技能的名稱詞，跳過
-            if token in all_name_tokens and token not in name_tokens:
-                continue
-            if token in normalized_message:
-                score += len(token)
-        if score > best_score:
-            best_score = score
-            best_skill_name = skill_name
-        if skill_name and skill_name == 'taiwan-finance-news-rss' or skill_name == 'taiwan-news-rss':
-            _log.debug(f'desc token match with score {score} best_score={best_score} best_skill_name={best_skill_name}')
+        lowered = name.lower()
+        if lowered in seen_names:
+            continue
+        seen_names.add(lowered)
+        unique_skill_names.append(name)
 
-    _log.debug(f'detect_intent_skill_name.best_skill={best_skill_name} best_score={best_score}')
-    return best_skill_name
+    _log.debug(f'detect_intent_skill_name.candidate_skills={unique_skill_names}')
+    if not unique_skill_names:
+        return None
+    candidate_lower_names = {name.lower() for name in unique_skill_names}
+
+    skill_rows = db.query(SkillEntry).filter(SkillEntry.name.in_(unique_skill_names)).all()
+
+    selected_skill_name = _find_prefer_skill_name(skill_rows, candidate_lower_names, normalized_message, unique_skill_names)
+
+
+    if selected_skill_name:
+        _log.debug(f'detect_intent_skill_name._find_prefer_skill_name()={selected_skill_name}')
+        return selected_skill_name
+
+    best_skill_name = _find_best_skill_name(skill_rows, normalized_message )
+
+    if best_skill_name:
+        _log.debug(f'detect_intent_skill_name._find_best_skill_name()={best_skill_name}')
+        return best_skill_name
+    return None
 
 
 def _extract_skill_intent_tokens(skill_row: SkillEntry) -> tuple[list[str], list[str]]:
@@ -1173,6 +1359,42 @@ def _write_event_part_safe(*, db: Session, conversation_id: str, type_: str, pay
     try:
         event_row = EventPart(conversation_id=conversation_id, type=type_, payload=payload)
         db.add(event_row)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _upsert_route_decision_event_safe(
+    *,
+    db: Session,
+    conversation_id: str,
+    target_agent_id: str,
+    target_agent_name: str,
+    reason: str,
+) -> None:
+    """目的：更新或建立本輪 route.decision 事件。
+    為什麼：當實際執行工具已確定時，需以真實工具修正早期 fallback reason，避免 UI 顯示誤導。
+    """
+    try:
+        rows = db.query(EventPart).filter(
+            EventPart.conversation_id == conversation_id,
+            EventPart.type == 'route.decision',
+        ).all()
+        latest_row = rows[-1] if rows else None
+        payload = {
+            'target_agent_id': target_agent_id,
+            'target_agent_name': target_agent_name,
+            'reason': reason,
+        }
+        if latest_row is None:
+            latest_row = EventPart(conversation_id=conversation_id, type='route.decision', payload=payload)
+            db.add(latest_row)
+        else:
+            existing_payload = latest_row.payload if isinstance(latest_row.payload, dict) else {}
+            merged_payload = dict(existing_payload)
+            merged_payload.update(payload)
+            latest_row.payload = merged_payload
+            db.add(latest_row)
         db.commit()
     except Exception:
         db.rollback()
@@ -1655,6 +1877,7 @@ async def chat_stream(
     message: str,  # 用户输入的消息内容，需要AI代理处理和回应
     conversation_id: str | None = None,
     attachment_ids: list[str] | None = None,
+    route_reason: str | None = None,
     persist_user_message: bool = True,
     persist_message: str | None = None,  # 若提供，DB 儲存此值而非 message（避免系統注入內容洩漏到畫面）
     db: Session = Depends(get_db),  # 数据库会话依赖，用于数据库操作
@@ -1825,6 +2048,48 @@ async def chat_stream(
         max_steps = int(getattr(settings, 'REACT_MAX_STEPS', 3) or 3)
 
         _log.debug('_gen started with message: %s', message)
+
+        def _resolve_route_reason_from_tool(tool_nm: str) -> str:
+            normalized_tool_name = str(tool_nm or '').strip()
+            if not normalized_tool_name:
+                return ''
+            if normalized_tool_name.startswith('mcp:'):
+                return f'mcp_hint_{normalized_tool_name}'
+            worker_class = str(getattr(agent, 'agent_class', '') or '').strip().lower()
+            if worker_class == 'public':
+                return f'public_skill_hint_{normalized_tool_name}'
+            if worker_class == 'tasked':
+                return f'tasked_skill_hint_{normalized_tool_name}'
+            return f'skill_hint_{normalized_tool_name}'
+
+        def _should_override_route_reason() -> bool:
+            normalized_reason = str(route_reason or '').strip().lower()
+            if not normalized_reason:
+                return False
+            hint_prefixes = ('public_skill_hint_', 'tasked_skill_hint_', 'skill_hint_', 'mcp_hint_')
+            return normalized_reason.startswith(hint_prefixes)
+
+        def _build_route_decision_event_for_tool(tool_nm: str) -> str | None:
+            if not _should_override_route_reason():
+                return None
+            reason = _resolve_route_reason_from_tool(tool_nm)
+            if not reason:
+                return None
+            _upsert_route_decision_event_safe(
+                db=db,
+                conversation_id=str(conversation.id),
+                target_agent_id=str(agent.id),
+                target_agent_name=str(agent.name or ''),
+                reason=reason,
+            )
+            event_payload = {
+                'type': 'route.decision',
+                'target_agent_id': str(agent.id),
+                'target_agent_name': str(agent.name or ''),
+                'reason': reason,
+                'conversation_id': str(conversation.id),
+            }
+            return f"data: {_json.dumps(event_payload, ensure_ascii=False)}\\n\\n"
 
         def _react_event(phase: str, message: str, extra: dict[str, Any] | None = None) -> str:
             payload = {"type": "react", "phase": phase, "message": message}
@@ -2041,11 +2306,19 @@ async def chat_stream(
                     if hinted in allowed_tools:
                         return hinted
 
-            return _detect_intent_skill_name(
+            selected_skill_name = _detect_intent_skill_name(
                 db=db,
                 message=message,
                 candidate_skill_names=[str(name) for name in allowed_tools],
             )
+            if selected_skill_name and (not _should_hint_intent_skill(db=db, message=message, skill_name=selected_skill_name)):
+                _log.debug(
+                    'infer_intent_skill_tool.suppressed_by_message_intent',
+                    selected_skill_name=selected_skill_name,
+                    message=message,
+                )
+                return None
+            return selected_skill_name
 
         def _should_start_skill_interaction(tool_name: str) -> bool:
             # 目的：判斷技能是否應以互動流程（action=start）啟動。
@@ -2184,11 +2457,18 @@ async def chat_stream(
             for handled_event in handled_events:
                 yield handled_event
             if handled_mode:
+                if bool((res or {}).get('ok', False)):
+                    route_decision_event = _build_route_decision_event_for_tool(intent_skill_tool)
+                    if route_decision_event:
+                        yield route_decision_event
                 return
 
             ok_flag = bool((res or {}).get('ok', False))
             yield _react_event('act_result', f'工具 {intent_skill_tool} 已回傳結果', {'step': react_step, 'tool': intent_skill_tool, 'ok': ok_flag})
             if ok_flag:
+                route_decision_event = _build_route_decision_event_for_tool(intent_skill_tool)
+                if route_decision_event:
+                    yield route_decision_event
                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                 result_obj = (res or {}).get('result', {})
                 _log.debug(f'Raw tool result for {intent_skill_tool}: {result_obj}')
@@ -2318,6 +2598,9 @@ async def chat_stream(
                                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                         return
                             if successful_result_text is not None:
+                                route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                                if route_decision_event:
+                                    yield route_decision_event
                                 yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 async for evt in _observe_and_answer(tool_name, successful_result_text):
@@ -2342,10 +2625,17 @@ async def chat_stream(
                             for handled_event in handled_events:
                                 yield handled_event
                             if handled_mode:
+                                if bool((res or {}).get('ok', False)):
+                                    route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                                    if route_decision_event:
+                                        yield route_decision_event
                                 return
                             ok_flag = bool((res or {}).get('ok', False))
                             yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                             if ok_flag:
+                                route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                                if route_decision_event:
+                                    yield route_decision_event
                                 result_text = _json.dumps((res or {}).get('result', {}), ensure_ascii=False)
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 async for evt in _observe_and_answer(tool_name, result_text):
@@ -2394,6 +2684,9 @@ async def chat_stream(
                                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                         return
                             if successful_result_text is not None:
+                                route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                                if route_decision_event:
+                                    yield route_decision_event
                                 yield _react_event("act_result", f"工具 {tool_name} 執行成功", {"step": react_step, "tool": tool_name, "ok": True})
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 async for evt in _observe_and_answer(tool_name, successful_result_text):
@@ -2418,10 +2711,17 @@ async def chat_stream(
                             for handled_event in handled_events:
                                 yield handled_event
                             if handled_mode:
+                                if bool((res or {}).get('ok', False)):
+                                    route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                                    if route_decision_event:
+                                        yield route_decision_event
                                 return
                             ok_flag = bool((res or {}).get('ok', False))
                             yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                             if ok_flag:
+                                route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                                if route_decision_event:
+                                    yield route_decision_event
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 result_obj = (res or {}).get('result', {})
                                 _log.debug(f'Raw tool result for {tool_name}: {result_obj}')
@@ -2457,10 +2757,17 @@ async def chat_stream(
                     for handled_event in handled_events:
                         yield handled_event
                     if handled_mode:
+                        if bool((res or {}).get('ok', False)):
+                            route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                            if route_decision_event:
+                                yield route_decision_event
                         return
                     ok_flag = bool((res or {}).get('ok', False))
                     yield _react_event("act_result", f"工具 {tool_name} 已回傳結果", {"step": react_step, "tool": tool_name, "ok": ok_flag})
                     if ok_flag:
+                        route_decision_event = _build_route_decision_event_for_tool(tool_name)
+                        if route_decision_event:
+                            yield route_decision_event
                         yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                         result_obj = (res or {}).get('result', {})
                         _log.debug(f'Raw tool result for {tool_name}: {result_obj}')
@@ -3150,6 +3457,7 @@ async def _multi_agent_orchestrator(
     yield f"data: {_json.dumps({'type': 'orchestrator.done', 'conversation_id': _conv_id, 'completed': completed_so_far, 'failed': 0, 'react_steps_used': max_steps, 'max_steps_reached': True}, ensure_ascii=False)}\n\n"
 
 
+
 @router.post('/chat')
 async def chat_entry_router(
     payload: dict = Body(...),
@@ -3388,6 +3696,7 @@ async def chat_entry_router(
     routed_response = await chat_stream(
         agent_id=str(worker.id),
         message=llm_message,
+        route_reason=route_reason,
         persist_message=enriched_message,
         conversation_id=str(conversation.id),
         attachment_ids=attachment_ids,

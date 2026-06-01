@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     SKILL_ROUTER_HUMANIZER_HINTS: str = '潤稿,润稿,人性化,去 ai 味,去ai味,改自然,自然一點,自然一点'
     SKILL_ROUTER_PDF_HINTS: str = 'pdf,報告pdf,履歷pdf,proposal pdf'
     SKILL_ROUTER_DOCX_HINTS: str = 'docx,word,文档,文件,公文,合同,套模板'
+    SKILL_INTENT_AMBIGUOUS_TOKENS: str = '台灣,臺灣,taiwan,我要,我想,幫我,請幫我,麻煩幫我,查詢,查一下,有哪些,有什麼,什麼,哪個,是否'
 
     # Secrets provider 設定
     # env | vault | aws | gcp | k8s
