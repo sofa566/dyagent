@@ -11,6 +11,33 @@
 
 ## 2. ReAct 主流程分段（對照行號）
 
+### 2.0 先後次序總結（實際執行順序）
+
+以下是單輪請求在 `chat_stream` 內，ReAct 相關邏輯的實際先後順序：
+
+1. 進入 `chat_stream`，完成 agent/conversation 驗證與 prompt 組裝。
+2. 建立 `_gen()`，初始化 `react_step=0` 與 `max_steps`。
+3. 先嘗試「意圖捷徑」`_infer_intent_skill_tool()`：
+   - 命中則直接走 `plan -> act_start -> tool_start -> call_tool_async`。
+   - 工具成功則進 `observe_and_answer`，最後 `done`。
+   - 工具失敗則 `reroute`，改走 fallback 文字回覆後 `done`。
+4. 若未命中意圖捷徑，才進一般 LLM 串流迴圈：
+   - 逐段讀取 delta。
+   - 偵測 `[[CALL tool=...]]` 或 `tool_calls` JSON。
+   - 偵測到後 `react_step += 1`，超上限就直接終止。
+5. 工具執行階段（Act）：
+   - 送出 `react(plan)`、`react(act_start)`、`tool_start`。
+   - 依工具型別走 MCP stdio / MCP ws / 一般 `call_tool_async`。
+   - 期間可能穿插 `progress`、`tool` frame。
+6. 工具結果判斷：
+   - 成功：送 `react(act_result ok=true)`，進 `observe_and_answer` 產生最終文字。
+   - 失敗/逾時：送 `react(reroute)`，改 fallback 一般回答。
+7. 若技能回傳 `mode=ui/final/error`，則交給 `_handle_skill_mode_result()` 直接收斂（可能提早 `done`）。
+8. 收尾：
+   - 若有未處理工具呼叫殘片，先 `text_clear_tool` 再 fallback。
+   - 送 `react(finish)`，最後 `done`。
+9. `_gen_hb()` 外層負責補 `heartbeat`、監控逾時、彙整最終 assistant 內容並寫回 DB。
+
 ### 2.1 前置：進入 `chat_stream`
 
 - API 入口：`@router.get('/agents/{agent_id}/chat/stream')`（`backend/src/api/routes/chat.py:1874`）。
