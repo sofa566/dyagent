@@ -26,6 +26,7 @@ from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.models import (
     Agent,
+    ChatAttachment,
     Conversation,
     LlmTurn,
     Message,
@@ -4082,12 +4083,20 @@ async def delete_conversation(
             db.query(MultiAgentTask).filter(MultiAgentTask.session_id.in_(session_ids)).delete(synchronize_session=False)
         db.query(MultiAgentSession).filter(MultiAgentSession.conversation_id == conv.id).delete(synchronize_session=False)
         db.query(LlmTurn).filter(LlmTurn.conversation_id == conv.id).delete(synchronize_session=False)
+        db.query(SkillInteraction).filter(SkillInteraction.conversation_id == conv.id).delete(synchronize_session=False)
+        db.query(ChatAttachment).filter(ChatAttachment.conversation_id == conv.id).delete(synchronize_session=False)
         db.query(EventPart).filter(EventPart.conversation_id == conv.id).delete(synchronize_session=False)
         db.query(Message).filter(Message.conversation_id == conv.id).delete(synchronize_session=False)
         db.delete(conv)
         db.commit()
     except Exception as error:
         db.rollback()
+        _log.exception(
+            'conversation.delete_failed',
+            conversation_id=str(conversation_id),
+            user_id=str(getattr(current_user, 'id', '')),
+            error=str(error),
+        )
         raise validation_error('刪除會話失敗，請稍後再試') from error
 
     return {'ok': True, 'conversation_id': str(conversation_id)}
