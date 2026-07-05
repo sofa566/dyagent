@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG 資料集管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h2>RAG 公有資料集管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+      <button id="btn-new" class="btn btn-primary" type="button">新建資料集</button>
+      <button id="btn-refresh" class="btn" type="button">重新整理</button>
+      <span style="color:var(--text-secondary);">此頁僅管理 scope=global 的 RAG 資料集。</span>
+    </div>
+
+    <section class="card">
+      <h3>資料集清單</h3>
+      <div style="margin-bottom:8px;color:var(--text-secondary);">
+        每筆資料集可直接上傳文件，文件會被切塊與向量化寫入該資料集索引。
+      </div>
+      <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
+        <table class="table" style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal：新建/編輯資料集 -->
+  <div id="dataset-modal" class="modal">
+    <div class="modal-content" style="max-width:550px;">
+      <h3 id="dataset-modal-title">新建公有資料集</h3>
+      <form id="dataset-form">
+        <div class="form-group">
+          <label for="modal-name">資料集名稱 <span style="color:var(--error-color);">*</span></label>
+          <input id="modal-name" type="text" placeholder="例如：company-kb" required>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="form-group">
+            <label for="modal-sensitivity">敏感等級</label>
+            <select id="modal-sensitivity">
+              <option value="normal">normal</option>
+              <option value="confidential">confidential</option>
+              <option value="restricted">restricted</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>狀態</label>
+            <label style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+              <input id="modal-enabled" type="checkbox" checked> 啟用
+            </label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="modal-vector-backend">vector_backend（可選）</label>
+          <input id="modal-vector-backend" type="text" placeholder="例如：qdrant">
+        </div>
+        <div class="form-group">
+          <label for="modal-index-name">index_name（可選）</label>
+          <input id="modal-index-name" type="text" placeholder="例如：global_knowledge">
+        </div>
+        <div class="actions">
+          <button type="submit" class="btn btn-primary" id="dataset-modal-save">建立</button>
+          <button type="button" class="btn btn-secondary" id="dataset-modal-cancel">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal：上傳/文件列表 -->
+  <div id="upload-modal" class="modal">
+    <div class="modal-content" style="max-width:700px;">
+      <h3>文件管理 - <span id="upload-modal-name"></span></h3>
+      <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-primary" id="upload-btn">+ 上傳文件</button>
+        <input type="file" id="upload-file-input" style="display:none;" multiple>
+        <span id="upload-status" style="color:var(--text-secondary);"></span>
+      </div>
+      <div style="border:1px solid var(--border-color);border-radius:var(--radius);max-height:300px;overflow-y:auto;">
+        <table class="table" style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr>
+              <th>檔案名稱</th>
+              <th style="width:100px;">大小</th>
+              <th style="width:160px;">上傳時間</th>
+            </tr>
+          </thead>
+          <tbody id="upload-file-list"></tbody>
+        </table>
+      </div>
+      <div id="upload-summary" style="margin-top:8px;color:var(--text-secondary);">共 0 個檔案</div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" id="upload-modal-close">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal：查詢測試 -->
+  <div id="search-modal" class="modal">
+    <div class="modal-content" style="max-width:800px;">
+      <h3>查詢測試 - <span id="search-modal-name"></span></h3>
+      <div class="form-group">
+        <label for="search-query">查詢字串</label>
+        <div style="display:flex;gap:8px;">
+          <input id="search-query" type="text" placeholder="輸入要搜尋的內容..." style="flex:1;">
+          <button type="button" class="btn btn-primary" id="search-btn">搜尋</button>
+        </div>
+      </div>
+      <div id="search-status" style="margin:12px 0;display:none;"></div>
+      <div style="border:1px solid var(--border-color);border-radius:var(--radius);max-height:350px;overflow-y:auto;">
+        <table class="table" style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr>
+              <th style="width:70px;">分數</th>
+              <th style="width:140px;">來源檔案</th>
+              <th>片段內容</th>
+            </tr>
+          </thead>
+          <tbody id="search-results">
+            <tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" id="search-modal-close">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal：刪除確認 -->
+  <div id="delete-modal" class="modal">
+    <div class="modal-content">
+      <h3>確認刪除</h3>
+      <p>確定要刪除資料集「<span id="delete-modal-name"></span>」嗎？此操作無法復原。</p>
+      <div class="actions">
+        <button type="button" class="btn btn-danger" id="delete-confirm">確認刪除</button>
+        <button type="button" class="btn btn-secondary" id="delete-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    // 認證檢查
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      showError('僅限管理者存取');
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+
+    // DOM 元素
+    const rows = document.getElementById('rows');
+    const newBtn = document.getElementById('btn-new');
+    const refreshBtn = document.getElementById('btn-refresh');
+
+    // Modal 元素
+    const datasetModal = document.getElementById('dataset-modal');
+    const uploadModal = document.getElementById('upload-modal');
+    const searchModal = document.getElementById('search-modal');
+    const deleteModal = document.getElementById('delete-modal');
+
+    // Modal 開關
+    function openModal(el) { el.classList.add('active'); }
+    function closeModal(el) { el.classList.remove('active'); }
+
+    // ========== 資料集表單 Modal ==========
+    let editingId = '';
+
+    newBtn.addEventListener('click', () => {
+      editingId = '';
+      document.getElementById('dataset-modal-title').textContent = '新建公有資料集';
+      document.getElementById('dataset-modal-save').textContent = '建立';
+      document.getElementById('dataset-form').reset();
+      document.getElementById('modal-enabled').checked = true;
+      openModal(datasetModal);
+    });
+
+    document.getElementById('dataset-modal-cancel').addEventListener('click', () => {
+      closeModal(datasetModal);
+    });
+
+    document.getElementById('dataset-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        name: document.getElementById('modal-name').value.trim(),
+        sensitivity: document.getElementById('modal-sensitivity').value,
+        enabled: document.getElementById('modal-enabled').checked,
+        vector_backend: document.getElementById('modal-vector-backend').value.trim(),
+        index_name: document.getElementById('modal-index-name').value.trim(),
+      };
+      if (!payload.name) {
+        showError('資料集名稱為必填');
+        return;
+      }
+      try {
+        if (editingId) {
+          await api.put(`/rag/datasets/${encodeURIComponent(editingId)}`, payload);
+          showSuccess('已更新資料集');
+        } else {
+          await api.post('/rag/datasets', payload);
+          showSuccess('已建立資料集');
+        }
+        closeModal(datasetModal);
+        await load();
+      } catch (err) {
+        showError(err.message || '儲存失敗');
+      }
+    });
+
+    function openEditModal(id) {
+      const list = window.__globalDatasets || [];
+      const found = list.find((item) => String(item.id) === String(id));
+      if (!found) {
+        showError('找不到資料集');
+        return;
+      }
+      editingId = String(found.id);
+      document.getElementById('dataset-modal-title').textContent = '編輯公有資料集';
+      document.getElementById('dataset-modal-save').textContent = '儲存';
+      document.getElementById('modal-name').value = found.name || '';
+      document.getElementById('modal-sensitivity').value = found.sensitivity || 'normal';
+      document.getElementById('modal-enabled').checked = !!found.enabled;
+      document.getElementById('modal-vector-backend').value = found.vector_backend || '';
+      document.getElementById('modal-index-name').value = found.index_name || '';
+      openModal(datasetModal);
+    }
+
+    // ========== 上傳/文件列表 Modal ==========
+    let currentUploadDatasetId = '';
+    const uploadFileInput = document.getElementById('upload-file-input');
+
+    async function openUploadModal(datasetId, datasetName) {
+      currentUploadDatasetId = datasetId;
+      document.getElementById('upload-modal-name').textContent = datasetName;
+      document.getElementById('upload-status').textContent = '';
+      await loadDocuments(datasetId);
+      openModal(uploadModal);
+    }
+
+    async function loadDocuments(datasetId) {
+      const tbody = document.getElementById('upload-file-list');
+      const summary = document.getElementById('upload-summary');
+      try {
+        const res = await api.get(`/rag/datasets/${encodeURIComponent(datasetId)}/documents`);
+        const docs = res.documents || [];
+        if (docs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
+        } else {
+          tbody.innerHTML = docs.map(doc => `
+            <tr>
+              <td>${escapeHtml(doc.filename)}</td>
+              <td>${formatBytes(doc.size_bytes)}</td>
+              <td>${formatDate(doc.uploaded_at)}</td>
+            </tr>
+          `).join('');
+        }
+        summary.textContent = `共 ${docs.length} 個檔案`;
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
+        summary.textContent = '';
+        showError(err.message || '載入文件列表失敗');
+      }
+    }
+
+    document.getElementById('upload-btn').addEventListener('click', () => {
+      uploadFileInput.value = '';
+      uploadFileInput.click();
+    });
+
+    uploadFileInput.addEventListener('change', async () => {
+      const files = uploadFileInput.files;
+      if (!files || files.length === 0) return;
+
+      const statusEl = document.getElementById('upload-status');
+      const token = localStorage.getItem('auth_token') || '';
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        statusEl.textContent = `上傳中 (${i + 1}/${files.length}): ${file.name}`;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+          const response = await fetch(`/api/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/upload`, {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            body: formData,
+          });
+
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || err.detail || `HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          if (data.status !== 'ready') {
+            showError(`${file.name}: ${data.message || '索引失敗'}`);
+          }
+        } catch (err) {
+          showError(`${file.name}: ${err.message}`);
+        }
+      }
+
+      statusEl.textContent = '上傳完成';
+      uploadFileInput.value = '';
+      await loadDocuments(currentUploadDatasetId);
+    });
+
+    document.getElementById('upload-modal-close').addEventListener('click', () => {
+      closeModal(uploadModal);
+    });
+
+    // ========== 查詢測試 Modal ==========
+    let currentSearchDatasetId = '';
+
+    function openSearchModal(datasetId, datasetName) {
+      currentSearchDatasetId = datasetId;
+      document.getElementById('search-modal-name').textContent = datasetName;
+      document.getElementById('search-query').value = '';
+      document.getElementById('search-status').style.display = 'none';
+      document.getElementById('search-results').innerHTML =
+        '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>';
+      openModal(searchModal);
+    }
+
+    document.getElementById('search-btn').addEventListener('click', async () => {
+      const query = document.getElementById('search-query').value.trim();
+      if (!query) {
+        showError('請輸入查詢字串');
+        return;
+      }
+
+      const statusEl = document.getElementById('search-status');
+      const resultsEl = document.getElementById('search-results');
+
+      statusEl.style.display = 'block';
+      statusEl.className = 'search-status-loading';
+      statusEl.textContent = '搜尋中...';
+      resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;">搜尋中...</td></tr>';
+
+      try {
+        const res = await api.post(`/rag/datasets/${encodeURIComponent(currentSearchDatasetId)}/search`, {
+          query: query,
+          limit: 10
+        });
+
+        if (res.ok === false) {
+          statusEl.className = 'search-status-error';
+          statusEl.textContent = `搜尋失敗：${res.error || res.message}（耗時 ${res.elapsed_ms} ms）`;
+          resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+          return;
+        }
+
+        statusEl.className = 'search-status-success';
+        statusEl.textContent = `搜尋成功 | 耗時：${res.elapsed_ms} ms | 找到 ${res.total_found} 筆結果`;
+
+        if (res.results && res.results.length > 0) {
+          resultsEl.innerHTML = res.results.map(r => `
+            <tr>
+              <td>${(r.score * 100).toFixed(1)}%</td>
+              <td title="${escapeHtml(r.payload?.filename || '')}">${escapeHtml(r.payload?.filename || '-')}</td>
+              <td title="${escapeHtml(r.payload?.snippet || '')}">${escapeHtml((r.payload?.snippet || '').substring(0, 200))}${(r.payload?.snippet || '').length > 200 ? '...' : ''}</td>
+            </tr>
+          `).join('');
+        } else {
+          resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">無符合的結果</td></tr>';
+        }
+      } catch (err) {
+        statusEl.className = 'search-status-error';
+        statusEl.textContent = `搜尋失敗：${err.message}`;
+        resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+      }
+    });
+
+    // Enter 鍵觸發搜尋
+    document.getElementById('search-query').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('search-btn').click();
+      }
+    });
+
+    document.getElementById('search-modal-close').addEventListener('click', () => {
+      closeModal(searchModal);
+    });
+
+    // ========== 刪除確認 Modal ==========
+    let deleteTargetId = '';
+
+    function openDeleteModal(datasetId, datasetName) {
+      deleteTargetId = datasetId;
+      document.getElementById('delete-modal-name').textContent = datasetName;
+      openModal(deleteModal);
+    }
+
+    document.getElementById('delete-confirm').addEventListener('click', async () => {
+      if (!deleteTargetId) return;
+      try {
+        await api.delete(`/rag/datasets/${encodeURIComponent(deleteTargetId)}`);
+        showSuccess('已刪除資料集');
+        closeModal(deleteModal);
+        await load();
+      } catch (err) {
+        showError(err.message || '刪除失敗');
+      }
+    });
+
+    document.getElementById('delete-cancel').addEventListener('click', () => {
+      closeModal(deleteModal);
+    });
+
+    // ========== 列表載入與事件委派 ==========
+    async function load() {
+      try {
+        const res = await api.get('/rag/datasets?scope=global');
+        const list = Array.isArray(res.datasets) ? res.datasets : [];
+        window.__globalDatasets = list;
+        rows.innerHTML = list.map((item) => `
+          <tr>
+            <td>${escapeHtml(item.name || '')}</td>
+            <td>${escapeHtml(item.sensitivity || 'normal')}</td>
+            <td>${item.enabled ? '啟用' : '停用'}</td>
+            <td>${escapeHtml(item.vector_backend || '')}</td>
+            <td>${escapeHtml(item.index_name || '')}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
+              <button class="btn" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
+              <button class="btn" data-edit="${item.id}">編輯</button>
+              <button class="btn btn-danger" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showError(err.message || '載入失敗');
+      }
+    }
+
+    rows.addEventListener('click', (e) => {
+      const target = e.target;
+      if (target.tagName !== 'BUTTON') return;
+
+      const uploadId = target.getAttribute('data-upload');
+      const searchId = target.getAttribute('data-search');
+      const editId = target.getAttribute('data-edit');
+      const delId = target.getAttribute('data-del');
+      const name = target.getAttribute('data-name') || '';
+
+      if (uploadId) {
+        openUploadModal(uploadId, name);
+      } else if (searchId) {
+        openSearchModal(searchId, name);
+      } else if (editId) {
+        openEditModal(editId);
+      } else if (delId) {
+        openDeleteModal(delId, name);
+      }
+    });
+
+    refreshBtn.addEventListener('click', load);
+
+    // ========== 輔助函式 ==========
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text || '';
+      return div.innerHTML;
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatDate(isoString) {
+      if (!isoString) return '-';
+      return new Date(isoString).toLocaleString('zh-TW');
+    }
+
+    // 初始載入
+    load();
+  </script>
+</body>
+</html>

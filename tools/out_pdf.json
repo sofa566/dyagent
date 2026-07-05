@@ -1,0 +1,227 @@
+{
+  "name": "minimax-pdf",
+  "description": "Use this skill when visual quality and design identity matter for a PDF. CREATE (generate from scratch): \"make a PDF\", \"generate a report\", \"write a proposal\", \"create a resume\", \"beautiful PDF\", \"professional document\", \"cover page\", \"polished PDF\", \"client-ready document\". FILL (complete form fields): \"fill in the form\", \"fill out this PDF\", \"complete the form fields\", \"write values into PDF\", \"what fields does this PDF have\". REFORMAT (apply design to an existing doc): \"reformat this document\", \"apply our style\", \"convert this Markdown/text to PDF\", \"make this doc look good\", \"re-style this PDF\". This skill uses a token-based design system: color, typography, and spacing are derived from the document type and flow through every page. The output is print-ready. Prefer this skill when appearance matters, not just when any PDF output is needed.",
+  "system_prompt": "Three tasks. One skill.",
+  "fields": {
+    "license": "MIT",
+    "metadata": {
+      "version": "1.0",
+      "category": "document-generation"
+    },
+    "route_table": [
+      {
+        "user_intent": "Generate a new PDF from scratch",
+        "route": "CREATE",
+        "scripts_used": [
+          "palette.py",
+          "cover.py",
+          "render_cover.js",
+          "render_body.py",
+          "merge.py"
+        ]
+      },
+      {
+        "user_intent": "Fill / complete form fields in an existing PDF",
+        "route": "FILL",
+        "scripts_used": [
+          "fill_inspect.py",
+          "fill_write.py"
+        ]
+      },
+      {
+        "user_intent": "Reformat / re-style an existing document",
+        "route": "REFORMAT",
+        "scripts_used": [
+          "reformat_parse.py",
+          "then full CREATE pipeline"
+        ]
+      }
+    ],
+    "doc_types": [
+      "report",
+      "proposal",
+      "resume",
+      "portfolio",
+      "academic",
+      "general",
+      "minimal",
+      "stripe",
+      "diagonal",
+      "frame",
+      "editorial",
+      "magazine",
+      "darkroom",
+      "terminal",
+      "poster"
+    ],
+    "color_overrides": [
+      "--accent \"#HEX\" — override the accent color; `accent_lt` is auto-derived by lightening toward white",
+      "--cover-bg \"#HEX\" — override the cover background color"
+    ],
+    "accent_color_selection_guidance": [
+      "Legal / compliance / finance: Deep navy `#1C3A5E`, charcoal `#2E3440`, slate `#3D4C5E`",
+      "Healthcare / medical: Teal-green `#2A6B5A`, cool green `#3A7D6A`",
+      "Technology / engineering: Steel blue `#2D5F8A`, indigo `#3D4F8A`",
+      "Environmental / sustainability: Forest `#2E5E3A`, olive `#4A5E2A`",
+      "Creative / arts / culture: Burgundy `#6B2A35`, plum `#5A2A6B`, terracotta `#8A3A2A`",
+      "Academic / research: Deep teal `#2A5A6B`, library blue `#2A4A6B`",
+      "Corporate / neutral: Slate `#3D4A5A`, graphite `#444C56`",
+      "Luxury / premium: Warm black `#1A1208`, deep bronze `#4A3820`"
+    ],
+    "content_json_block_types": [
+      {
+        "block": "h1",
+        "usage": "Section heading + accent rule",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "h2",
+        "usage": "Subsection heading",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "h3",
+        "usage": "Sub-subsection (bold)",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "body",
+        "usage": "Justified paragraph; supports `<b>` `<i>` markup",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "bullet",
+        "usage": "Unordered list item (• prefix)",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "numbered",
+        "usage": "Ordered list item — counter auto-resets on non-numbered blocks",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "callout",
+        "usage": "Highlighted insight box with accent left bar",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "table",
+        "usage": "Data table — accent header, alternating row tints",
+        "key_fields": [
+          "headers",
+          "rows",
+          "col_widths?",
+          "caption?"
+        ]
+      },
+      {
+        "block": "image",
+        "usage": "Embedded image scaled to column width",
+        "key_fields": [
+          "path/src",
+          "caption?"
+        ]
+      },
+      {
+        "block": "figure",
+        "usage": "Image with auto-numbered \"Figure N:\" caption",
+        "key_fields": [
+          "path/src",
+          "caption?"
+        ]
+      },
+      {
+        "block": "code",
+        "usage": "Monospace code block with accent left border",
+        "key_fields": [
+          "text",
+          "language?"
+        ]
+      },
+      {
+        "block": "math",
+        "usage": "Display math — LaTeX syntax via matplotlib mathtext",
+        "key_fields": [
+          "text",
+          "label?",
+          "caption?"
+        ]
+      },
+      {
+        "block": "chart",
+        "usage": "Bar / line / pie chart rendered with matplotlib",
+        "key_fields": [
+          "chart_type",
+          "labels",
+          "datasets",
+          "title?",
+          "x_label?",
+          "y_label?",
+          "caption?",
+          "figure?"
+        ]
+      },
+      {
+        "block": "flowchart",
+        "usage": "Process diagram with nodes + edges via matplotlib",
+        "key_fields": [
+          "nodes",
+          "edges",
+          "caption?",
+          "figure?"
+        ]
+      },
+      {
+        "block": "bibliography",
+        "usage": "Numbered reference list with hanging indent",
+        "key_fields": [
+          "items [{id, text}]",
+          "title?"
+        ]
+      },
+      {
+        "block": "divider",
+        "usage": "Accent-colored full-width rule",
+        "key_fields": []
+      },
+      {
+        "block": "caption",
+        "usage": "Small muted label",
+        "key_fields": [
+          "text"
+        ]
+      },
+      {
+        "block": "pagebreak",
+        "usage": "Force a new page",
+        "key_fields": []
+      },
+      {
+        "block": "spacer",
+        "usage": "Vertical whitespace",
+        "key_fields": [
+          "pt (default 12)"
+        ]
+      }
+    ]
+  },
+  "init": [],
+  "steps": [],
+  "examples": [],
+  "constraints": [],
+  "source_markdown": "---\nname: minimax-pdf\ndescription: >\n  Use this skill when visual quality and design identity matter for a PDF.\n  CREATE (generate from scratch): \"make a PDF\", \"generate a report\", \"write a proposal\",\n  \"create a resume\", \"beautiful PDF\", \"professional document\", \"cover page\",\n  \"polished PDF\", \"client-ready document\".\n  FILL (complete form fields): \"fill in the form\", \"fill out this PDF\",\n  \"complete the form fields\", \"write values into PDF\", \"what fields does this PDF have\".\n  REFORMAT (apply design to an existing doc): \"reformat this document\", \"apply our style\",\n  \"convert this Markdown/text to PDF\", \"make this doc look good\", \"re-style this PDF\".\n  This skill uses a token-based design system: color, typography, and spacing are derived\n  from the document type and flow through every page. The output is print-ready.\n  Prefer this skill when appearance matters, not just when any PDF output is needed.\nlicense: MIT\nmetadata:\n  version: \"1.0\"\n  category: document-generation\n---\n\n# minimax-pdf\n\nThree tasks. One skill.\n\n## Read `design/design.md` before any CREATE or REFORMAT work.\n\n---\n\n## Route table\n\n| User intent | Route | Scripts used |\n|---|---|---|\n| Generate a new PDF from scratch | **CREATE** | `palette.py` → `cover.py` → `render_cover.js` → `render_body.py` → `merge.py` |\n| Fill / complete form fields in an existing PDF | **FILL** | `fill_inspect.py` → `fill_write.py` |\n| Reformat / re-style an existing document | **REFORMAT** | `reformat_parse.py` → then full CREATE pipeline |\n\n**Rule:** when in doubt between CREATE and REFORMAT, ask whether the user has an existing document to start from. If yes → REFORMAT. If no → CREATE.\n\n---\n\n## Route A: CREATE\n\nFull pipeline — content → design tokens → cover → body → merged PDF.\n\n```bash\nbash scripts/make.sh run \\\n  --title \"Q3 Strategy Review\" --type proposal \\\n  --author \"Strategy Team\" --date \"October 2025\" \\\n  --accent \"#2D5F8A\" \\\n  --content content.json --out report.pdf\n```\n\n**Doc types:** `report` · `proposal` · `resume` · `portfolio` · `academic` · `general` · `minimal` · `stripe` · `diagonal` · `frame` · `editorial` · `magazine` · `darkroom` · `terminal` · `poster`\n\n| Type | Cover pattern | Visual identity |\n|---|---|---|\n| `report` | `fullbleed` | Dark bg, dot grid, Playfair Display |\n| `proposal` | `split` | Left panel + right geometric, Syne |\n| `resume` | `typographic` | Oversized first-word, DM Serif Display |\n| `portfolio` | `atmospheric` | Near-black, radial glow, Fraunces |\n| `academic` | `typographic` | Light bg, classical serif, EB Garamond |\n| `general` | `fullbleed` | Dark slate, Outfit |\n| `minimal` | `minimal` | White + single 8px accent bar, Cormorant Garamond |\n| `stripe` | `stripe` | 3 bold horizontal color bands, Barlow Condensed |\n| `diagonal` | `diagonal` | SVG angled cut, dark/light halves, Montserrat |\n| `frame` | `frame` | Inset border, corner ornaments, Cormorant |\n| `editorial` | `editorial` | Ghost letter, all-caps title, Bebas Neue |\n| `magazine` | `magazine` | Warm cream bg, centered stack, hero image, Playfair Display |\n| `darkroom` | `darkroom` | Navy bg, centered stack, grayscale image, Playfair Display |\n| `terminal` | `terminal` | Near-black, grid lines, monospace, neon green |\n| `poster` | `poster` | White bg, thick sidebar, oversized title, Barlow Condensed |\n\nCover extras (inject into tokens via `--abstract`, `--cover-image`):\n- `--abstract \"text\"` — abstract text block on the cover (magazine/darkroom)\n- `--cover-image \"url\"` — hero image URL/path (magazine, darkroom, poster)\n\n**Color overrides — always choose these based on document content:**\n- `--accent \"#HEX\"` — override the accent color; `accent_lt` is auto-derived by lightening toward white\n- `--cover-bg \"#HEX\"` — override the cover background color\n\n**Accent color selection guidance:**\n\nYou have creative authority over the accent color. Pick it from the document's semantic context — title, industry, purpose, audience — not from generic \"safe\" choices. The accent appears on section rules, callout bars, table headers, and the cover: it carries the document's visual identity.\n\n| Context | Suggested accent range |\n|---|---|\n| Legal / compliance / finance | Deep navy `#1C3A5E`, charcoal `#2E3440`, slate `#3D4C5E` |\n| Healthcare / medical | Teal-green `#2A6B5A`, cool green `#3A7D6A` |\n| Technology / engineering | Steel blue `#2D5F8A`, indigo `#3D4F8A` |\n| Environmental / sustainability | Forest `#2E5E3A`, olive `#4A5E2A` |\n| Creative / arts / culture | Burgundy `#6B2A35`, plum `#5A2A6B`, terracotta `#8A3A2A` |\n| Academic / research | Deep teal `#2A5A6B`, library blue `#2A4A6B` |\n| Corporate / neutral | Slate `#3D4A5A`, graphite `#444C56` |\n| Luxury / premium | Warm black `#1A1208`, deep bronze `#4A3820` |\n\n**Rule:** choose a color that a thoughtful designer would select for this specific document — not the type's default. Muted, desaturated tones work best; avoid vivid primaries. When in doubt, go darker and more neutral.\n\n**content.json block types:**\n\n| Block | Usage | Key fields |\n|---|---|---|\n| `h1` | Section heading + accent rule | `text` |\n| `h2` | Subsection heading | `text` |\n| `h3` | Sub-subsection (bold) | `text` |\n| `body` | Justified paragraph; supports `<b>` `<i>` markup | `text` |\n| `bullet` | Unordered list item (• prefix) | `text` |\n| `numbered` | Ordered list item — counter auto-resets on non-numbered blocks | `text` |\n| `callout` | Highlighted insight box with accent left bar | `text` |\n| `table` | Data table — accent header, alternating row tints | `headers`, `rows`, `col_widths`?, `caption`? |\n| `image` | Embedded image scaled to column width | `path`/`src`, `caption`? |\n| `figure` | Image with auto-numbered \"Figure N:\" caption | `path`/`src`, `caption`? |\n| `code` | Monospace code block with accent left border | `text`, `language`? |\n| `math` | Display math — LaTeX syntax via matplotlib mathtext | `text`, `label`?, `caption`? |\n| `chart` | Bar / line / pie chart rendered with matplotlib | `chart_type`, `labels`, `datasets`, `title`?, `x_label`?, `y_label`?, `caption`?, `figure`? |\n| `flowchart` | Process diagram with nodes + edges via matplotlib | `nodes`, `edges`, `caption`?, `figure`? |\n| `bibliography` | Numbered reference list with hanging indent | `items` [{id, text}], `title`? |\n| `divider` | Accent-colored full-width rule | — |\n| `caption` | Small muted label | `text` |\n| `pagebreak` | Force a new page | — |\n| `spacer` | Vertical whitespace | `pt` (default 12) |\n\n**chart / flowchart schemas:**\n```json\n{\"type\":\"chart\",\"chart_type\":\"bar\",\"labels\":[\"Q1\",\"Q2\",\"Q3\",\"Q4\"],\n \"datasets\":[{\"label\":\"Revenue\",\"values\":[120,145,132,178]}],\"caption\":\"Q results\"}\n\n{\"type\":\"flowchart\",\n \"nodes\":[{\"id\":\"s\",\"label\":\"Start\",\"shape\":\"oval\"},\n          {\"id\":\"p\",\"label\":\"Process\",\"shape\":\"rect\"},\n          {\"id\":\"d\",\"label\":\"Valid?\",\"shape\":\"diamond\"},\n          {\"id\":\"e\",\"label\":\"End\",\"shape\":\"oval\"}],\n \"edges\":[{\"from\":\"s\",\"to\":\"p\"},{\"from\":\"p\",\"to\":\"d\"},\n          {\"from\":\"d\",\"to\":\"e\",\"label\":\"Yes\"},{\"from\":\"d\",\"to\":\"p\",\"label\":\"No\"}]}\n\n{\"type\":\"bibliography\",\"items\":[\n  {\"id\":\"1\",\"text\":\"Author (Year). Title. Publisher.\"}]}\n```\n\n---\n\n## Route B: FILL\n\nFill form fields in an existing PDF without altering layout or design.\n\n```bash\n# Step 1: inspect\npython3 scripts/fill_inspect.py --input form.pdf\n\n# Step 2: fill\npython3 scripts/fill_write.py --input form.pdf --out filled.pdf \\\n  --values '{\"FirstName\": \"Jane\", \"Agree\": \"true\", \"Country\": \"US\"}'\n```\n\n| Field type | Value format |\n|---|---|\n| `text` | Any string |\n| `checkbox` | `\"true\"` or `\"false\"` |\n| `dropdown` | Must match a choice value from inspect output |\n| `radio` | Must match a radio value (often starts with `/`) |\n\nAlways run `fill_inspect.py` first to get exact field names.\n\n---\n\n## Route C: REFORMAT\n\nParse an existing document → content.json → CREATE pipeline.\n\n```bash\nbash scripts/make.sh reformat \\\n  --input source.md --title \"My Report\" --type report --out output.pdf\n```\n\n**Supported input formats:** `.md` `.txt` `.pdf` `.json`\n\n---\n\n## Environment\n\n```bash\nbash scripts/make.sh check   # verify all deps\nbash scripts/make.sh fix     # auto-install missing deps\nbash scripts/make.sh demo    # build a sample PDF\n```\n\n| Tool | Used by | Install |\n|---|---|---|\n| Python 3.9+ | all `.py` scripts | system |\n| `reportlab` | `render_body.py` | `pip install reportlab` |\n| `pypdf` | fill, merge, reformat | `pip install pypdf` |\n| Node.js 18+ | `render_cover.js` | system |\n| `playwright` + Chromium | `render_cover.js` | `npm install -g playwright && npx playwright install chromium` |"
+}

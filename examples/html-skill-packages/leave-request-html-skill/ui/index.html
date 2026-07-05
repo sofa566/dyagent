@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>員工請假技能</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <h1 id="title">員工請假申請</h1>
+      <p id="step-label">步驟 1/2</p>
+
+      <form id="step-form" class="form-grid">
+        <label>員工姓名<input name="employeeName" required /></label>
+        <label>員工編號<input name="employeeId" required /></label>
+        <label>
+          假別
+          <select name="leaveType" required>
+            <option value="annual">特休</option>
+            <option value="sick">病假</option>
+            <option value="personal">事假</option>
+          </select>
+        </label>
+        <label>開始日期<input name="startDate" type="date" required /></label>
+        <label>結束日期<input name="endDate" type="date" required /></label>
+        <label class="full">請假原因<textarea name="reason" rows="3" required></textarea></label>
+      </form>
+
+      <section id="review" class="review hidden"></section>
+      <p id="error-text" class="error"></p>
+
+      <div class="actions">
+        <button id="back-btn" type="button" class="btn secondary hidden">上一步</button>
+        <button id="cancel-btn" type="button" class="btn secondary">取消</button>
+        <button id="submit-btn" type="button" class="btn primary">下一步</button>
+      </div>
+    </main>
+
+    <script src="./main.js"></script>
+  </body>
+</html>

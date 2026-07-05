@@ -35,7 +35,7 @@
 
     const user = auth.getUser();
     if (!user || user.role !== 'admin') {
-      window.location.href = '/pages/dashboard.html';
+      window.location.href = '/pages/chat.html';
     }
 
     async function loadUsers() {

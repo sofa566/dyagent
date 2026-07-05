@@ -146,25 +146,16 @@ DELETE /api/agents/{id}
 
 ## 聊天 API
 
-### 發送訊息
+### 串流發送訊息
 
 ```
-POST /api/agents/{id}/chat
+GET /api/agents/{id}/chat/stream?message=<text>
 ```
 
-**Request Body**:
+**Response 200（SSE）**:
 ```json
-{
-  "message": "你好，請問你能做什麼？"
-}
-```
-
-**Response 200**:
-```json
-{
-  "response": "您好！我是客服助手，我可以回答產品相關問題...",
-  "conversation_id": "uuid"
-}
+data: {"type":"text","delta":"您好！"}
+data: {"type":"done","conversation_id":"uuid"}
 ```
 
 **Response 400**:
@@ -567,7 +558,7 @@ GET /api/logs/{id}
 | POST /api/agents | ✓ | ✗ | ✗ |
 | PUT /api/agents/{id} | ✓ | ✓ | ✗ |
 | DELETE /api/agents/{id} | ✓ | ✗ | ✗ |
-| POST /api/agents/{id}/chat | ✓ | ✓ | ✓ |
+| GET /api/agents/{id}/chat/stream | ✓ | ✓ | ✓ |
 | GET /api/logs | ✓ | ✗ | ✗ |
 | GET /api/users | ✓ | ✗ | ✗ |
 | PUT /api/users/{id}/role | ✓ | ✗ | ✗ |

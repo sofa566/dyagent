@@ -14,10 +14,13 @@
     "test:coverage": "vitest --coverage"
   },
   "devDependencies": {
-    "vite": "^5.0.12",
+    "@vitejs/plugin-basic-ssl": "^1.0.2",
     "eslint": "^8.56.0",
     "prettier": "^3.2.5",
-    "vitest": "^1.2.2",
-    "@vitejs/plugin-basic-ssl": "^1.0.2"
+    "vite": "^5.0.12",
+    "vitest": "^1.2.2"
+  },
+  "dependencies": {
+    "marked": "^17.0.5"
   }
 }

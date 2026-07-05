@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP 設定</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    /* 表單佈局 */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) {
+      .form-grid, .form-grid-3 { grid-template-columns: 1fr; }
+    }
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-weight: 500; margin-bottom: 4px; }
+    .form-group input[type="text"],
+    .form-group input[type="url"],
+    .form-group input[type="number"],
+    .form-group textarea,
+    .form-group select { width: 100%; box-sizing: border-box; }
+
+    /* 分頁導航 */
+    .tab-nav {
+      display: flex;
+      gap: 0;
+      border-bottom: 2px solid var(--border-color);
+      margin-bottom: 16px;
+    }
+    .tab-nav button {
+      background: none;
+      border: none;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      transition: all 0.2s;
+    }
+    .tab-nav button:hover { color: var(--text-primary); }
+    .tab-nav button.active {
+      color: var(--primary-color);
+      border-bottom-color: var(--primary-color);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* 測試區 */
+    .test-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .test-tabs .btn.active { background: var(--primary-color); color: #fff; }
+    .test-result {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 12px;
+      max-height: 200px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 13px;
+    }
+
+    /* 歷史記錄表格 */
+    .history-table { font-size: 13px; }
+    .history-table th { font-weight: 500; }
+    .history-table td, .history-table th { padding: 8px 12px; }
+
+    /* 按鈕列 */
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* Schema 載入狀態 */
+    .discover-meta {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin-left: 8px;
+    }
+
+    /* 動態表單 */
+    .dynamic-form-field { margin-top: 8px; }
+    .dynamic-form-field label { display: block; font-weight: 600; margin-bottom: 4px; }
+    .dynamic-form-field .field-desc { color: var(--text-secondary); font-size: 12px; margin-bottom: 4px; }
+    .dynamic-form-nested {
+      border: 1px dashed var(--border-color);
+      padding: 8px;
+      border-radius: var(--radius);
+      margin-top: 4px;
+    }
+    .dynamic-form-array-item {
+      border: 1px dashed var(--border-color);
+      padding: 8px;
+      border-radius: var(--radius);
+      margin-top: 4px;
+      position: relative;
+    }
+    .dynamic-form-array-item .btn-remove {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      padding: 2px 8px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h2 id="title">MCP 設定</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <!-- 基本設定 -->
+    <section class="card">
+      <h3>基本設定</h3>
+      <div class="form-grid-3">
+        <div class="form-group">
+          <label for="name">名稱 <span style="color:var(--error-color);">*</span></label>
+          <input id="name" type="text" placeholder="weather">
+        </div>
+        <div class="form-group">
+          <label for="transport">傳輸方式</label>
+          <select id="transport">
+            <option value="remote">remote（HTTP/WebSocket）</option>
+            <option value="stdio">stdio（本機程序）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>&nbsp;</label>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+            <input type="checkbox" id="enabled" checked> 啟用
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- 連線設定（分頁） -->
+    <section class="card">
+      <h3>連線設定</h3>
+      <div class="tab-nav">
+        <button type="button" class="active" id="tab-remote" data-tab="remote">Remote</button>
+        <button type="button" id="tab-local" data-tab="local">Local (stdio)</button>
+      </div>
+
+      <!-- Remote 面板 -->
+      <div id="panel-remote" class="tab-panel active">
+        <div class="form-group">
+          <label for="base_url">Base URL</label>
+          <input id="base_url" type="url" placeholder="https://mcp.example.com">
+          <small style="color:var(--text-secondary);">MCP 伺服器的 HTTP/WebSocket 端點</small>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="progress_field">Progress Field（可選）</label>
+            <input id="progress_field" type="text" placeholder="meta.progress">
+          </div>
+          <div class="form-group">
+            <label for="eta_field">ETA Field（可選）</label>
+            <input id="eta_field" type="text" placeholder="meta.eta_seconds">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="auth_json">Auth 配置（JSON，可選）</label>
+          <textarea id="auth_json" rows="3" placeholder='{"token": "your-api-key"}'></textarea>
+        </div>
+      </div>
+
+      <!-- Local 面板 -->
+      <div id="panel-local" class="tab-panel">
+        <div class="form-group">
+          <label for="command">Command</label>
+          <input id="command" type="text" placeholder="python">
+          <small style="color:var(--text-secondary);">要執行的程式</small>
+        </div>
+        <div class="form-group">
+          <label for="args">Args（JSON 陣列）</label>
+          <textarea id="args" rows="2" placeholder='["-m", "mcp_weather_server"]'></textarea>
+        </div>
+        <div class="form-group">
+          <label for="env">環境變數（JSON 物件，可選）</label>
+          <textarea id="env" rows="2" placeholder='{"API_KEY": "xxx"}'></textarea>
+        </div>
+      </div>
+    </section>
+
+    <!-- 輸入結構 -->
+    <section class="card">
+      <h3>輸入結構（JSON Schema）</h3>
+      <div class="form-group">
+        <label for="input_schema">定義此 MCP 接受的參數格式（可選）</label>
+        <textarea id="input_schema" rows="6" placeholder='{"type":"object","properties":{"q":{"type":"string"}}}'></textarea>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button id="discover-schema" class="btn" type="button">自動載入 Schema</button>
+        <span id="discover-meta" class="discover-meta"></span>
+      </div>
+    </section>
+
+    <!-- 操作按鈕 -->
+    <div class="btn-row" style="border-top:none;padding-top:0;margin-top:8px;">
+      <button id="save" class="btn btn-primary" type="button">儲存</button>
+      <button id="test" class="btn" type="button">測試連線</button>
+      <a class="btn" href="/pages/mcps.html">返回列表</a>
+    </div>
+
+    <!-- 表單測試 -->
+    <section class="card" style="margin-top:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;">表單測試</h3>
+        <small class="muted">依 input_schema 產生表單，僅本地驗證</small>
+      </div>
+
+      <div class="test-tabs">
+        <button type="button" id="mcp-tab-form" class="btn active">表單</button>
+        <button type="button" id="mcp-tab-json" class="btn">JSON</button>
+      </div>
+
+      <div id="mcp-test-form"></div>
+      <div id="mcp-test-json" style="display:none;">
+        <div class="form-group">
+          <label for="mcp_test_payload">測試 Payload（JSON）</label>
+          <textarea id="mcp_test_payload" rows="5" placeholder='{"q":"Taipei"}'></textarea>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <button id="btn-mcp-validate" class="btn" type="button">執行測試（本地驗證）</button>
+      </div>
+
+      <div id="mcp-test-error" class="error-message" style="display:none;margin-top:12px;"></div>
+      <pre id="mcp-test-result" class="test-result" style="margin-top:12px;display:none;"></pre>
+    </section>
+
+    <!-- 最近測試記錄 -->
+    <section class="card" style="margin-top:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;">最近測試記錄</h3>
+        <button id="btn-clear-history" class="btn" type="button">清除</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="table history-table">
+          <thead>
+            <tr>
+              <th>時間</th>
+              <th>狀態</th>
+              <th>耗時(ms)</th>
+              <th>傳輸</th>
+              <th>錯誤</th>
+            </tr>
+          </thead>
+          <tbody id="hist">
+            <tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:1rem;">載入中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      showError('僅限管理者存取');
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+
+    const u = new URL(window.location.href);
+    const id = u.searchParams.get('id');
+    const $ = (sel) => document.getElementById(sel);
+
+    // ========== 分頁切換 ==========
+    function setActiveTab(mode) {
+      const isRemote = mode === 'remote';
+
+      // 切換面板
+      $('panel-remote').classList.toggle('active', isRemote);
+      $('panel-local').classList.toggle('active', !isRemote);
+
+      // 切換分頁按鈕
+      $('tab-remote').classList.toggle('active', isRemote);
+      $('tab-local').classList.toggle('active', !isRemote);
+
+      // 同步下拉選單
+      $('transport').value = isRemote ? 'remote' : 'stdio';
+
+      // 更新標題
+      updateTitle();
+    }
+
+    function updateTitle() {
+      const name = ($('name').value || '').trim();
+      const mode = $('transport').value === 'remote' ? 'Remote' : 'Local';
+      const base = 'MCP 設定';
+      document.title = name ? `${base} - ${name} (${mode})` : `${base} (${mode})`;
+    }
+
+    $('tab-remote').addEventListener('click', () => setActiveTab('remote'));
+    $('tab-local').addEventListener('click', () => setActiveTab('local'));
+    $('transport').addEventListener('change', (e) => setActiveTab(e.target.value === 'remote' ? 'remote' : 'local'));
+    $('name').addEventListener('input', updateTitle);
+
+    // 初始狀態
+    setActiveTab('remote');
+
+    // ========== 載入資料 ==========
+    async function load() {
+      if (!id) return;
+      try {
+        const r = await api.get(`/mcps/${id}`);
+        $('title').textContent = `MCP 設定：${r.name}`;
+        $('name').value = r.name || '';
+        $('enabled').checked = !!r.enabled;
+        $('transport').value = r.transport || 'remote';
+        $('base_url').value = r.base_url || '';
+        $('progress_field').value = r.progress_field || '';
+        $('eta_field').value = r.eta_field || '';
+        $('auth_json').value = r.auth ? JSON.stringify(r.auth, null, 2) : '';
+        $('command').value = r.command || '';
+        $('args').value = Array.isArray(r.args) ? JSON.stringify(r.args, null, 2) : '';
+        $('env').value = r.env ? JSON.stringify(r.env, null, 2) : '';
+        $('input_schema').value = (r.input_schema && typeof r.input_schema === 'object')
+          ? JSON.stringify(r.input_schema, null, 2) : '';
+
+        setActiveTab((r.transport || 'remote') === 'remote' ? 'remote' : 'local');
+
+        // 渲染測試表單
+        try {
+          const schema = r.input_schema && typeof r.input_schema === 'object' ? r.input_schema : {};
+          renderMcpForm('mcp-test-form', schema);
+        } catch {}
+      } catch (e) {
+        showError(e.message || '載入失敗');
+      }
+    }
+
+    // ========== 儲存 ==========
+    function parseJsonArrayField(fieldId, fieldLabel) {
+      const rawValue = ($(fieldId).value || '').trim();
+      if (!rawValue) return [];
+      let parsed;
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch {
+        throw new Error(`${fieldLabel} 需為合法 JSON 陣列`);
+      }
+      if (!Array.isArray(parsed)) {
+        throw new Error(`${fieldLabel} 需為 JSON 陣列`);
+      }
+      return parsed;
+    }
+
+    function parseJsonObjectField(fieldId, fieldLabel) {
+      const rawValue = ($(fieldId).value || '').trim();
+      if (!rawValue) return {};
+      let parsed;
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch {
+        throw new Error(`${fieldLabel} 需為合法 JSON 物件`);
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`${fieldLabel} 需為 JSON 物件`);
+      }
+      return parsed;
+    }
+
+    async function save() {
+      try {
+        const transport = $('transport').value;
+        const commandValue = $('command').value.trim();
+        if (transport === 'stdio' && !commandValue) {
+          showError('stdio 模式必須填寫 Command');
+          return;
+        }
+        if (commandValue.startsWith('[')) {
+          showError('Command 需為單一字串，例如：python');
+          return;
+        }
+
+        const body = {
+          name: $('name').value.trim(),
+          enabled: $('enabled').checked,
+          transport,
+          base_url: $('base_url').value.trim(),
+          progress_field: $('progress_field').value.trim(),
+          eta_field: $('eta_field').value.trim(),
+          auth: {},
+          command: commandValue,
+          args: [],
+          env: {},
+          input_schema: {},
+        };
+
+        body.auth = parseJsonObjectField('auth_json', 'Auth');
+        body.args = parseJsonArrayField('args', 'Args');
+        body.env = parseJsonObjectField('env', 'Env');
+        body.input_schema = parseJsonObjectField('input_schema', 'input_schema');
+
+        if (id) {
+          await api.put(`/mcps/${id}`, body);
+        } else {
+          await api.post('/mcps', body);
+        }
+
+        showSuccess('已儲存');
+        setTimeout(() => { window.location.href = '/pages/mcps.html'; }, 600);
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
+    }
+
+    $('save').addEventListener('click', save);
+
+    // ========== 自動載入 Schema ==========
+    $('discover-schema').addEventListener('click', async () => {
+      try {
+        const payload = {
+          name: $('name').value.trim(),
+          transport: $('transport').value,
+          base_url: $('base_url').value.trim(),
+          command: $('command').value.trim(),
+        };
+
+        const authJson = $('auth_json').value.trim();
+        if (authJson) {
+          try { payload.auth = JSON.parse(authJson); }
+          catch { showError('Auth 需為合法 JSON'); return; }
+        }
+
+        const argsVal = $('args').value.trim();
+        if (argsVal) {
+          try { payload.args = JSON.parse(argsVal); }
+          catch { showError('Args 需為合法 JSON 陣列'); return; }
+        }
+
+        const envVal = $('env').value.trim();
+        if (envVal) {
+          try { payload.env = JSON.parse(envVal); }
+          catch { showError('Env 需為合法 JSON 物件'); return; }
+        }
+
+        const r = await api.post('/mcps/discover-schema-preview', payload);
+
+        if (!r || !r.ok) {
+          const toolNames = Array.isArray(r?.tools)
+            ? r.tools.map(t => t?.name).filter(Boolean).join(', ')
+            : '';
+          $('discover-meta').textContent = toolNames ? `找到工具：${toolNames}` : '';
+          showError(r?.error || '找不到可用 schema');
+          return;
+        }
+
+        const schema = r?.input_schema && typeof r.input_schema === 'object' ? r.input_schema : {};
+        $('input_schema').value = JSON.stringify(schema, null, 2);
+
+        const toolName = r?.tool_name ? `工具：${r.tool_name}` : '';
+        const tools = Array.isArray(r?.tools)
+          ? r.tools.map(t => t?.name).filter(Boolean).join(', ')
+          : '';
+        $('discover-meta').textContent = [
+          toolName,
+          tools ? `共 ${r.tools.length} 個：${tools}` : ''
+        ].filter(Boolean).join('；');
+
+        try { renderMcpForm('mcp-test-form', schema); } catch {}
+        showSuccess('已載入 schema，記得儲存');
+      } catch (e) {
+        showError(e.message || '自動載入 schema 失敗');
+      }
+    });
+
+    // ========== 測試連線 ==========
+    $('test').addEventListener('click', async () => {
+      try {
+        if (!id) {
+          showError('請先儲存後再測試');
+          return;
+        }
+        const r = await api.post(`/mcps/${id}/test`, {});
+        if (r?.ok) {
+          showSuccess('連線正常');
+        } else {
+          showError(r?.error || '測試失敗');
+        }
+        loadHistory();
+      } catch (e) {
+        showError(e.message || '測試失敗');
+      }
+    });
+
+    // ========== 歷史記錄 ==========
+    async function loadHistory() {
+      if (!id) {
+        $('hist').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:1rem;">尚未儲存</td></tr>';
+        return;
+      }
+      try {
+        const r = await api.get(`/mcps/${id}/tests?limit=20`);
+        const rows = Array.isArray(r.items) ? r.items : [];
+        if (rows.length === 0) {
+          $('hist').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:1rem;">尚無測試記錄</td></tr>';
+          return;
+        }
+        $('hist').innerHTML = rows.map(x => {
+          const d = x.details || {};
+          const ok = !!d.ok;
+          const ms = typeof d.duration_ms === 'number' ? d.duration_ms : '-';
+          const statusBadge = ok
+            ? '<span style="color:#16a34a;">成功</span>'
+            : '<span style="color:#dc2626;">失敗</span>';
+          return `<tr>
+            <td>${x.timestamp || '-'}</td>
+            <td>${statusBadge}</td>
+            <td>${ms}</td>
+            <td>${d.transport || '-'}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${d.error || '-'}</td>
+          </tr>`;
+        }).join('');
+      } catch {}
+    }
+
+    setInterval(loadHistory, 8000);
+    loadHistory();
+
+    // ========== 清除歷史記錄 ==========
+    $('btn-clear-history').addEventListener('click', async () => {
+      if (!id) {
+        showError('尚未儲存，無法清除');
+        return;
+      }
+      if (!confirm('確定要清除所有測試記錄嗎？')) return;
+      try {
+        await api.delete(`/mcps/${id}/tests`);
+        showSuccess('已清除測試記錄');
+        loadHistory();
+      } catch (e) {
+        showError(e.message || '清除失敗');
+      }
+    });
+
+    // ========== 表單/JSON 分頁（測試區） ==========
+    const tabForm = $('mcp-tab-form');
+    const tabJson = $('mcp-tab-json');
+    const boxForm = $('mcp-test-form');
+    const boxJson = $('mcp-test-json');
+
+    function activateTestTab(which) {
+      if (which === 'form') {
+        // JSON -> 表單同步
+        try {
+          const raw = $('input_schema').value.trim();
+          const schema = raw ? JSON.parse(raw) : {};
+          const j = $('mcp_test_payload').value.trim();
+          if (j && schema?.type === 'object') {
+            renderMcpForm('mcp-test-form', schema, JSON.parse(j));
+          } else {
+            renderMcpForm('mcp-test-form', schema);
+          }
+        } catch {
+          renderMcpForm('mcp-test-form', {});
+        }
+        boxForm.style.display = 'block';
+        boxJson.style.display = 'none';
+        tabForm.classList.add('active');
+        tabJson.classList.remove('active');
+      } else {
+        // 表單 -> JSON 同步
+        try {
+          const body = collectMcpForm('mcp-test-form');
+          $('mcp_test_payload').value = JSON.stringify(body, null, 2);
+        } catch {}
+        boxForm.style.display = 'none';
+        boxJson.style.display = 'block';
+        tabJson.classList.add('active');
+        tabForm.classList.remove('active');
+      }
+    }
+
+    tabForm.addEventListener('click', () => activateTestTab('form'));
+    tabJson.addEventListener('click', () => activateTestTab('json'));
+    activateTestTab('form');
+
+    // ========== 動態表單渲染 ==========
+    function renderMcpForm(containerId, schema, initial) {
+      const root = $(containerId);
+      root.innerHTML = '';
+
+      if (!schema || typeof schema !== 'object' || schema.type !== 'object' || !schema.properties) {
+        root.innerHTML = '<div class="muted">此 MCP 未提供可渲染的表單結構；請改用 JSON 分頁。</div>';
+        boxJson.style.display = 'block';
+        tabJson.classList.add('active');
+        tabForm.classList.remove('active');
+        return;
+      }
+
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      const init = (initial && typeof initial === 'object') ? initial : {};
+
+      Object.entries(schema.properties).forEach(([key, spec]) => {
+        const field = document.createElement('div');
+        field.className = 'dynamic-form-field';
+
+        // 標籤
+        const label = document.createElement('label');
+        const title = spec?.title || key;
+        label.textContent = title + (required.includes(key) ? ' *' : '');
+        field.appendChild(label);
+
+        // 說明
+        if (spec?.description) {
+          const desc = document.createElement('div');
+          desc.className = 'field-desc';
+          desc.textContent = spec.description;
+          field.appendChild(desc);
+        }
+
+        const fmt = spec?.format;
+        const t = spec?.type || 'string';
+        let inputEl = null;
+
+        if (spec && Array.isArray(spec.enum)) {
+          // 下拉選單
+          const sel = document.createElement('select');
+          sel.dataset.key = key;
+          spec.enum.forEach(v => {
+            const o = document.createElement('option');
+            o.value = String(v);
+            o.textContent = String(v);
+            sel.appendChild(o);
+          });
+          if (spec.default != null) sel.value = String(spec.default);
+          if (Object.prototype.hasOwnProperty.call(init, key)) sel.value = String(init[key]);
+          inputEl = sel;
+
+        } else if (t === 'boolean') {
+          // 勾選框
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.dataset.key = key;
+          cb.checked = !!spec.default;
+          if (Object.prototype.hasOwnProperty.call(init, key)) cb.checked = !!init[key];
+          inputEl = cb;
+
+        } else if (t === 'number' || t === 'integer') {
+          // 數字
+          const num = document.createElement('input');
+          num.type = 'number';
+          num.dataset.key = key;
+          if (typeof spec.minimum === 'number') num.min = String(spec.minimum);
+          if (typeof spec.maximum === 'number') num.max = String(spec.maximum);
+          if (spec.default != null) num.value = String(spec.default);
+          if (typeof init[key] === 'number') num.value = String(init[key]);
+          inputEl = num;
+
+        } else if (t === 'object' && spec.properties) {
+          // 巢狀物件
+          inputEl = renderNestedObject(key, spec, init[key]);
+
+        } else if (t === 'array') {
+          // 陣列
+          inputEl = renderArrayField(key, spec, init[key]);
+
+        } else {
+          // 文字
+          const txt = document.createElement('input');
+          txt.type = fmt === 'email' ? 'email'
+            : (fmt === 'uri' || fmt === 'url') ? 'url'
+            : fmt === 'date' ? 'date'
+            : fmt === 'date-time' ? 'datetime-local'
+            : 'text';
+          txt.dataset.key = key;
+          if (spec?.default != null) txt.value = String(spec.default);
+          if (spec?.pattern) txt.pattern = String(spec.pattern);
+          if (Object.prototype.hasOwnProperty.call(init, key)) txt.value = String(init[key]);
+          inputEl = txt;
+        }
+
+        if (inputEl) field.appendChild(inputEl);
+        root.appendChild(field);
+      });
+    }
+
+    function renderNestedObject(key, spec, initVal) {
+      const wrap = document.createElement('div');
+      wrap.className = 'dynamic-form-nested';
+      wrap.dataset.key = key;
+      wrap.dataset.type = 'object';
+
+      const subInit = (initVal && typeof initVal === 'object') ? initVal : {};
+
+      Object.entries(spec.properties).forEach(([k2, s2]) => {
+        const row = document.createElement('div');
+        row.style.marginTop = '6px';
+
+        const lb = document.createElement('label');
+        lb.textContent = s2.title || k2;
+        lb.style.display = 'block';
+        lb.style.fontWeight = '500';
+        row.appendChild(lb);
+
+        const t2 = s2.type || 'string';
+        let el;
+
+        if (Array.isArray(s2.enum)) {
+          el = document.createElement('select');
+          s2.enum.forEach(v => {
+            const o = document.createElement('option');
+            o.value = String(v);
+            o.textContent = String(v);
+            el.appendChild(o);
+          });
+          if (s2.default != null) el.value = String(s2.default);
+          if (Object.prototype.hasOwnProperty.call(subInit, k2)) el.value = String(subInit[k2]);
+        } else if (t2 === 'boolean') {
+          el = document.createElement('input');
+          el.type = 'checkbox';
+          el.checked = !!s2.default;
+          if (Object.prototype.hasOwnProperty.call(subInit, k2)) el.checked = !!subInit[k2];
+        } else if (t2 === 'number' || t2 === 'integer') {
+          el = document.createElement('input');
+          el.type = 'number';
+          if (typeof s2.minimum === 'number') el.min = String(s2.minimum);
+          if (typeof s2.maximum === 'number') el.max = String(s2.maximum);
+          if (s2.default != null) el.value = String(s2.default);
+          if (typeof subInit[k2] === 'number') el.value = String(subInit[k2]);
+        } else {
+          el = document.createElement('input');
+          el.type = 'text';
+          if (s2.default != null) el.value = String(s2.default);
+          if (Object.prototype.hasOwnProperty.call(subInit, k2)) el.value = String(subInit[k2]);
+        }
+
+        el.dataset.key = k2;
+        row.appendChild(el);
+        wrap.appendChild(row);
+      });
+
+      return wrap;
+    }
+
+    function renderArrayField(key, spec, initVal) {
+      const wrap = document.createElement('div');
+      wrap.dataset.key = key;
+      wrap.dataset.type = 'array';
+
+      const list = document.createElement('div');
+      wrap.appendChild(list);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn';
+      btn.textContent = '+ 新增一列';
+      btn.style.marginTop = '8px';
+      wrap.appendChild(btn);
+
+      function addItem(def) {
+        const item = document.createElement('div');
+        item.className = 'dynamic-form-array-item';
+
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'btn btn-remove';
+        rm.textContent = '移除';
+        rm.addEventListener('click', () => item.remove());
+        item.appendChild(rm);
+
+        const it = spec.items || {};
+        if (it.type === 'object' && it.properties) {
+          Object.entries(it.properties).forEach(([k2, s2]) => {
+            const row = document.createElement('div');
+            row.style.marginTop = '6px';
+
+            const lb = document.createElement('label');
+            lb.textContent = s2.title || k2;
+            lb.style.display = 'block';
+            lb.style.fontWeight = '500';
+            row.appendChild(lb);
+
+            const t2 = s2.type || 'string';
+            let el;
+
+            if (Array.isArray(s2.enum)) {
+              el = document.createElement('select');
+              s2.enum.forEach(v => {
+                const o = document.createElement('option');
+                o.value = String(v);
+                o.textContent = String(v);
+                el.appendChild(o);
+              });
+              if (s2.default != null) el.value = String(s2.default);
+              if (def?.[k2] != null) el.value = String(def[k2]);
+            } else if (t2 === 'boolean') {
+              el = document.createElement('input');
+              el.type = 'checkbox';
+              el.checked = !!s2.default;
+              if (def?.[k2] != null) el.checked = !!def[k2];
+            } else if (t2 === 'number' || t2 === 'integer') {
+              el = document.createElement('input');
+              el.type = 'number';
+              if (typeof s2.minimum === 'number') el.min = String(s2.minimum);
+              if (typeof s2.maximum === 'number') el.max = String(s2.maximum);
+              if (s2.default != null) el.value = String(s2.default);
+              if (typeof def?.[k2] === 'number') el.value = String(def[k2]);
+            } else {
+              el = document.createElement('input');
+              el.type = 'text';
+              if (s2.default != null) el.value = String(s2.default);
+              if (def?.[k2] != null) el.value = String(def[k2]);
+            }
+
+            el.dataset.key = k2;
+            row.appendChild(el);
+            item.appendChild(row);
+          });
+        } else {
+          const el = document.createElement('input');
+          el.type = 'text';
+          el.dataset.key = '__scalar__';
+          if (def != null) el.value = String(def);
+          item.appendChild(el);
+        }
+
+        list.appendChild(item);
+      }
+
+      btn.addEventListener('click', () => addItem(undefined));
+
+      // 初始值
+      if (Array.isArray(spec.default)) spec.default.forEach(v => addItem(v));
+      if (Array.isArray(initVal)) initVal.forEach(v => addItem(v));
+
+      return wrap;
+    }
+
+    // ========== 收集表單資料 ==========
+    function collectMcpForm(containerId) {
+      const root = $(containerId);
+      const payload = {};
+      const fields = Array.from(root.children);
+
+      for (const field of fields) {
+        const arrayBlock = field.querySelector('[data-type="array"]');
+        const objectBlock = field.querySelector('[data-type="object"]');
+
+        if (arrayBlock) {
+          const key = arrayBlock.dataset.key;
+          const items = [];
+          arrayBlock.querySelectorAll(':scope > div > div').forEach(item => {
+            const scalar = item.querySelector('input[data-key="__scalar__"]');
+            if (scalar) {
+              items.push(scalar.value);
+            } else {
+              const obj = {};
+              item.querySelectorAll('[data-key]').forEach(el => {
+                const k = el.dataset.key;
+                if (el.type === 'checkbox') obj[k] = !!el.checked;
+                else if (el.type === 'number') obj[k] = Number(el.value || 0);
+                else obj[k] = el.value;
+              });
+              items.push(obj);
+            }
+          });
+          payload[key] = items;
+          continue;
+        }
+
+        if (objectBlock) {
+          const key = objectBlock.dataset.key;
+          const obj = {};
+          objectBlock.querySelectorAll('[data-key]').forEach(el => {
+            const k = el.dataset.key;
+            if (el.type === 'checkbox') obj[k] = !!el.checked;
+            else if (el.type === 'number') obj[k] = Number(el.value || 0);
+            else obj[k] = el.value;
+          });
+          payload[key] = obj;
+          continue;
+        }
+
+        const inp = field.querySelector('[data-key]');
+        if (!inp) continue;
+
+        const key = inp.dataset.key;
+        if (inp.tagName === 'SELECT') {
+          payload[key] = inp.value;
+        } else if (inp.type === 'checkbox') {
+          payload[key] = !!inp.checked;
+        } else if (inp.type === 'number') {
+          payload[key] = inp.value.trim() === '' ? null : Number(inp.value);
+        } else {
+          payload[key] = inp.value;
+        }
+      }
+
+      return payload;
+    }
+
+    // ========== 執行測試 ==========
+    $('btn-mcp-validate').addEventListener('click', () => {
+      const err = $('mcp-test-error');
+      const out = $('mcp-test-result');
+      err.style.display = 'none';
+      out.style.display = 'none';
+      out.textContent = '';
+
+      try {
+        let payload = {};
+        if (boxJson.style.display !== 'none') {
+          const raw = ($('mcp_test_payload').value || '').trim();
+          if (raw) payload = JSON.parse(raw);
+        } else {
+          payload = collectMcpForm('mcp-test-form');
+        }
+
+        out.textContent = JSON.stringify({ ok: true, payload }, null, 2);
+        out.style.display = 'block';
+      } catch (e) {
+        err.textContent = e?.message || '測試失敗';
+        err.style.display = 'block';
+      }
+    });
+
+    // ========== Schema 變更時重新渲染表單 ==========
+    $('input_schema').addEventListener('input', () => {
+      try {
+        const raw = $('input_schema').value.trim();
+        const schema = raw ? JSON.parse(raw) : {};
+        renderMcpForm('mcp-test-form', schema);
+      } catch {
+        $('mcp-test-form').innerHTML = '<div class="error-message">input_schema 不是合法 JSON，請修正或改用 JSON 分頁。</div>';
+      }
+    });
+
+    // ========== 初始化 ==========
+    load();
+  </script>
+</body>
+</html>

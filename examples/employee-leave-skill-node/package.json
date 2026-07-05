@@ -1,0 +1,14 @@
+{
+  "name": "employee-leave-skill-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "員工請假技能範例（前端兩步驟表單 + Node.js BFF + 假應用系統 API）",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

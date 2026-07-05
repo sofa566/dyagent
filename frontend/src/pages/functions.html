@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Functions 管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 1.5rem;
+    }
+    .page-header h2 { margin: 0; }
+    .page-header .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 0;
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .section-header h3 { margin: 0; }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-success { background: #dcfce7; color: #166534; }
+    .badge-secondary { background: #f1f5f9; color: #64748b; }
+    .table-container {
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .table-container .table {
+      margin: 0;
+      border: none;
+    }
+    .table td { vertical-align: middle; }
+    .table .actions-cell {
+      white-space: nowrap;
+    }
+    .table .actions-cell .btn {
+      padding: 4px 10px;
+      font-size: 13px;
+    }
+    .empty-row td {
+      text-align: center;
+      color: var(--text-secondary);
+      padding: 2rem !important;
+    }
+
+    /* Modal 樣式 */
+    .modal-content.modal-lg {
+      max-width: 800px;
+      width: 95%;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .modal-header h3 { margin: 0; }
+    .modal-close {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      padding: 0;
+      line-height: 1;
+    }
+    .modal-close:hover { color: var(--text-primary); }
+
+    /* 表單樣式 */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 120px;
+      gap: 12px;
+    }
+    @media (max-width: 700px) {
+      .form-grid { grid-template-columns: 1fr; }
+    }
+    .form-group { margin-bottom: 14px; }
+    .form-group label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+    .form-group input,
+    .form-group textarea,
+    .form-group select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .preset-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .preset-row select { width: auto; min-width: 200px; }
+    .hint-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-top: 8px;
+      padding: 10px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius);
+    }
+    .hint-text code {
+      background: var(--card-bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .checkbox-label input { width: auto; margin: 0; }
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* 預覽區 */
+    .preview-box {
+      margin-top: 16px;
+      padding: 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+    }
+    .preview-box h4 {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+    }
+    .preview-box .form-group:last-child { margin-bottom: 0; }
+    .preview-box input,
+    .preview-box textarea {
+      background: var(--card-bg);
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Functions 管理</h2>
+      <div class="actions">
+        <button id="btn-new" class="btn btn-primary" type="button">新建</button>
+        <button id="btn-refresh" class="btn" type="button">重新整理</button>
+      </div>
+    </div>
+
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <p class="muted" style="margin-bottom:1rem;">
+      Functions 定義模板（工具呼叫協定）是「給模型看的規格」，規範模型何時呼叫工具及輸出格式。僅限 admin 建立，agent_admin 可在代理設定頁綁定。
+    </p>
+
+    <!-- Function Profiles 清單 -->
+    <section class="card">
+      <div class="section-header">
+        <h3>Function Profiles 清單</h3>
+      </div>
+      <div class="table-container">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>名稱</th>
+              <th>格式</th>
+              <th>版本</th>
+              <th>狀態</th>
+              <th>說明</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="rows">
+            <tr class="empty-row"><td colspan="6">載入中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 新建/匯入 Modal -->
+    <div id="function-modal" class="modal">
+      <div class="modal-content modal-lg">
+        <div class="modal-header">
+          <h3 id="modal-title">新建 Function Profile</h3>
+          <button type="button" class="modal-close" id="modal-close">&times;</button>
+        </div>
+
+        <!-- 表單內容 -->
+        <div id="tab-manual">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="name">名稱 *</label>
+              <input id="name" type="text" placeholder="例如：generic-strict">
+            </div>
+            <div class="form-group">
+              <label for="provider">供應商（可選）</label>
+              <input id="provider" type="text" placeholder="例如：openai">
+            </div>
+            <div class="form-group">
+              <label for="version">版本</label>
+              <input id="version" type="number" min="1" step="1" value="1">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="description">說明（可選）</label>
+            <textarea id="description" rows="2" placeholder="描述此 Function Profile 的用途與適用情境"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input id="enabled" type="checkbox" checked>
+              <span>啟用此 Function Profile</span>
+            </label>
+          </div>
+
+          <!-- 格式選擇 -->
+          <div class="form-group">
+            <label>格式類型</label>
+            <div class="preset-row">
+              <select id="format-type">
+                <option value="template">提示詞模板（傳統）</option>
+                <option value="openai">OpenAI Function Calling</option>
+              </select>
+            </div>
+            <p class="hint-text" style="margin-top:8px;">
+              <strong>提示詞模板</strong>：純文字指引，教導模型如何呼叫工具<br>
+              <strong>OpenAI Function Calling</strong>：JSON Schema 格式，支援結構化參數定義
+            </p>
+          </div>
+
+          <!-- 提示詞模板格式區塊 -->
+          <div id="template-section">
+            <div class="form-group">
+              <label>模板範本</label>
+              <div class="preset-row">
+                <select id="template-preset">
+                  <option value="">— 請選擇範本 —</option>
+                  <option value="generic-strict">通用嚴謹版（推薦）</option>
+                  <option value="generic-compact">通用精簡版</option>
+                  <option value="tool-first">工具優先版</option>
+                </select>
+                <button id="btn-apply-preset" class="btn" type="button">套用範本</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="template">Functions 定義模板 *</label>
+              <textarea id="template" rows="10" placeholder="貼上工具呼叫協定模板。建議先套用範本再調整。"></textarea>
+            </div>
+
+            <div class="hint-text">
+              若不確定如何撰寫，建議先用「通用嚴謹版」。此範本會要求模型只在需要時輸出：<code>[[CALL tool=工具名稱]]</code>，下一行接 JSON 參數。
+            </div>
+          </div>
+
+          <!-- OpenAI Function Calling 格式區塊 -->
+          <div id="openai-section" style="display:none;">
+            <div class="form-group">
+              <label for="handler-type">執行器類型</label>
+              <select id="handler-type">
+                <option value="internal">internal（內建服務）</option>
+                <option value="webhook">webhook（HTTP 呼叫）</option>
+                <option value="mcp">mcp（MCP 協定）</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="parameters">參數定義（JSON Schema）*</label>
+              <textarea id="parameters" rows="10" placeholder='{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "搜尋關鍵字"
+    },
+    "limit": {
+      "type": "integer",
+      "default": 10
+    }
+  },
+  "required": ["query"]
+}'></textarea>
+              <p id="parameters-error" class="error-text" style="display:none;color:#dc2626;font-size:13px;margin-top:4px;"></p>
+            </div>
+
+            <div class="form-group">
+              <label for="handler-config">執行器配置（JSON，選填）</label>
+              <textarea id="handler-config" rows="6" placeholder='{
+  "endpoint": "https://api.example.com/search",
+  "method": "POST",
+  "headers": { "Authorization": "Bearer xxx" }
+}'></textarea>
+              <p id="handler-config-error" class="error-text" style="display:none;color:#dc2626;font-size:13px;margin-top:4px;"></p>
+            </div>
+
+            <div class="hint-text">
+              <strong>執行器類型說明：</strong><br>
+              • <code>internal</code>：呼叫內建服務（如 RAG 查詢）<br>
+              • <code>webhook</code>：HTTP POST 到指定 endpoint<br>
+              • <code>mcp</code>：透過 MCP 協定呼叫遠端工具
+            </div>
+          </div>
+
+          <div class="btn-row">
+            <button id="btn-save" class="btn btn-primary" type="button">建立</button>
+            <button id="btn-cancel" class="btn" type="button">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      showError('僅限管理者存取');
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+
+    const $ = (id) => document.getElementById(id);
+
+    // DOM 元素
+    const rows = $('rows');
+    const functionModal = $('function-modal');
+    const modalTitle = $('modal-title');
+    const modalClose = $('modal-close');
+    const newBtn = $('btn-new');
+    const refreshBtn = $('btn-refresh');
+
+    // 手動建立表單
+    const nameInput = $('name');
+    const providerInput = $('provider');
+    const versionInput = $('version');
+    const descriptionInput = $('description');
+    const enabledInput = $('enabled');
+    const templateInput = $('template');
+    const templatePresetSelect = $('template-preset');
+    const applyPresetBtn = $('btn-apply-preset');
+    const saveBtn = $('btn-save');
+    const cancelBtn = $('btn-cancel');
+
+    // OpenAI 格式欄位
+    const formatTypeSelect = $('format-type');
+    const templateSection = $('template-section');
+    const openaiSection = $('openai-section');
+    const handlerTypeSelect = $('handler-type');
+    const parametersInput = $('parameters');
+    const handlerConfigInput = $('handler-config');
+    const parametersError = $('parameters-error');
+    const handlerConfigError = $('handler-config-error');
+
+    let editingId = '';
+
+    const TEMPLATE_PRESETS = {
+      'generic-strict': `你是具備工具能力的助理。
+
+規則：
+1) 只有在真的需要外部資料、計算或系統動作時才呼叫工具。
+2) 呼叫工具時，輸出必須「且只能」是兩行：
+   第 1 行：[[CALL tool=<tool_name>]]
+   第 2 行：合法 JSON 物件（工具參數）
+3) 不可在工具呼叫前後加任何解釋文字。
+4) 若不需工具，直接回覆最終答案。
+
+示例：
+[[CALL tool=weather_query]]
+{"city":"Taipei","unit":"celsius"}`,
+      'generic-compact': `需要工具時僅輸出：
+[[CALL tool=<tool_name>]]
+{...json payload...}
+
+不需要工具時直接回答。`,
+      'tool-first': `你優先使用可用工具取得事實。
+若需要工具，必須輸出：
+[[CALL tool=<tool_name>]]
+<JSON參數>
+不允許其他文字。
+若不需要工具，直接輸出最終答案。`,
+    };
+
+    // ========== Modal 控制 ==========
+    function openModal(isEdit = false) {
+      if (isEdit) {
+        modalTitle.textContent = '編輯 Function Profile';
+        saveBtn.textContent = '儲存';
+      } else {
+        modalTitle.textContent = '新建 Function Profile';
+        saveBtn.textContent = '建立';
+      }
+      functionModal.classList.add('active');
+    }
+
+    function closeModal() {
+      functionModal.classList.remove('active');
+      resetForm();
+    }
+
+    function resetForm() {
+      editingId = '';
+      nameInput.value = '';
+      providerInput.value = '';
+      versionInput.value = '1';
+      descriptionInput.value = '';
+      enabledInput.checked = true;
+      templateInput.value = '';
+      templatePresetSelect.value = '';
+      // OpenAI 格式欄位
+      formatTypeSelect.value = 'template';
+      handlerTypeSelect.value = 'internal';
+      parametersInput.value = '';
+      handlerConfigInput.value = '';
+      parametersError.style.display = 'none';
+      handlerConfigError.style.display = 'none';
+      // 切換顯示
+      updateFormatSection();
+    }
+
+    // 格式切換
+    function updateFormatSection() {
+      const isOpenai = formatTypeSelect.value === 'openai';
+      templateSection.style.display = isOpenai ? 'none' : 'block';
+      openaiSection.style.display = isOpenai ? 'block' : 'none';
+    }
+
+    // JSON 驗證
+    function validateJson(input, errorEl) {
+      const value = (input.value || '').trim();
+      if (!value) {
+        errorEl.style.display = 'none';
+        return { valid: true, value: null };
+      }
+      try {
+        const parsed = JSON.parse(value);
+        errorEl.style.display = 'none';
+        return { valid: true, value: parsed };
+      } catch (e) {
+        errorEl.textContent = `JSON 格式錯誤：${e.message}`;
+        errorEl.style.display = 'block';
+        return { valid: false, value: null };
+      }
+    }
+
+    // ========== 清單載入 ==========
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    async function load() {
+      try {
+        const res = await api.get('/functions');
+        const list = Array.isArray(res.functions) ? res.functions : [];
+        if (list.length === 0) {
+          rows.innerHTML = '<tr class="empty-row"><td colspan="6">尚無 Function Profile，請點擊「新建」建立</td></tr>';
+        } else {
+          rows.innerHTML = list.map((item) => {
+            // 判斷格式類型
+            const hasParams = item.parameters && Object.keys(item.parameters).length > 0;
+            const hasTemplate = !!(item.template || item.function_definition_template);
+            let formatBadge = '';
+            if (hasParams && !hasTemplate) {
+              formatBadge = `<span class="badge" style="background:#dbeafe;color:#1e40af;">OpenAI</span>`;
+            } else if (hasTemplate && !hasParams) {
+              formatBadge = `<span class="badge" style="background:#fef3c7;color:#92400e;">模板</span>`;
+            } else if (hasParams && hasTemplate) {
+              formatBadge = `<span class="badge" style="background:#e0e7ff;color:#3730a3;">混合</span>`;
+            } else {
+              formatBadge = `<span class="muted">-</span>`;
+            }
+            // 顯示 handler_type
+            if (hasParams && item.handler_type) {
+              formatBadge += ` <span class="muted" style="font-size:11px;">${escapeHtml(item.handler_type)}</span>`;
+            }
+            return `
+            <tr>
+              <td><strong>${escapeHtml(item.name)}</strong></td>
+              <td>${formatBadge}</td>
+              <td>${Number.isFinite(item.version) ? item.version : '-'}</td>
+              <td>${item.enabled
+                ? '<span class="badge badge-success">啟用</span>'
+                : '<span class="badge badge-secondary">停用</span>'}</td>
+              <td>${escapeHtml(item.description) || '<span class="muted">-</span>'}</td>
+              <td class="actions-cell">
+                <button class="btn" data-edit="${item.id}">編輯</button>
+                <button class="btn" data-del="${item.id}">刪除</button>
+              </td>
+            </tr>
+          `;}).join('');
+        }
+        window.__functionProfiles = list;
+      } catch (e) {
+        showError(e.message || '載入失敗');
+        rows.innerHTML = '<tr class="empty-row"><td colspan="6">載入失敗</td></tr>';
+      }
+    }
+
+    // ========== 手動建立/編輯 ==========
+    function fillFormById(id) {
+      const list = Array.isArray(window.__functionProfiles) ? window.__functionProfiles : [];
+      const found = list.find((item) => String(item.id) === String(id));
+      if (!found) {
+        showError('找不到指定的 Function Profile');
+        return;
+      }
+      editingId = String(found.id || '');
+      nameInput.value = found.name || '';
+      providerInput.value = found.provider || '';
+      versionInput.value = String(found.version || 1);
+      descriptionInput.value = found.description || '';
+      enabledInput.checked = !!found.enabled;
+
+      // 根據資料判斷格式類型
+      const hasParameters = found.parameters && Object.keys(found.parameters).length > 0;
+      const hasTemplate = !!(found.template || found.function_definition_template);
+
+      if (hasParameters && !hasTemplate) {
+        // OpenAI 格式
+        formatTypeSelect.value = 'openai';
+        handlerTypeSelect.value = found.handler_type || 'internal';
+        parametersInput.value = JSON.stringify(found.parameters, null, 2);
+        handlerConfigInput.value = found.handler_config ? JSON.stringify(found.handler_config, null, 2) : '';
+        templateInput.value = '';
+      } else {
+        // 傳統模板格式
+        formatTypeSelect.value = 'template';
+        templateInput.value = found.template || found.function_definition_template || '';
+        handlerTypeSelect.value = found.handler_type || 'internal';
+        parametersInput.value = found.parameters ? JSON.stringify(found.parameters, null, 2) : '';
+        handlerConfigInput.value = found.handler_config ? JSON.stringify(found.handler_config, null, 2) : '';
+      }
+
+      templatePresetSelect.value = '';
+      parametersError.style.display = 'none';
+      handlerConfigError.style.display = 'none';
+      updateFormatSection();
+      openModal(true);
+    }
+
+    function applyTemplatePreset() {
+      const key = String(templatePresetSelect.value || '');
+      if (!key || !TEMPLATE_PRESETS[key]) {
+        showError('請先選擇模板範本');
+        return;
+      }
+      templateInput.value = TEMPLATE_PRESETS[key];
+      showSuccess('已套用範本');
+    }
+
+    async function saveForm() {
+      const isOpenai = formatTypeSelect.value === 'openai';
+
+      const payload = {
+        name: String(nameInput.value || '').trim(),
+        provider: String(providerInput.value || '').trim(),
+        version: parseInt(versionInput.value, 10) || 1,
+        description: String(descriptionInput.value || ''),
+        enabled: !!enabledInput.checked,
+      };
+
+      if (!payload.name) {
+        showError('名稱為必填');
+        return;
+      }
+
+      if (isOpenai) {
+        // OpenAI Function Calling 格式
+        const paramsResult = validateJson(parametersInput, parametersError);
+        const configResult = validateJson(handlerConfigInput, handlerConfigError);
+
+        if (!paramsResult.valid || !configResult.valid) {
+          showError('請修正 JSON 格式錯誤');
+          return;
+        }
+
+        if (!paramsResult.value) {
+          showError('參數定義（JSON Schema）為必填');
+          return;
+        }
+
+        payload.parameters = paramsResult.value;
+        payload.handler_type = handlerTypeSelect.value || 'internal';
+        payload.handler_config = configResult.value;
+        // 清空舊格式欄位
+        payload.template = null;
+        payload.function_definition_template = null;
+      } else {
+        // 傳統模板格式
+        const template = String(templateInput.value || '').trim();
+        if (!template) {
+          showError('模板為必填');
+          return;
+        }
+        payload.function_definition_template = template;
+        payload.template = template;
+        // OpenAI 欄位設為 null
+        payload.parameters = null;
+        payload.handler_type = 'internal';
+        payload.handler_config = null;
+      }
+
+      try {
+        if (editingId) {
+          await api.put(`/functions/${editingId}`, payload);
+          showSuccess('已更新 Function Profile');
+        } else {
+          await api.post('/functions', payload);
+          showSuccess('已建立 Function Profile');
+        }
+        closeModal();
+        await load();
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
+    }
+
+    // ========== 事件綁定 ==========
+    rows.addEventListener('click', async (e) => {
+      const editId = e.target.getAttribute('data-edit');
+      const delId = e.target.getAttribute('data-del');
+      if (editId) {
+        fillFormById(editId);
+        return;
+      }
+      if (delId) {
+        const ok = window.confirm('確定刪除此 Function Profile？');
+        if (!ok) return;
+        try {
+          await api.delete(`/functions/${delId}`);
+          showSuccess('已刪除 Function Profile');
+          await load();
+        } catch (e) {
+          showError(e.message || '刪除失敗');
+        }
+      }
+    });
+
+    newBtn.addEventListener('click', () => {
+      resetForm();
+      openModal(false);
+    });
+
+    refreshBtn.addEventListener('click', load);
+    applyPresetBtn.addEventListener('click', applyTemplatePreset);
+    saveBtn.addEventListener('click', saveForm);
+    cancelBtn.addEventListener('click', closeModal);
+    modalClose.addEventListener('click', closeModal);
+
+    // 格式類型切換
+    formatTypeSelect.addEventListener('change', updateFormatSection);
+
+    // JSON 即時驗證
+    parametersInput.addEventListener('blur', () => validateJson(parametersInput, parametersError));
+    handlerConfigInput.addEventListener('blur', () => validateJson(handlerConfigInput, handlerConfigError));
+
+    // 點擊 modal 背景關閉
+    functionModal.addEventListener('click', (e) => {
+      if (e.target === functionModal) {
+        closeModal();
+      }
+    });
+
+    // ESC 鍵關閉 modal
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && functionModal.classList.contains('active')) {
+        closeModal();
+      }
+    });
+
+    // 初始載入
+    load();
+  </script>
+</body>
+</html>

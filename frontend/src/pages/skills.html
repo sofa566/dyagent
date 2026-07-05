@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>技能管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .modal-content { max-width: 700px; width: 95%; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+    .modal-header h3 { margin: 0; }
+    .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-secondary); padding: 0; line-height: 1; }
+    .modal-close:hover { color: var(--text-primary); }
+    .preview-box { margin-top: 16px; padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); }
+    .preview-box h4 { margin: 0 0 12px 0; font-size: 14px; }
+    .btn-row { display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-color); }
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-weight: 500; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>技能管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">
+      <button id="btn-new" class="btn btn-primary" type="button">新增技能</button>
+      <button id="btn-import-zip" class="btn" type="button">匯入 Claude Skill ZIP</button>
+    </div>
+
+    <!-- 匯入 ZIP Modal -->
+    <div id="import-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>匯入 Claude Skill ZIP</h3>
+          <button type="button" class="modal-close" id="modal-close">&times;</button>
+        </div>
+
+        <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
+          上傳包含 SKILL.md + scripts/ + references/ 的 ZIP 檔案，系統會自動建立對應的技能。
+        </p>
+
+        <div class="form-group">
+          <label>選擇 ZIP 檔案</label>
+          <input type="file" id="zip-file" accept=".zip" style="padding:8px;">
+        </div>
+
+        <div id="zip-preview" class="preview-box" style="display:none;">
+          <h4>解析結果</h4>
+          <div class="form-group">
+            <label>名稱</label>
+            <input id="preview-name" type="text" readonly>
+          </div>
+          <div class="form-group">
+            <label>說明</label>
+            <input id="preview-description" type="text" readonly>
+          </div>
+          <div class="form-group">
+            <label>提示詞模板（前 300 字）</label>
+            <textarea id="preview-template" rows="4" readonly></textarea>
+          </div>
+          <div id="preview-scripts" style="display:none;margin-top:8px;">
+            <strong>scripts/</strong>: <span id="scripts-list"></span>
+          </div>
+          <div id="preview-refs" style="display:none;margin-top:8px;">
+            <strong>references/</strong>: <span id="refs-list"></span>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-parse">解析預覽</button>
+          <button type="button" class="btn btn-primary" id="btn-confirm" disabled>確認匯入</button>
+          <button type="button" class="btn" id="btn-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+    <table class="table">
+      <thead>
+        <tr><th>名稱</th><th>狀態</th><th>格式</th><th>執行類型</th><th>說明</th><th>操作</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+    if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      document.getElementById('error-message').textContent = '僅限管理者存取';
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+
+    const $ = (id) => document.getElementById(id);
+    const rows = $('rows');
+    const importModal = $('import-modal');
+    let parsedZip = null;
+
+    async function load() {
+      try {
+        const res = await api.get('/skills');
+        const list = Array.isArray(res.skills) ? res.skills : [];
+        if (list.length === 0) {
+          rows.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2rem;">尚無技能，請點擊「新增技能」或「匯入 ZIP」</td></tr>';
+        } else {
+          rows.innerHTML = list.map(s => {
+            // 技能格式 badge
+            let formatBadge = '';
+            const st = s.skill_type || 'executable';
+            if (st === 'prompt') {
+              formatBadge = '<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:8px;font-size:12px;">prompt</span>';
+            } else if (st === 'hybrid') {
+              formatBadge = '<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:8px;font-size:12px;">hybrid</span>';
+            } else {
+              formatBadge = '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:12px;">executable</span>';
+            }
+            // 是否有 ZIP
+            if (s.has_zip) {
+              formatBadge += ' <span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:6px;font-size:11px;">ZIP</span>';
+            }
+            return `<tr>
+              <td>${s.name}</td>
+              <td>${s.enabled ? '啟用' : '停用'}</td>
+              <td>${formatBadge}</td>
+              <td>${s.type || 'webhook'}</td>
+              <td>${s.description || ''}</td>
+              <td>
+                <a class="btn" href="/pages/skill-edit.html?id=${s.id}">編輯</a>
+                <button class="btn" data-del="${s.id}">刪除</button>
+              </td>
+            </tr>`;
+          }).join('');
+        }
+      } catch (e) { showError(e.message || '載入失敗'); }
+    }
+
+    rows.addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-del');
+      if (id) {
+        const ok = window.confirm('確定刪除此技能？');
+        if (!ok) return;
+        try { await api.delete(`/skills/${id}`); load(); } catch (e) { showError(e.message || '刪除失敗'); }
+      }
+    });
+
+    // 新增技能
+    $('btn-new').addEventListener('click', () => { window.location.href = '/pages/skill-edit.html'; });
+
+    // ========== ZIP 匯入 Modal ==========
+    function openModal() {
+      resetModal();
+      importModal.classList.add('active');
+    }
+
+    function closeModal() {
+      importModal.classList.remove('active');
+      resetModal();
+    }
+
+    function resetModal() {
+      $('zip-file').value = '';
+      $('zip-preview').style.display = 'none';
+      $('preview-name').value = '';
+      $('preview-description').value = '';
+      $('preview-template').value = '';
+      $('preview-scripts').style.display = 'none';
+      $('preview-refs').style.display = 'none';
+      $('btn-confirm').disabled = true;
+      parsedZip = null;
+    }
+
+    async function parseZip() {
+      const file = $('zip-file').files?.[0];
+      if (!file) {
+        showError('請選擇 ZIP 檔案');
+        return;
+      }
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        showError('請選擇 .zip 檔案');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await api.uploadFile('/skills/import-claude-skill-zip', formData);
+        if (res.ok && res.parsed) {
+          parsedZip = res.parsed;
+
+          // 顯示 SKILL.md 資訊
+          if (res.parsed.skill_md) {
+            $('preview-name').value = res.parsed.skill_md.name || '(未命名)';
+            $('preview-description').value = res.parsed.skill_md.description || '';
+            $('preview-template').value = (res.parsed.skill_md.prompt_template || '').substring(0, 300);
+          }
+
+          // 顯示 scripts
+          const scripts = res.parsed.scripts || [];
+          if (scripts.length > 0) {
+            $('scripts-list').textContent = scripts.map(s => s.filename).join(', ');
+            $('preview-scripts').style.display = 'block';
+          }
+
+          // 顯示 references
+          const refs = res.parsed.references || [];
+          if (refs.length > 0) {
+            $('refs-list').textContent = refs.map(r => r.filename).join(', ');
+            $('preview-refs').style.display = 'block';
+          }
+
+          $('zip-preview').style.display = 'block';
+          $('btn-confirm').disabled = false;
+          showSuccess('ZIP 解析成功');
+        } else {
+          showError(res.error || 'ZIP 解析失敗');
+        }
+      } catch (e) {
+        showError(e.message || 'ZIP 解析失敗');
+      }
+    }
+
+    async function confirmImport() {
+      const file = $('zip-file').files?.[0];
+      if (!file || !parsedZip) {
+        showError('請先解析 ZIP 檔案');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await api.uploadFile('/skills/import-claude-skill-zip/create', formData);
+        if (res.ok && res.skill) {
+          showSuccess(`已匯入技能：${res.skill.name}`);
+          closeModal();
+          load();
+        } else {
+          showError(res.error || '匯入失敗');
+        }
+      } catch (e) {
+        showError(e.message || '匯入失敗');
+      }
+    }
+
+    // 事件綁定
+    $('btn-import-zip').addEventListener('click', openModal);
+    $('modal-close').addEventListener('click', closeModal);
+    $('btn-cancel').addEventListener('click', closeModal);
+    $('btn-parse').addEventListener('click', parseZip);
+    $('btn-confirm').addEventListener('click', confirmImport);
+
+    importModal.addEventListener('click', (e) => {
+      if (e.target === importModal) closeModal();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && importModal.classList.contains('active')) closeModal();
+    });
+
+    // 初始載入
+    load();
+  </script>
+</body>
+</html>

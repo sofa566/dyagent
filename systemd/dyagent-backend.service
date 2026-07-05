@@ -1,0 +1,17 @@
+[Unit]
+Description=dyagent backend (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/hd18/23_Rasa/dyagent/backend
+EnvironmentFile=-/hd18/23_Rasa/dyagent/backend/.env
+EnvironmentFile=-/hd18/23_Rasa/dyagent/backend/.env.local
+ExecStart=/hd18/23_Rasa/dyagent/.venv/bin/python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 2
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

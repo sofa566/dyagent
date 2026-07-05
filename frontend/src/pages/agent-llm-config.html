@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>工具設定 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .inline-select {
+      width: auto;
+      padding: 0.75rem;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      background: #fff;
+    }
+
+    .inline-select:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/agent-list.html">代理者清單</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>工具設定</h2>
+    <div id="agent-meta" style="color: var(--text-secondary); margin-top: 4px;">
+      代理者：<strong id="agent-name">—</strong>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div id="permission-hint" class="card" style="display:none;margin-bottom:1rem;background:#fff8e6;border-color:#f0d28c;color:#7a5c19;"></div>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>MCP 連線</h3>
+      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <label>從管理清單加入：</label>
+            <select id="mcp-registry-select" class="inline-select"><option value="">— 請選擇 —</option></select>
+            <button id="btn-add-mcp-from-reg" class="btn" type="button">加入</button>
+          </div>
+          <p class="muted">從全域 MCP 清單挑選，加入後會出現在右側清單，可移除。</p>
+        </div>
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <strong>已加入 MCP</strong>
+            <small class="muted" id="mcp-count">0 項</small>
+          </div>
+          <p class="muted" style="margin-top:4px;">可針對每筆連線執行測試，確認可用性。</p>
+          <div id="mcp-list" style="margin-top:6px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>RAG 設定</h3>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input id="rag-enabled" type="checkbox"> 啟用 RAG
+        </label>
+        <div style="flex:1;min-width:280px;">
+          <label for="rag-sources">檢索來源（逗號分隔）</label>
+          <input id="rag-sources" type="text" placeholder="例如：knowledge_base, faq_docs">
+        </div>
+        <div style="width:120px;">
+          <label for="rag-topk">topK</label>
+          <input id="rag-topk" type="number" min="1" max="50" value="5">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;">
+        <div style="flex:1;min-width:260px;">
+          <label for="rag-test-query">測試檢索 Query</label>
+          <input id="rag-test-query" type="text" placeholder="例如：公司差旅報銷流程是什麼？">
+        </div>
+        <button id="btn-test-rag" class="btn" type="button">測試檢索</button>
+      </div>
+      <pre id="rag-test-result" class="code" style="display:none;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:8px;"></pre>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>Skills</h3>
+      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <label>從管理清單加入：</label>
+            <select id="skill-registry-select" class="inline-select"><option value="">— 請選擇 —</option></select>
+            <button id="btn-add-skill-from-reg" class="btn" type="button">加入</button>
+          </div>
+          <div style="margin-top:0.5rem;">
+            <input id="new-skill" type="text" placeholder="新增自定義 Skill 名稱" />
+            <button id="add-skill" class="btn" type="button">新增</button>
+          </div>
+        </div>
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <strong>已加入技能</strong>
+            <small class="muted" id="skill-count">0 項</small>
+          </div>
+          <div id="skills-list" style="margin-top:6px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>Functions 綁定</h3>
+      <p class="muted">Functions 由管理者在 Functions 管理頁建立；此處僅綁定到目前代理者。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label for="function-profile-select">Function Profile：</label>
+        <select id="function-profile-select" class="inline-select"><option value="">— 不使用（沿用預設）—</option></select>
+        <button id="btn-refresh-functions" class="btn" type="button">重新載入</button>
+      </div>
+      <div style="margin-top:6px;color:var(--text-secondary);">
+        目前綁定：<strong id="function-profile-name">未綁定</strong>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>Functions 定義（進階）</h3>
+      <p class="muted">此區為單一代理者的進階覆寫。若留空，會使用上方綁定的 Function Profile 模板。</p>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+        <label for="toolcall-template">快速套用範本：</label>
+        <select id="toolcall-template" class="inline-select">
+          <option value="">— 選擇範本 —</option>
+          <option value="generic">通用（CALL 方言，嚴格）</option>
+          <option value="openai">OpenAI（tool_calls/functions）</option>
+          <option value="anthropic">Anthropic（tool_use）</option>
+          <option value="gemini">Gemini（functionCall）</option>
+          <option value="clear">清空</option>
+        </select>
+        <button id="apply-toolcall-template" class="btn" type="button">套用</button>
+        <label for="insert-var">插入變數：</label>
+        <select id="insert-var" class="inline-select">
+          <option value="">— 選擇變數 —</option>
+          <option value="{{ALLOWED_TOOL_NAMES}}">{{ALLOWED_TOOL_NAMES}}</option>
+          <option value="{{SKILL_NAMES}}">{{SKILL_NAMES}}</option>
+          <option value="{{MCP_NAMES}}">{{MCP_NAMES}}</option>
+          <option value="{{ALLOWED_TOOLS_BLOCK}}">{{ALLOWED_TOOLS_BLOCK}}</option>
+          <option value="{{SKILL_TOOLS_BLOCK}}">{{SKILL_TOOLS_BLOCK}}</option>
+          <option value="{{MCP_TOOLS_BLOCK}}">{{MCP_TOOLS_BLOCK}}</option>
+          <option value="{{EXAMPLE_ARGS}}">{{EXAMPLE_ARGS}}</option>
+          <option value="{{EXAMPLE_ARGS_BLOCK}}">{{EXAMPLE_ARGS_BLOCK}}</option>
+          <option value="{{RAG_ENABLED}}">{{RAG_ENABLED}}</option>
+          <option value="{{RAG_SOURCES}}">{{RAG_SOURCES}}</option>
+          <option value="{{RAG_TOPK}}">{{RAG_TOPK}}</option>
+          <option value="{{RAG_HINTS}}">{{RAG_HINTS}}</option>
+          <option value="{{USAGE_HINTS}}">{{USAGE_HINTS}}</option>
+        </select>
+        <button id="btn-insert-var" class="btn" type="button">插入</button>
+      </div>
+      <label for="toolcall-guide">Functions 定義模板（進階覆寫）</label>
+      <textarea id="toolcall-guide" rows="8" placeholder="例如：\n[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format...\n  [[CALL tool=<allowed-tool-name>]]\n{\n  &quot;arg&quot;: &quot;value&quot;\n}\n- Otherwise, answer normally."></textarea>
+      <p class="muted" style="margin-top:6px;">
+        可用變數：
+        <code>{{ALLOWED_TOOL_NAMES}}</code>（逗號分隔，含 mcp:&lt;name&gt;）、
+        <code>{{SKILL_NAMES}}</code>、<code>{{MCP_NAMES}}</code>、
+        <code>{{ALLOWED_TOOLS_BLOCK}}</code>（每行一個）、
+        <code>{{SKILL_TOOLS_BLOCK}}</code>、<code>{{MCP_TOOLS_BLOCK}}</code>、
+        <code>{{EXAMPLE_ARGS}}</code>（預設基於首個有示例的 MCP 或通用值）、
+        <code>{{EXAMPLE_ARGS_BLOCK}}</code>（每個工具對應的示例 JSON 一行）、
+        <code>{{RAG_ENABLED}}</code>（true/false）、<code>{{RAG_SOURCES}}</code>、<code>{{RAG_TOPK}}</code>、<code>{{RAG_HINTS}}</code>。
+      </p>
+      <details id="toolcall-preview" class="card" style="margin-top:8px;">
+        <summary>即時渲染預覽</summary>
+        <div style="display:flex; gap:8px; align-items:center; margin:6px 0; flex-wrap:wrap;">
+          <button id="refresh-preview" class="btn" type="button">重新整理預覽</button>
+          <button id="copy-preview" class="btn" type="button">複製預覽</button>
+          <span class="muted">依據目前頁面狀態（Skills/MCP/示例參數）即時替換變數。</span>
+        </div>
+        <pre id="preview-output" class="code" style="white-space:pre-wrap; max-height:320px; overflow:auto;"></pre>
+      </details>
+    </section>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>JSON 格式化器</h3>
+      <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+        <textarea id="jsonfmt-input" rows="6" style="flex:1; min-width:300px;" placeholder='{"hello":"world"}'></textarea>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <button id="jsonfmt-format" class="btn" type="button">格式化</button>
+          <button id="jsonfmt-minify" class="btn" type="button">壓縮</button>
+          <button id="jsonfmt-clear" class="btn" type="button">清空</button>
+          <button id="jsonfmt-copy" class="btn" type="button">複製結果</button>
+        </div>
+      </div>
+      <div id="jsonfmt-error" class="error-message" style="display:none; margin-top:8px;"></div>
+      <pre id="jsonfmt-output" class="code" style="white-space:pre-wrap; margin-top:8px;"></pre>
+    </section>
+
+    <section id="audit-card" class="card" style="margin-bottom:1rem;display:none;">
+      <h3>設定變更摘要（審計）</h3>
+      <p class="muted">僅管理者可檢視最近整合設定的變更紀錄。</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+        <button id="btn-refresh-audit" class="btn" type="button">重新載入摘要</button>
+      </div>
+      <pre id="audit-output" class="code" style="white-space:pre-wrap;max-height:240px;overflow:auto;">（尚未載入）</pre>
+    </section>
+
+    <div style="display:flex;gap:8px;">
+      <button id="save" class="btn btn-primary" type="button">儲存</button>
+      <a id="back" class="btn" href="/pages/agent-list.html">返回</a>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess, agentIntegrationApi } from '/services/api.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const url = new URL(window.location.href);
+    const agentId = url.searchParams.get('id');
+    if (!agentId) {
+      showError('缺少代理者 id');
+    }
+
+    const mcpList = document.getElementById('mcp-list');
+    const skillsList = document.getElementById('skills-list');
+    // const addMcpBtn = document.getElementById('add-mcp'); // 已移除
+    const addSkillBtn = document.getElementById('add-skill');
+    const newSkillInput = document.getElementById('new-skill');
+    const mcpRegistrySelect = document.getElementById('mcp-registry-select');
+    const addMcpFromRegBtn = document.getElementById('btn-add-mcp-from-reg');
+    const skillRegistrySelect = document.getElementById('skill-registry-select');
+    const addSkillFromRegBtn = document.getElementById('btn-add-skill-from-reg');
+    const saveBtn = document.getElementById('save');
+    const permissionHint = document.getElementById('permission-hint');
+    const functionProfileSelect = document.getElementById('function-profile-select');
+    const functionProfileName = document.getElementById('function-profile-name');
+    const refreshFunctionsBtn = document.getElementById('btn-refresh-functions');
+    const ragEnabledInput = document.getElementById('rag-enabled');
+    const ragSourcesInput = document.getElementById('rag-sources');
+    const ragTopKInput = document.getElementById('rag-topk');
+    const ragTestQueryInput = document.getElementById('rag-test-query');
+    const ragTestBtn = document.getElementById('btn-test-rag');
+    const ragTestResult = document.getElementById('rag-test-result');
+    const auditCard = document.getElementById('audit-card');
+    const auditOutput = document.getElementById('audit-output');
+    const refreshAuditBtn = document.getElementById('btn-refresh-audit');
+
+    let state = {
+      mcp_config: [],
+      skills: [],
+      rag_config: { enabled: false, sources: [], topK: 5 },
+      rag_dataset_ids: { global_dataset_ids: [], private_dataset_ids: [] },
+      skill_examples: {},
+      mcp_ids: [],
+      skill_ids: [],
+      function_profile_id: '',
+      mcp_test_results: {},
+    };
+    const currentUser = auth.getUser() || {};
+    let canUpdateIntegrations = ['admin', 'agent_admin'].includes(String(currentUser.role || ''));
+    let toolcallGuideEl = document.getElementById('toolcall-guide');
+    const toolcallTplSelect = document.getElementById('toolcall-template');
+    const toolcallTplApply = document.getElementById('apply-toolcall-template');
+    const previewPanel = document.getElementById('toolcall-preview');
+    const previewOutput = document.getElementById('preview-output');
+    const refreshPreviewBtn = document.getElementById('refresh-preview');
+    const copyPreviewBtn = document.getElementById('copy-preview');
+    const insertVarSelect = document.getElementById('insert-var');
+    const insertVarBtn = document.getElementById('btn-insert-var');
+
+    const TOOLCALL_TEMPLATES = {
+      generic: `[Tool-Call Protocol]\n- Only if a tool is REQUIRED, output EXACTLY this format and nothing else before it:\n  [[CALL tool=<allowed-tool-name>]]\n{{EXAMPLE_ARGS}}\n- <allowed-tool-name> must be one of: {{ALLOWED_TOOL_NAMES}}\n- The JSON body are the arguments for the tool.\n- Otherwise, answer normally without the CALL block.\n\n[Allowed Tools]\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n\n{{USAGE_HINTS}}`,
+      openai: `You may call tools using OpenAI function-calls.\nWhen a tool is strictly required to complete the task, produce a JSON object with a top-level key \"tool_calls\" as the ONLY content in your response:\n{\n  "tool_calls": [\n    {\n      "type": "function",\n      "function": {\n        "name": "<allowed-tool-name>",\n        "arguments": { "arg": "value" }\n      }\n    }\n  ]\n}\nAllowed tools:\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n`,
+      anthropic: `If a tool is strictly required, produce an Anthropic-style tool_use block as your ONLY content:\n<tool_use name=\"<allowed-tool-name>\">\n{\n  "arg": "value"\n}\n</tool_use>\nAllowed tools:\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n`,
+      gemini: `When a tool is required, emit a JSON object as your ONLY content to request a function call:\n{\n  "functionCall": {\n    "name": "<allowed-tool-name>",\n    "args": { "arg": "value" }\n  }\n}\nAllowed tools:\nSkills:\n{{SKILL_TOOLS_BLOCK}}\nMCP:\n{{MCP_TOOLS_BLOCK}}\n`,
+      clear: ''
+    };
+
+    function setRagInputsFromState() {
+      // 目的：將 state.rag_config 映射回表單欄位。
+      // 為什麼：避免載入後 UI 與狀態不一致，導致儲存覆蓋錯誤。
+      const ragCfg = state.rag_config || { enabled: false, sources: [], topK: 5 };
+      ragEnabledInput.checked = !!ragCfg.enabled;
+      ragSourcesInput.value = Array.isArray(ragCfg.sources) ? ragCfg.sources.join(', ') : '';
+      ragTopKInput.value = String(ragCfg.topK || 5);
+    }
+
+    function syncRagStateFromInputs() {
+      // 目的：將 RAG 表單欄位正規化後寫回 state。
+      // 為什麼：集中處理 topK 範圍與 sources 格式，降低重複驗證邏輯。
+      const parsedTopK = Number.parseInt(String(ragTopKInput.value || '5'), 10);
+      const topK = Number.isFinite(parsedTopK) ? Math.min(50, Math.max(1, parsedTopK)) : 5;
+      const sources = String(ragSourcesInput.value || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      state.rag_config = {
+        enabled: !!ragEnabledInput.checked,
+        sources,
+        topK,
+      };
+      ragTopKInput.value = String(topK);
+    }
+
+    function applyReadOnlyState() {
+      // 目的：依權限切換頁面為可編輯或唯讀。
+      // 為什麼：在同一頁支援 read-only 與可編輯角色，避免誤操作與 403 體驗。
+      const editable = !!canUpdateIntegrations;
+      const interactiveSelectors = [
+        '#mcp-registry-select',
+        '#btn-add-mcp-from-reg',
+        '#skill-registry-select',
+        '#btn-add-skill-from-reg',
+        '#new-skill',
+        '#add-skill',
+        '#function-profile-select',
+        '#btn-refresh-functions',
+        '#toolcall-template',
+        '#apply-toolcall-template',
+        '#insert-var',
+        '#btn-insert-var',
+        '#toolcall-guide',
+        '#rag-enabled',
+        '#rag-sources',
+        '#rag-topk',
+        '#btn-test-rag',
+        '#save',
+      ];
+      interactiveSelectors.forEach((selector) => {
+        document.querySelectorAll(selector).forEach((element) => {
+          if (editable) {
+            element.removeAttribute('disabled');
+          } else {
+            element.setAttribute('disabled', 'disabled');
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-act="remove-mcp"],[data-act="remove-skill"],[data-act="remove-skill-custom"],[data-act="test-mcp"]').forEach((button) => {
+        if (editable) {
+          button.removeAttribute('disabled');
+        } else {
+          button.setAttribute('disabled', 'disabled');
+        }
+      });
+
+      if (!editable) {
+        permissionHint.style.display = 'block';
+        permissionHint.textContent = '目前為唯讀模式：你僅能檢視代理者整合設定，無法修改或儲存。';
+      } else {
+        permissionHint.style.display = 'none';
+      }
+    }
+
+    function renderMcp() {
+      mcpList.innerHTML = '';
+      const byId = Object.fromEntries((window.__mcpRegistry||[]).map(m => [m.id, m]));
+      (state.mcp_ids||[]).forEach((id, idx) => {
+        const m = byId[id] || {};
+        const testState = (state.mcp_test_results && state.mcp_test_results[id]) ? state.mcp_test_results[id] : null;
+        const testText = testState ? (testState.ok ? '測試成功' : `測試失敗：${testState.error || '未知錯誤'}`) : '尚未測試';
+        const testColor = testState ? (testState.ok ? 'var(--success-color)' : 'var(--error-color)') : 'var(--text-secondary)';
+        const row = document.createElement('div');
+        row.style.marginBottom = '6px';
+        row.innerHTML = `
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <span class="tag">${m.name || id}</span>
+            <span class="muted">${m.transport || ''}</span>
+            <span class="muted">${m.transport==='remote' ? (m.base_url||'') : (m.command||'')}</span>
+            <button class="btn" data-act="test-mcp" data-id="${id}">測試</button>
+            <button class="btn" data-act="remove-mcp" data-i="${idx}">移除</button>
+            <span style="color:${testColor};">${testText}</span>
+          </div>
+        `;
+        mcpList.appendChild(row);
+      });
+      const cnt = document.getElementById('mcp-count'); if (cnt) cnt.textContent = `${(state.mcp_ids||[]).length} 項`;
+      applyReadOnlyState();
+    }
+
+    function renderSkills() {
+      skillsList.innerHTML = '';
+      const byId = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
+      const selectedNames = [];
+      (state.skill_ids||[]).forEach((id, idx) => {
+        const s = byId[id] || {};
+        if (s && s.name) selectedNames.push(String(s.name));
+        const row = document.createElement('div');
+        row.style.marginBottom = '6px';
+        row.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="tag">${s.name || id}</span>
+            <button class="btn" data-act="remove-skill" data-i="${idx}">移除</button>
+          </div>
+        `;
+        skillsList.appendChild(row);
+      });
+      (state.skills||[])
+        .filter((name) => name && !selectedNames.includes(String(name)))
+        .forEach((name, idx) => {
+          const row = document.createElement('div');
+          row.style.marginBottom = '6px';
+          row.innerHTML = `
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <span class="tag">${String(name)}</span>
+              <span class="muted">自定義</span>
+              <button class="btn" data-act="remove-skill-custom" data-i="${idx}">移除</button>
+            </div>
+          `;
+          skillsList.appendChild(row);
+        });
+      const customCount = (state.skills||[]).filter((name) => name && !selectedNames.includes(String(name))).length;
+      const cnt = document.getElementById('skill-count'); if (cnt) cnt.textContent = `${(state.skill_ids||[]).length + customCount} 項`;
+      applyReadOnlyState();
+    }
+
+    function renderFunctionBinding() {
+      const list = Array.isArray(window.__functionRegistry) ? window.__functionRegistry : [];
+      functionProfileSelect.innerHTML = '<option value="">— 不使用（沿用預設）—</option>' + list.map((item) => {
+        const id = String(item.id || '');
+        const provider = item.provider ? ` (${String(item.provider)})` : '';
+        return `<option value="${id}">${String(item.name || id)}${provider}</option>`;
+      }).join('');
+      functionProfileSelect.value = String(state.function_profile_id || '');
+      const selected = list.find((item) => String(item.id) === String(state.function_profile_id || ''));
+      functionProfileName.textContent = selected ? String(selected.name || '未命名') : '未綁定';
+    }
+
+    async function loadFunctionRegistry() {
+      try {
+        const res = await api.get('/functions/selectable');
+        window.__functionRegistry = Array.isArray(res.functions) ? res.functions.filter((item) => item && item.enabled !== false) : [];
+      } catch (e) {
+        window.__functionRegistry = [];
+        showError((e && e.message) || '無法載入 Functions 清單');
+      }
+      renderFunctionBinding();
+    }
+
+    async function loadIntegrationAuditSummary() {
+      // 目的：載入代理者整合設定的審計摘要並顯示於頁面。
+      // 為什麼：US3 要求管理者可直接查看變更記錄，快速比對前後差異。
+      const isAdmin = String((currentUser && currentUser.role) || '') === 'admin';
+      if (!isAdmin) {
+        auditCard.style.display = 'none';
+        return;
+      }
+      auditCard.style.display = 'block';
+      try {
+        const res = await agentIntegrationApi.getAgentIntegrationAudit(agentId, 20);
+        const rows = Array.isArray(res.entries) ? res.entries : [];
+        if (rows.length === 0) {
+          auditOutput.textContent = '目前沒有可顯示的變更紀錄。';
+          return;
+        }
+        const lines = rows.map((row, index) => {
+          const details = (row && typeof row.details === 'object' && row.details) ? row.details : {};
+          const changedFields = Array.isArray(details.changed_fields) ? details.changed_fields.join(', ') : '';
+          return [
+            `#${index + 1} ${String(row.timestamp || '')}`,
+            `user_id: ${String(row.user_id || '')}`,
+            `changed_fields: ${changedFields || '<none>'}`,
+            `before: ${JSON.stringify(details.before || {}, null, 2)}`,
+            `after: ${JSON.stringify(details.after || {}, null, 2)}`,
+          ].join('\n');
+        });
+        auditOutput.textContent = lines.join('\n\n---\n\n');
+      } catch (error) {
+        auditOutput.textContent = `載入審計摘要失敗：${String((error && error.message) || '未知錯誤')}`;
+      }
+    }
+
+    async function load() {
+      try {
+        // 取得代理者名稱以顯示於標題
+        try {
+          const agent = await api.get(`/agents/${agentId}`);
+          const nameEl = document.getElementById('agent-name');
+          if (agent && agent.name && nameEl) nameEl.textContent = agent.name;
+          // 動態更新頁籤標題
+          try { if (agent && agent.name) document.title = `工具設定 - ${agent.name} - dyagent`; } catch {}
+        } catch {}
+
+        const res = await agentIntegrationApi.getAgentIntegrations(agentId);
+        state.mcp_config = Array.isArray(res.mcp_config) ? res.mcp_config : [];
+        state.skills = Array.isArray(res.skills) ? res.skills : [];
+        state.rag_config = res.rag_config || { enabled: false, sources: [], topK: 5 };
+        state.mcp_test_results = {};
+        state.skill_examples = (res.skill_examples && typeof res.skill_examples === 'object') ? res.skill_examples : {};
+        state.mcp_ids = Array.isArray(res.mcp_ids) ? res.mcp_ids : [];
+        state.skill_ids = Array.isArray(res.skill_ids) ? res.skill_ids : [];
+        state.function_profile_id = String(res.function_profile_id || '');
+        if (typeof res.can_update === 'boolean') {
+          canUpdateIntegrations = !!res.can_update;
+        }
+        const ragDatasetIds = (res.rag_dataset_ids && typeof res.rag_dataset_ids === 'object') ? res.rag_dataset_ids : {};
+        state.rag_dataset_ids = {
+          global_dataset_ids: Array.isArray(ragDatasetIds.global_dataset_ids) ? ragDatasetIds.global_dataset_ids.map(String) : [],
+          private_dataset_ids: Array.isArray(ragDatasetIds.private_dataset_ids) ? ragDatasetIds.private_dataset_ids.map(String) : [],
+        };
+        if (typeof res.functions_definition_template === 'string') {
+          toolcallGuideEl.value = res.functions_definition_template;
+        } else if (typeof res.toolcall_guide === 'string') {
+          toolcallGuideEl.value = res.toolcall_guide;
+        }
+        // 若尚未自訂模板，根據 provider 建議一個預設範本
+        try {
+          if ((!toolcallGuideEl.value || !toolcallGuideEl.value.trim()) && typeof res.model_provider === 'string') {
+            const pv = (res.model_provider || '').toLowerCase();
+            let key = 'generic';
+            if (pv.includes('openai') || pv.includes('azure')) key = 'openai';
+            else if (pv.includes('anthropic')) key = 'anthropic';
+            else if (pv.includes('gemini') || pv.includes('google')) key = 'gemini';
+            toolcallTemplateSuggest(key);
+          }
+        } catch {}
+        setRagInputsFromState();
+        renderMcp();
+        renderSkills();
+        // 載入管理清單
+        try {
+          let r1;
+          let r2;
+          try {
+            r1 = await api.get('/mcps/selectable');
+          } catch (e) {
+            // 相容舊版後端（尚未提供 selectable 端點）
+            r1 = await api.get('/mcps');
+          }
+          try {
+            r2 = await api.get('/skills/selectable');
+          } catch (e) {
+            // 相容舊版後端（尚未提供 selectable 端點）
+            r2 = await api.get('/skills');
+          }
+          window.__mcpRegistry = Array.isArray(r1.mcps) ? r1.mcps.filter(x=>x && x.enabled) : [];
+          window.__skillRegistry = Array.isArray(r2.skills) ? r2.skills.filter(x=>x && x.enabled) : [];
+          mcpRegistrySelect.innerHTML = '<option value="">— 請選擇 —</option>' + (window.__mcpRegistry||[]).map(m=>`<option value="${String(m.id || '')}">${String(m.name || m.id || '')}</option>`).join('');
+          skillRegistrySelect.innerHTML = '<option value="">— 請選擇 —</option>' + (window.__skillRegistry||[]).map(s=>`<option value="${String(s.id || '')}">${String(s.name || s.id || '')}</option>`).join('');
+          // 載入完成後再渲染一次，顯示名稱等
+          renderMcp();
+          renderSkills();
+        } catch (e) {
+          showError((e && e.message) || '無法載入 MCP/Skill 管理清單');
+        }
+        await loadFunctionRegistry();
+        await loadIntegrationAuditSummary();
+        applyReadOnlyState();
+      } catch (e) {
+        showError(e.message || '載入失敗');
+      }
+    }
+
+    ragEnabledInput.addEventListener('change', () => {
+      syncRagStateFromInputs();
+      schedulePreview();
+    });
+    ragSourcesInput.addEventListener('input', () => {
+      syncRagStateFromInputs();
+      schedulePreview();
+    });
+    ragTopKInput.addEventListener('change', () => {
+      syncRagStateFromInputs();
+      schedulePreview();
+    });
+
+    ragTestBtn.addEventListener('click', async () => {
+      // 目的：在儲存前快速驗證 RAG 來源與檢索結果。
+      // 為什麼：縮短設定錯誤的回饋時間，避免使用者來回切頁檢查。
+      try {
+        syncRagStateFromInputs();
+        const payload = {
+          query: String(ragTestQueryInput.value || '').trim(),
+          sources: Array.isArray(state.rag_config.sources) ? state.rag_config.sources : [],
+          topK: state.rag_config.topK || 5,
+        };
+        const res = await agentIntegrationApi.testAgentRag(agentId, payload);
+        ragTestResult.style.display = 'block';
+        ragTestResult.textContent = JSON.stringify(res, null, 2);
+        if (res && res.ok) {
+          showSuccess('RAG 測試完成');
+        } else {
+          showError((res && res.error) || 'RAG 測試失敗');
+        }
+      } catch (error) {
+        ragTestResult.style.display = 'block';
+        ragTestResult.textContent = String((error && error.message) || 'RAG 測試失敗');
+        showError((error && error.message) || 'RAG 測試失敗');
+      }
+    });
+
+    // 僅允許從清單加入/移除參照
+    mcpList.addEventListener('click', async (e) => {
+      const t = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      if (!t) return;
+      const act = t.getAttribute('data-act');
+      if (act === 'test-mcp') {
+        const mcpId = String(t.getAttribute('data-id') || '').trim();
+        if (!mcpId) return;
+        try {
+          const res = await agentIntegrationApi.testAgentMcp(agentId, { mcp_id: mcpId });
+          state.mcp_test_results[mcpId] = {
+            ok: !!(res && res.ok),
+            error: (res && res.error) ? String(res.error) : '',
+          };
+          renderMcp();
+          if (res && res.ok) {
+            showSuccess(`MCP 測試成功：${mcpId}`);
+          } else {
+            showError((res && res.error) || 'MCP 測試失敗');
+          }
+        } catch (error) {
+          state.mcp_test_results[mcpId] = { ok: false, error: String((error && error.message) || '未知錯誤') };
+          renderMcp();
+          showError((error && error.message) || 'MCP 測試失敗');
+        }
+        return;
+      }
+      if (act === 'remove-mcp') {
+        if (!canUpdateIntegrations) return;
+        const i = parseInt(t.getAttribute('data-i'), 10);
+        state.mcp_ids.splice(i, 1);
+        renderMcp();
+        schedulePreview();
+        showSuccess('已移除 MCP');
+      }
+    });
+
+    addMcpFromRegBtn.addEventListener('click', ()=>{
+      if (!canUpdateIntegrations) return;
+      const id = String(mcpRegistrySelect.value || '').trim();
+      if (!id) { showError('請先選擇一個 MCP'); return; }
+      try {
+        if (!state.mcp_ids.includes(id)) {
+          state.mcp_ids.push(id);
+          renderMcp();
+          showSuccess('已加入 MCP');
+        } else {
+          showSuccess('已在清單中');
+        }
+        // 僅以參照使用：不複製到自訂連線；讓全域管理為唯一真實來源
+        schedulePreview();
+      } catch (e) {
+        showError((e && e.message) || '加入 MCP 失敗');
+      }
+    });
+
+    
+    addSkillFromRegBtn.addEventListener('click', ()=>{
+      if (!canUpdateIntegrations) return;
+      const id = String(skillRegistrySelect.value || '').trim();
+      if (!id) { showError('請先選擇一個 Skill'); return; }
+      try {
+        if (!state.skill_ids.includes(id)) {
+          state.skill_ids.push(id);
+          renderSkills();
+          showSuccess('已加入 Skill');
+        } else {
+          showSuccess('已在清單中');
+        }
+        schedulePreview();
+      } catch (e) {
+        showError((e && e.message) || '加入 Skill 失敗');
+      }
+    });
+    addSkillBtn.addEventListener('click', ()=>{
+      if (!canUpdateIntegrations) return;
+      const name = String((newSkillInput && newSkillInput.value) || '').trim();
+      if (!name) { showError('請輸入 Skill 名稱'); return; }
+      if (!Array.isArray(state.skills)) state.skills = [];
+      if (!state.skills.includes(name)) {
+        state.skills.push(name);
+        renderSkills();
+        schedulePreview();
+        if (newSkillInput) newSkillInput.value = '';
+        showSuccess('已新增自定義 Skill');
+      } else {
+        showSuccess('Skill 已存在');
+      }
+    });
+    skillsList.addEventListener('click', (e) => {
+      const t = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      const act = t ? t.getAttribute('data-act') : '';
+      const i = t ? parseInt(t.getAttribute('data-i'), 10) : -1;
+      if (act === 'remove-skill') {
+        if (!canUpdateIntegrations) return;
+        const id = (state.skill_ids||[])[i];
+        const byId = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
+        const picked = byId[id] || {};
+        const pickedName = picked && picked.name ? String(picked.name) : '';
+        state.skill_ids.splice(i, 1);
+        if (pickedName) {
+          state.skills = (state.skills||[]).filter((x) => String(x) !== pickedName);
+        }
+        renderSkills();
+        schedulePreview();
+        showSuccess('已移除 Skill');
+      } else if (act === 'remove-skill-custom') {
+        if (!canUpdateIntegrations) return;
+        const custom = (state.skills||[]).filter((name) => {
+          const byId = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
+          const selectedNames = (state.skill_ids||[]).map((id) => (byId[id] && byId[id].name) ? String(byId[id].name) : '').filter(Boolean);
+          return name && !selectedNames.includes(String(name));
+        });
+        const target = custom[i];
+        state.skills = (state.skills||[]).filter((x) => String(x) !== String(target));
+        renderSkills();
+        schedulePreview();
+        showSuccess('已移除自定義 Skill');
+      }
+    });
+    // 移除在此頁面編輯技能示例參數的能力
+
+    functionProfileSelect.addEventListener('change', () => {
+      if (!canUpdateIntegrations) return;
+      state.function_profile_id = String(functionProfileSelect.value || '');
+      renderFunctionBinding();
+    });
+
+    refreshFunctionsBtn.addEventListener('click', async () => {
+      await loadFunctionRegistry();
+      showSuccess('Functions 清單已更新');
+    });
+    refreshAuditBtn.addEventListener('click', async () => {
+      await loadIntegrationAuditSummary();
+      showSuccess('審計摘要已更新');
+    });
+
+    toolcallTplApply.addEventListener('click', () => {
+      if (!canUpdateIntegrations) return;
+      const key = toolcallTplSelect.value;
+      if (!key) return;
+      toolcallTemplateSuggest(key);
+    });
+    insertVarBtn.addEventListener('click', () => {
+      if (!canUpdateIntegrations) return;
+      const v = insertVarSelect.value;
+      if (!v) return;
+      const el = toolcallGuideEl;
+      const start = el.selectionStart || 0;
+      const end = el.selectionEnd || 0;
+      const before = el.value.substring(0, start);
+      const after = el.value.substring(end);
+      el.value = before + v + after;
+      el.focus();
+      const pos = start + v.length;
+      el.setSelectionRange(pos, pos);
+      schedulePreview();
+    });
+
+    function toolcallTemplateSuggest(key) {
+      const tpl = TOOLCALL_TEMPLATES[key] || '';
+      toolcallTplSelect.value = key;
+      toolcallGuideEl.value = tpl;
+      renderGuidePreview();
+    }
+
+    function renderGuidePreview() {
+      try {
+        const raw = (toolcallGuideEl.value || '').toString();
+        if (!raw.trim()) { previewOutput.textContent = '(無內容)'; return; }
+        // 以參照清單為準：從 registry 取名稱
+        const sById = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
+        const mById = Object.fromEntries((window.__mcpRegistry||[]).map(m => [m.id, m]));
+        const skills = (state.skill_ids||[]).map(id => (sById[id] && sById[id].name) ? sById[id].name : id);
+        const mcps = (state.mcp_ids||[]).map(id => (mById[id] && mById[id].name) ? `mcp:${mById[id].name}` : `mcp:${id}`);
+        const allowed = [...skills, ...mcps];
+        const allowedNames = allowed.length ? allowed.join(', ') : '<none>';
+        // EXAMPLE_ARGS：改為固定預設 {}
+        const exampleArgs = JSON.stringify({}, null, 2);
+        // EXAMPLE_ARGS_BLOCK：每個工具預設 {}
+        const exampleArgsBlock = allowed.length ? allowed.map(n => `- ${n}: {}`).join('\n') : '- <none>';
+        // Schema block：技能的輸入 schema 提示
+        const schemaLines = skills.map(n => {
+          const entry = Object.values(sById).find(x => x.name === n);
+          const sch = entry && entry.input_schema && typeof entry.input_schema === 'object' ? entry.input_schema : {};
+          return `- ${n}: ${JSON.stringify(sch)}`;
+        });
+        const schemaBlock = schemaLines.length ? schemaLines.join('\n') : '- <none>';
+
+        // 變數替換
+        const skillBlock = skills.length ? skills.map(s => `- ${s}`).join('\n') : '- <none>';
+        const mcpBlock = mcps.length ? mcps.map(s => `- ${s}`).join('\n') : '- <none>';
+        let out = raw
+          .replaceAll('{{ALLOWED_TOOL_NAMES}}', allowedNames)
+          .replaceAll('{{SKILL_NAMES}}', skills.length ? skills.join(', ') : '<none>')
+          .replaceAll('{{MCP_NAMES}}', mcps.length ? mcps.join(', ') : '<none>')
+          .replaceAll('{{EXAMPLE_ARGS}}', exampleArgs)
+          .replaceAll('{{SKILL_TOOLS_BLOCK}}', skillBlock)
+          .replaceAll('{{MCP_TOOLS_BLOCK}}', mcpBlock)
+          .replaceAll('{{EXAMPLE_ARGS_BLOCK}}', exampleArgsBlock)
+          .replaceAll('{{SCHEMA_BLOCK}}', schemaBlock);
+        // RAG 變數
+        const ragEnabled = !!(state.rag_config && state.rag_config.enabled);
+        const ragSources = (state.rag_config && Array.isArray(state.rag_config.sources)) ? state.rag_config.sources.join(', ') : '';
+        const ragTopK = (state.rag_config && typeof state.rag_config.topK !== 'undefined') ? String(state.rag_config.topK) : '';
+        const ragHints = ragEnabled ? [
+          '[RAG 說明]',
+          '- 問題與知識檢索高度相關時，先檢索再作答，並於回覆中引用來源或摘要。',
+          '- 若查無結果，請明確說明並僅根據可得上下文作答（避免捏造）。',
+        ].join('\n') : '';
+        out = out
+          .replaceAll('{{RAG_ENABLED}}', ragEnabled ? 'true' : 'false')
+          .replaceAll('{{RAG_SOURCES}}', ragEnabled ? (ragSources || '<none>') : '<disabled>')
+          .replaceAll('{{RAG_TOPK}}', ragEnabled ? (ragTopK || '5') : '<disabled>')
+          .replaceAll('{{RAG_HINTS}}', ragHints);
+        if (out.includes('{{ALLOWED_TOOLS_BLOCK}}')) {
+          const blk = allowed.length ? allowed.map(n => `- ${n}`).join('\n') : '- <none>';
+          out = out.replaceAll('{{ALLOWED_TOOLS_BLOCK}}', blk);
+        }
+        if (out.includes('{{USAGE_HINTS}}')) {
+          const hints = [
+            '[使用說明]',
+            '- 僅在確定需要呼叫工具時再輸出 CALL 區塊；否則請以自然語言作答。',
+            "- MCP 工具名稱請使用 'mcp:<name>' 的精確字串。",
+            '- 參數務必為合法 JSON（鍵為字串、無註解、逗號位置正確）。',
+            '- 僅可使用上方允許清單中的工具名稱。',
+          ].join('\n');
+          out = out.replaceAll('{{USAGE_HINTS}}', hints);
+        }
+        previewOutput.textContent = out;
+      } catch (e) {
+        previewOutput.textContent = '預覽產生失敗：' + (e && e.message ? e.message : '未知錯誤');
+      }
+    }
+
+    function schedulePreview() {
+      if (schedulePreview._t) clearTimeout(schedulePreview._t);
+      schedulePreview._t = setTimeout(renderGuidePreview, 250);
+    }
+
+    // 初始與事件綁定
+    refreshPreviewBtn.addEventListener('click', renderGuidePreview);
+    copyPreviewBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(previewOutput.textContent || ''); copyPreviewBtn.textContent = '已複製'; setTimeout(()=>copyPreviewBtn.textContent='複製預覽', 1200);} catch {}
+    });
+    toolcallGuideEl.addEventListener('input', schedulePreview);
+
+    saveBtn.addEventListener('click', async () => {
+      if (!canUpdateIntegrations) return;
+      try {
+        syncRagStateFromInputs();
+        const ragConfig = state.rag_config || { enabled: false, sources: [], topK: 5 };
+        const globalDatasetIds = Array.isArray(state.rag_dataset_ids.global_dataset_ids) ? state.rag_dataset_ids.global_dataset_ids.map(String) : [];
+        const privateDatasetIds = Array.isArray(state.rag_dataset_ids.private_dataset_ids) ? state.rag_dataset_ids.private_dataset_ids.map(String) : [];
+        // 僅以參照保存，不允許覆寫
+        const payload = {
+          mcp_config: [],
+          skills: state.skills || [],
+          rag_config: { ...ragConfig, global_dataset_ids: globalDatasetIds, private_dataset_ids: privateDatasetIds },
+          functions_definition_template: (toolcallGuideEl.value || '').trim(),
+          toolcall_guide: (toolcallGuideEl.value || '').trim(),
+          skill_examples: {},
+          mcp_ids: state.mcp_ids,
+          skill_ids: state.skill_ids,
+          function_profile_id: String(state.function_profile_id || ''),
+        };
+        const res = await agentIntegrationApi.updateAgentIntegrations(agentId, payload);
+        const savedMcpIds = Array.isArray(res && res.mcp_ids) ? res.mcp_ids.map(String) : [];
+        const savedSkillIds = Array.isArray(res && res.skill_ids) ? res.skill_ids.map(String) : [];
+        const wantMcpIds = (state.mcp_ids || []).map(String);
+        const wantSkillIds = (state.skill_ids || []).map(String);
+        const sameMcp = JSON.stringify(savedMcpIds) === JSON.stringify(wantMcpIds);
+        const sameSkill = JSON.stringify(savedSkillIds) === JSON.stringify(wantSkillIds);
+        if (!sameMcp || !sameSkill) {
+          showError('儲存未完全生效，請重新整理後再試（mcp_ids/skill_ids 不一致）');
+        } else {
+          await agentIntegrationApi.bindAgentRagDatasets(agentId, {
+            global_dataset_ids: globalDatasetIds,
+            private_dataset_ids: privateDatasetIds,
+          });
+          await loadIntegrationAuditSummary();
+          showSuccess('已儲存');
+          setTimeout(() => {
+            window.location.href = '/pages/agent-list.html';
+          }, 300);
+        }
+      } catch (e) {
+        showError(e.message || '儲存失敗');
+      }
+    });
+
+    // JSON 格式化器
+    const jfIn = document.getElementById('jsonfmt-input');
+    const jfOut = document.getElementById('jsonfmt-output');
+    const jfErr = document.getElementById('jsonfmt-error');
+    function jfShow(out, err) {
+      jfOut.textContent = out || '';
+      if (err) { jfErr.textContent = err; jfErr.style.display = 'block'; } else { jfErr.style.display = 'none'; }
+    }
+    document.getElementById('jsonfmt-format').addEventListener('click', () => {
+      try { const o = JSON.parse(jfIn.value || ''); jfShow(JSON.stringify(o, null, 2), ''); }
+      catch (e) { jfShow('', e && e.message ? String(e.message) : 'JSON 格式錯誤'); }
+    });
+    document.getElementById('jsonfmt-minify').addEventListener('click', () => {
+      try { const o = JSON.parse(jfIn.value || ''); jfShow(JSON.stringify(o), ''); }
+      catch (e) { jfShow('', e && e.message ? String(e.message) : 'JSON 格式錯誤'); }
+    });
+    document.getElementById('jsonfmt-clear').addEventListener('click', () => { jfIn.value = ''; jfShow('', ''); });
+    document.getElementById('jsonfmt-copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(jfOut.textContent || ''); } catch {} });
+
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP 管理</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .import-panel {
+      width: 100%;
+      margin-bottom: 12px;
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      background: #fafafa;
+    }
+
+    .import-json {
+      width: min(920px, 100%);
+      min-height: 150px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+  <main class="container">
+    <h2>MCP 管理</h2>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+      <button id="btn-new" class="btn btn-primary" type="button">新增連線</button>
+    </div>
+    <section class="import-panel">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <label for="mcpservers-json"><strong>匯入 mcpServers：</strong></label>
+        <button id="btn-format-json" class="btn" type="button">格式化 JSON</button>
+        <button id="btn-import" class="btn btn-primary" type="button">匯入</button>
+      </div>
+      <textarea id="mcpservers-json" class="import-json" rows="8" placeholder='{"mcpServers": {"weather": {"command": "python", "args": ["-m", "mcp_weather_server"], "disabled": false}}}'></textarea>
+    </section>
+    <table class="table">
+      <thead>
+        <tr><th>名稱</th><th>狀態</th><th>健康</th><th>傳輸</th><th>Base URL</th><th>操作</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+    if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
+    const user = auth.getUser();
+    if (!user || user.role !== 'admin') {
+      document.getElementById('error-message').textContent = '僅限管理者存取';
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+    const rows = document.getElementById('rows');
+    const errorMessage = document.getElementById('error-message');
+
+    function clearError() {
+      if (!errorMessage) return;
+      errorMessage.textContent = '';
+      errorMessage.style.display = 'none';
+    }
+
+    async function load() {
+      try {
+        const res = await api.get('/mcps');
+        clearError();
+        const list = Array.isArray(res.mcps) ? res.mcps : [];
+        rows.innerHTML = list.map(m => {
+          return `<tr>
+            <td>${m.name}</td>
+            <td>${m.enabled ? '啟用' : '停用'}</td>
+            <td id="health-${m.id}"><span class="muted">—</span></td>
+            <td>${m.transport}</td>
+            <td>${m.base_url || ''}</td>
+            <td>
+              <a class="btn" href="/pages/mcp-edit.html?id=${m.id}">編輯</a>
+              <button class="btn" data-del="${m.id}">刪除</button>
+            </td>
+          </tr>`;
+        }).join('');
+        // 並行測試健康狀態
+        for (const m of list) {
+          (async () => {
+            try {
+              const r = await api.post(`/mcps/${m.id}/test`, {});
+              const el = document.getElementById(`health-${m.id}`);
+              if (!el) return;
+              if (r && r.ok) {
+                const ts = new Date().toISOString().replace('T',' ').replace('Z','');
+                el.innerHTML = `<span style="color:var(--success-color)">健康</span><br/><small class="muted">${ts}</small>`;
+              } else {
+                el.innerHTML = `<span style="color:var(--danger-color)">失敗</span>`;
+              }
+            } catch {
+              const el = document.getElementById(`health-${m.id}`);
+              if (el) el.innerHTML = `<span style="color:var(--danger-color)">失敗</span>`;
+            }
+          })();
+        }
+      } catch (e) { showError(e.message || '載入失敗'); }
+    }
+    rows.addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-del');
+      if (id) {
+        const ok = window.confirm('確定刪除此 MCP 連線？');
+        if (!ok) return;
+        try { await api.delete(`/mcps/${id}`); load(); } catch (e) { showError(e.message || '刪除失敗'); }
+      }
+    });
+    document.getElementById('btn-new').addEventListener('click', ()=>{ window.location.href = '/pages/mcp-edit.html'; });
+    document.getElementById('btn-format-json').addEventListener('click', ()=>{
+      const el = document.getElementById('mcpservers-json');
+      const raw = (el.value || '').trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        el.value = JSON.stringify(parsed, null, 2);
+        clearError();
+        showSuccess('JSON 已格式化');
+      } catch (e) {
+        showError(e.message || 'JSON 格式錯誤，無法格式化');
+      }
+    });
+    document.getElementById('mcpservers-json').addEventListener('input', () => {
+      clearError();
+    });
+    document.getElementById('btn-import').addEventListener('click', async ()=>{
+      const input = document.getElementById('mcpservers-json');
+      const raw = input.value.trim();
+      if (!raw) return;
+      try{
+        const obj = JSON.parse(raw);
+        input.value = JSON.stringify(obj, null, 2);
+        const r = await api.post('/mcps/import-mcpservers', obj);
+        if (r && r.ok) {
+          clearError();
+          showSuccess('匯入完成');
+          load();
+        }
+      }catch(e){ showError(e.message||'匯入失敗'); }
+    });
+    load();
+  </script>
+</body>
+</html>

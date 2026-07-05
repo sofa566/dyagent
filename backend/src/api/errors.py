@@ -80,3 +80,7 @@ def forbidden_error(message: str = 'Permission denied') -> APIException:
 
 def unauthorized_error(message: str = 'Authentication required') -> APIException:
     return APIException(status_code=status.HTTP_401_UNAUTHORIZED, error=message, code='UNAUTHORIZED')
+
+
+def service_unavailable_error(message: str = 'Service temporarily unavailable') -> APIException:
+    return APIException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, error=message, code='SERVICE_UNAVAILABLE')

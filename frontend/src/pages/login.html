@@ -31,7 +31,16 @@
     import { auth, showError } from '/main.js';
 
     if (auth.isAuthenticated()) {
-      window.location.href = '/pages/dashboard.html';
+      try {
+        const u = auth.getUser();
+        if (u && u.role !== 'admin') {
+          window.location.href = '/pages/chat.html';
+        } else {
+          window.location.href = '/pages/dashboard.html';
+        }
+      } catch {
+        window.location.href = '/pages/chat.html';
+      }
     }
 
     document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -40,8 +49,12 @@
       const password = document.getElementById('password').value;
 
       try {
-        await auth.login(email, password);
-        window.location.href = '/pages/dashboard.html';
+        const user = await auth.login(email, password);
+        if (user && user.role !== 'admin') {
+          window.location.href = '/pages/chat.html';
+        } else {
+          window.location.href = '/pages/dashboard.html';
+        }
       } catch (error) {
         showError(error.message);
       }

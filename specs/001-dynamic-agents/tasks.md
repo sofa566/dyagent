@@ -93,7 +93,7 @@
 
 ### Tests for User Story 2
 
-- [x] T030 [P] [US2] Contract test for POST /api/agents/{id}/chat in backend/tests/contract/test_chat.py
+- [x] T030 [P] [US2] Contract test for GET /api/agents/{id}/chat/stream in backend/tests/contract/test_chat.py
 - [x] T031 [P] [US2] Integration test for conversation flow in backend/tests/integration/test_conversation.py
 
 ### Implementation for User Story 2
@@ -102,7 +102,7 @@
 - [x] T033 [P] [US2] Create Message model in backend/src/models/message.py
 - [x] T034 [US2] Implement ChatService in backend/src/services/chat_service.py
 - [x] T035 [US2] Implement LangChain agent wrapper in backend/src/agents/base.py
-- [x] T036 [US2] Implement POST /api/agents/{id}/chat endpoint in backend/src/api/routes/chat.py
+- [x] T036 [US2] Implement GET /api/agents/{id}/chat/stream endpoint in backend/src/api/routes/chat.py
 - [x] T037 [US2] Implement GET /api/agents/{id}/conversations endpoint in backend/src/api/routes/chat.py
 - [x] T038 [US2] Create chat UI page in frontend/src/pages/chat.html
 - [x] T039 [US2] Implement WebSocket connection for real-time chat in frontend/src/services/websocket.js
@@ -266,7 +266,7 @@
 ```bash
 # Launch core features in parallel:
 Task: "T020 Contract test for POST /api/agents"
-Task: "T030 Contract test for POST /api/agents/{id}/chat"
+Task: "T030 Contract test for GET /api/agents/{id}/chat/stream"
 Task: "T056 Create User model"
 
 # Launch models for User Story 1 and 2 in parallel:

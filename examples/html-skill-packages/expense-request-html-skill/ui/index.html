@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>員工請款技能</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <h1>員工請款申請</h1>
+      <p id="step-label">步驟 1/2</p>
+
+      <form id="step-form" class="form-grid">
+        <label>員工姓名<input name="employeeName" required /></label>
+        <label>員工編號<input name="employeeId" required /></label>
+        <label>
+          請款類別
+          <select name="category" required>
+            <option value="travel">差旅</option>
+            <option value="meal">餐費</option>
+            <option value="office">辦公用品</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <label>金額<input name="amount" type="number" min="1" step="1" required /></label>
+        <label>
+          幣別
+          <select name="currency" required>
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+            <option value="JPY">JPY</option>
+          </select>
+        </label>
+        <label class="full">請款說明<textarea name="description" rows="3" required></textarea></label>
+      </form>
+
+      <section id="review" class="review hidden"></section>
+      <p id="error-text" class="error"></p>
+
+      <div class="actions">
+        <button id="back-btn" type="button" class="btn secondary hidden">上一步</button>
+        <button id="cancel-btn" type="button" class="btn secondary">取消</button>
+        <button id="submit-btn" type="button" class="btn primary">下一步</button>
+      </div>
+    </main>
+
+    <script src="./main.js"></script>
+  </body>
+</html>

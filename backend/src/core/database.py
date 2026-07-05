@@ -8,7 +8,8 @@ if settings.DATABASE_URL:
     engine = create_engine(
         settings.DATABASE_URL,
         poolclass=NullPool if 'sqlite' in settings.DATABASE_URL else None,
-        echo=settings.DEBUG,
+        # echo=settings.DEBUG,
+        echo = False,  # 關閉 SQLAlchemy 的 SQL 日誌輸出，改由 structlog 處理
     )
 else:
     engine = None
