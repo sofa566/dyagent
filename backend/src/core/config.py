@@ -112,6 +112,8 @@ class Settings(BaseSettings):
 
     # Router 路由門檻（0~1）
     ROUTER_EMBEDDING_THRESHOLD: float = 0.55
+    # 主代理分派策略：description_only | hybrid | skill_first | memory_first
+    ROUTER_ASSIGNMENT_MODE: str = 'skill_first'
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
@@ -202,6 +204,12 @@ def validate_llm_settings() -> None:
         log.warning("config.invalid_chat_history_max_messages: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_MESSAGES)
     if settings.CHAT_HISTORY_MAX_TOKENS < 0:
         log.warning("config.invalid_chat_history_max_tokens: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_TOKENS)
+    router_assignment_mode = str(settings.ROUTER_ASSIGNMENT_MODE or '').strip().lower()
+    if router_assignment_mode not in {'description_only', 'hybrid', 'skill_first', 'memory_first'}:
+        log.warning(
+            "config.invalid_router_assignment_mode: value=%s expect=description_only|hybrid|skill_first|memory_first",
+            settings.ROUTER_ASSIGNMENT_MODE,
+        )
     memory_provider = str(settings.AGENT_MEMORY_PROVIDER or '').strip().lower()
     if memory_provider not in {'off', 'mock', 'mem0_oss', 'mem0_platform'}:
         log.warning(

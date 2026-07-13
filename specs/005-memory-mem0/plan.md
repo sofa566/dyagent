@@ -26,6 +26,43 @@
 **Constraints**: 全文件與介面說明使用繁體中文；不得破壞既有 `/api/chat` 行為相容性  
 **Scale/Scope**: 單組織多使用者、多代理者協作聊天
 
+## Routing Decision Formula
+
+本計畫補充主代理分派次代理時的評分基線，確保實作階段可量化驗證：
+
+- 長期記憶會影響系統回應是否適當。
+- 主代理在選擇次代理與替次代理準備上下文時，可透過 `ROUTER_ASSIGNMENT_MODE` 與 `AGENT_MEMORY_ROUTING_MODE` 控制長期記憶影響多寡。
+
+### 參數責任
+
+- `ROUTER_ASSIGNMENT_MODE`：主決策開關（挑選次代理流程）。
+- `AGENT_MEMORY_ROUTING_MODE`：子策略開關（僅在主決策有用到記憶訊號時生效）。
+
+### Hybrid 計分公式（預設）
+
+當 `ROUTER_ASSIGNMENT_MODE=hybrid` 時：
+
+`total_score = w_desc * desc_score + w_skill * skill_score + w_mem * memory_score`
+
+預設權重：
+
+- `w_desc = 0.40`
+- `w_skill = 0.35`
+- `w_mem = 0.25`
+
+### 子策略對 memory_score 的影響
+
+- `memory_first`：記憶命中可主導決策；高命中可提前定案。
+- `skill_first`：技能訊號優先，記憶僅加分或 tie-break。
+- `description_only`：記憶僅注入上下文，不參與路由計分。
+- `hybrid`：融合 `user_scope`、`agent_scope`、`interaction_scope` 記憶後計分。
+
+### 主決策與子策略交互規則
+
+- `ROUTER_ASSIGNMENT_MODE=description_only`：忽略 `AGENT_MEMORY_ROUTING_MODE`。
+- `ROUTER_ASSIGNMENT_MODE=skill_first`：記憶僅在技能分數接近時補充。
+- `ROUTER_ASSIGNMENT_MODE=memory_first|hybrid`：`AGENT_MEMORY_ROUTING_MODE` 直接影響 `memory_score` 計算、門檻與最終權重。
+
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
