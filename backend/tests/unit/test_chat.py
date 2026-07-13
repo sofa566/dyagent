@@ -1,7 +1,15 @@
-import pytest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
-from src.models import ChatAttachment, Conversation, LlmTurn, Message, MultiAgentSession, MultiAgentTask, SkillInteraction
+from src.models import (
+    ChatAttachment,
+    Conversation,
+    LlmTurn,
+    Message,
+    MultiAgentSession,
+    MultiAgentTask,
+    SkillInteraction,
+)
 from src.models.events import EventPart
 
 
@@ -99,3 +107,39 @@ class TestConversations:
         assert db.query(LlmTurn).filter(LlmTurn.conversation_id == conversation.id).count() == 0
         assert db.query(SkillInteraction).filter(SkillInteraction.conversation_id == conversation.id).count() == 0
         assert db.query(ChatAttachment).filter(ChatAttachment.conversation_id == conversation.id).count() == 0
+
+
+class TestMemory:
+    def test_forget_my_long_term_memory_success(self, client, admin_token, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        monkeypatch.setattr(
+            chat_routes.memory_service,
+            'forget_user',
+            lambda *, user_id, app_id=None: SimpleNamespace(ok=True, error=None),
+        )
+        response = client.post(
+            '/api/chat/memory/forget',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={},
+        )
+
+        assert response.status_code == 200
+        assert response.json().get('ok') is True
+
+    def test_forget_my_long_term_memory_failed(self, client, admin_token, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        monkeypatch.setattr(
+            chat_routes.memory_service,
+            'forget_user',
+            lambda *, user_id, app_id=None: SimpleNamespace(ok=False, error='mock_error'),
+        )
+        response = client.post(
+            '/api/chat/memory/forget',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={},
+        )
+
+        assert response.status_code == 400
+        assert response.json().get('detail', {}).get('code') == 'VALIDATION_ERROR'
