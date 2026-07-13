@@ -2206,6 +2206,18 @@ async def chat_stream(
         run_id=str(conversation.id),
     )
     memory_context = _build_memory_context(snippets=memory_retrieve_result.snippets)
+    _write_event_part_safe(
+        db=db,
+        conversation_id=str(conversation.id),
+        type_='memory.retrieve',
+        payload={
+            'provider': str(memory_retrieve_result.provider or ''),
+            'ok': bool(memory_retrieve_result.ok),
+            'hits': int(len(memory_retrieve_result.snippets)),
+            'elapsed_ms': int(memory_retrieve_result.elapsed_ms or 0),
+            'error': str(memory_retrieve_result.error or ''),
+        },
+    )
 
     _log.debug(
         'chat_stream prepared contexts',
@@ -3175,7 +3187,7 @@ async def chat_stream(
                 pass
             if allow_memory_write and merged:
                 try:
-                    memory_service.write(
+                    write_result = memory_service.write(
                         messages=[
                             {'role': 'user', 'content': str(message)},
                             {'role': 'assistant', 'content': str(merged)},
@@ -3190,8 +3202,30 @@ async def chat_stream(
                             'route_reason': str(route_reason or ''),
                         },
                     )
+                    _write_event_part_safe(
+                        db=db,
+                        conversation_id=str(conversation.id),
+                        type_='memory.write',
+                        payload={
+                            'provider': str(memory_service.provider_name or ''),
+                            'ok': bool(write_result.ok),
+                            'error': str(write_result.error or ''),
+                            'write_reason': 'user_assistant_pair',
+                        },
+                    )
                 except Exception as error:
                     _log.warning('memory.write_failed', error=str(error), conversation_id=str(conversation.id))
+                    _write_event_part_safe(
+                        db=db,
+                        conversation_id=str(conversation.id),
+                        type_='memory.write',
+                        payload={
+                            'provider': str(memory_service.provider_name or ''),
+                            'ok': False,
+                            'error': str(error),
+                            'write_reason': 'user_assistant_pair',
+                        },
+                    )
     return StreamingResponse(_gen_hb(), media_type='text/event-stream')
 
 
@@ -4083,6 +4117,24 @@ async def get_google_picker_config(
         'google_client_id': client_id,
         'google_api_key': api_key,
     }
+
+
+@router.post('/chat/memory/forget')
+async def forget_my_long_term_memory(
+    payload: dict[str, Any] | None = Body(default=None),
+    current_user: User = Depends(get_current_user),
+):
+    """目的：清除目前使用者的長期記憶。
+    為什麼：讓使用者可主動要求刪除記憶，符合資料治理與隱私可控需求。
+    """
+    _require_chat_permission(current_user)
+    app_id = ''
+    if isinstance(payload, dict):
+        app_id = str(payload.get('app_id') or '').strip()
+    result = memory_service.forget_user(user_id=str(current_user.id), app_id=(app_id or None))
+    if not result.ok:
+        raise validation_error('清除長期記憶失敗，請稍後再試')
+    return {'ok': True, 'provider': str(memory_service.provider_name or '')}
 
 
 @router.get('/conversations')
