@@ -41,6 +41,7 @@ from src.services.chat_attachment_service import chat_attachment_service
 from src.services.chat_router import ChatRouter
 from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
+from src.services.memory_service import memory_service
 from src.services.skill_registry import get_skill_registry, get_skill_rule_router
 
 router = APIRouter()
@@ -251,7 +252,14 @@ def _apply_custom_toolcall_guide(router_obj: ChatRouter, agent: Agent) -> None:
         pass
 
 
-def _build_capability_prompt(*, router_obj: ChatRouter, agent_ctx: dict[str, Any], message: str, history_context: str = '') -> str:
+def _build_capability_prompt(
+    *,
+    router_obj: ChatRouter,
+    agent_ctx: dict[str, Any],
+    message: str,
+    history_context: str = '',
+    memory_context: str = '',
+) -> str:
     """目的：統一能力前綴與工具指引拼接。
     為什麼：避免不同路由在 prompt 組裝上出現不一致。
     """
@@ -265,9 +273,38 @@ def _build_capability_prompt(*, router_obj: ChatRouter, agent_ctx: dict[str, Any
     prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
     guide = router_obj._render_toolcall_guide(agent_ctx)
     history_text = str(history_context or '').strip()
+    memory_text = str(memory_context or '').strip()
+    if history_text and memory_text:
+        return f"{prefix}{guide}\n{memory_text}\n\n{history_text}\n\n[Current User Message]\n{message}"
     if history_text:
         return f"{prefix}{guide}\n{history_text}\n\n[Current User Message]\n{message}"
+    if memory_text:
+        return f"{prefix}{guide}\n{memory_text}\n\n[Current User Message]\n{message}"
     return f"{prefix}{guide}\n{message}"
+
+
+def _build_memory_context(*, snippets: list[Any], max_chars: int = 1200) -> str:
+    """目的：將長期記憶檢索結果轉為可注入 prompt 的上下文區塊。
+    為什麼：聊天主流程需在保持上下文可控長度下利用記憶訊號提升回覆適切性。
+    """
+    if not snippets:
+        return ''
+    lines = ['[Long-term Memory]', '以下為與當前問題相關的長期記憶，請僅在相關時採納：']
+    used_chars = 0
+    for item in snippets:
+        text = str(getattr(item, 'text', '') or '').strip()
+        if not text:
+            continue
+        scoped = str(getattr(item, 'scope_type', '') or '').strip()
+        prefix = f"- ({scoped}) " if scoped else '- '
+        payload = f"{prefix}{text}"
+        if used_chars + len(payload) > max_chars:
+            break
+        lines.append(payload)
+        used_chars += len(payload)
+    if len(lines) <= 2:
+        return ''
+    return '\n'.join(lines)
 
 
 def _build_recent_history_context(
@@ -782,7 +819,154 @@ def _pick_worker_without_default(*, workers: list[Agent], message: str) -> tuple
     return None, 'no_confident_match'
 
 
-def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tuple[Agent | None, str]:
+def _resolve_router_assignment_mode() -> str:
+    """目的：讀取並正規化主代理分派策略設定。
+    為什麼：集中模式解析可避免路由流程散落字串判斷，降低維護成本。
+    """
+    raw_mode = str(getattr(settings, 'ROUTER_ASSIGNMENT_MODE', 'skill_first') or 'skill_first').strip().lower()
+    allowed_modes = {'description_only', 'hybrid', 'skill_first', 'memory_first'}
+    if raw_mode in allowed_modes:
+        return raw_mode
+    return 'skill_first'
+
+
+def _resolve_memory_routing_mode() -> str:
+    """目的：讀取並正規化記憶子策略設定。
+    為什麼：只有在主策略使用記憶訊號時才需要此設定，集中解析可維持一致性。
+    """
+    raw_mode = str(getattr(settings, 'AGENT_MEMORY_ROUTING_MODE', 'hybrid') or 'hybrid').strip().lower()
+    allowed_modes = {'description_only', 'hybrid', 'skill_first', 'memory_first'}
+    if raw_mode in allowed_modes:
+        return raw_mode
+    return 'hybrid'
+
+
+def _estimate_worker_description_score(*, worker: Agent, message: str) -> float:
+    """目的：估算使用者訊息對候選代理描述的語意吻合度。
+    為什麼：hybrid 路由需將描述匹配量化為分數，與技能/記憶訊號一起評估。
+    """
+    normalized_message = str(message or '').strip()
+    if not normalized_message:
+        return 0.0
+    try:
+        message_vector = embedding_service.embed_one(normalized_message)
+        if not message_vector:
+            return 0.0
+        profile_text = f"{str(worker.name or '').strip()}\n{str(worker.description or '').strip()}"
+        worker_vector = embedding_service.embed_one(profile_text)
+        score = _cosine_similarity(message_vector, worker_vector)
+        return max(0.0, min(1.0, float(score)))
+    except Exception:
+        return 0.0
+
+
+def _estimate_worker_memory_score(
+    *,
+    user_id: str | None,
+    worker: Agent,
+    message: str,
+    memory_mode: str,
+    skill_signal: bool,
+) -> float:
+    """目的：估算候選代理的長期記憶命中分數。
+    為什麼：memory_first/hybrid 需要把歷史記憶訊號量化後納入主路由評分。
+    """
+    if memory_mode == 'description_only':
+        return 0.0
+    if not bool(getattr(settings, 'AGENT_MEMORY_READ_ENABLED', True)):
+        return 0.0
+
+    normalized_user_id = str(user_id or '').strip()
+    if not normalized_user_id:
+        return 0.0
+
+    try:
+        retrieval = memory_service.retrieve(
+            query=message,
+            user_id=normalized_user_id,
+            agent_id=str(worker.id),
+            run_id=None,
+            top_k=max(1, int(getattr(settings, 'AGENT_MEMORY_TOP_K', 5) or 5)),
+        )
+        snippets = retrieval.snippets if retrieval.ok else []
+        if not snippets:
+            return 0.0
+        base_score = sum(max(0.0, min(1.0, float(item.score or 0.0))) for item in snippets) / len(snippets)
+    except Exception:
+        return 0.0
+
+    if memory_mode == 'memory_first':
+        return max(0.0, min(1.0, base_score))
+    if memory_mode == 'skill_first':
+        return max(0.0, min(1.0, base_score)) if skill_signal else 0.0
+    return max(0.0, min(1.0, base_score))
+
+
+def _pick_worker_by_memory_hybrid_score(
+    *,
+    db: Session,
+    workers: list[Agent],
+    message: str,
+    user_id: str | None,
+    matched_skill_name: str | None,
+    assignment_mode: str,
+    memory_mode: str,
+) -> tuple[Agent | None, str]:
+    """目的：以描述/技能/記憶三訊號加權評分選擇候選代理。
+    為什麼：支援 memory_first/hybrid 主策略，讓長期記憶可調整分派決策。
+    """
+    if not workers:
+        return None, 'worker_not_found'
+
+    target_skill_name = str(matched_skill_name or '').strip().lower()
+    best_worker: Agent | None = None
+    best_score = -1.0
+    best_memory_score = 0.0
+    best_skill_score = 0.0
+
+    for worker in workers:
+        skill_signal = False
+        if target_skill_name:
+            try:
+                skill_names = [str(name).strip().lower() for name in _extract_agent_skill_names(db=db, agent=worker)]
+            except Exception:
+                skill_names = []
+            skill_signal = target_skill_name in set(skill_names)
+
+        desc_score = _estimate_worker_description_score(worker=worker, message=message)
+        skill_score = 1.0 if skill_signal else 0.0
+        memory_score = _estimate_worker_memory_score(
+            user_id=user_id,
+            worker=worker,
+            message=message,
+            memory_mode=memory_mode,
+            skill_signal=skill_signal,
+        )
+
+        if assignment_mode == 'memory_first' and memory_mode == 'memory_first' and memory_score >= 0.8:
+            return worker, 'memory_first_threshold_match'
+
+        if assignment_mode == 'memory_first':
+            total_score = (0.20 * desc_score) + (0.30 * skill_score) + (0.50 * memory_score)
+        else:
+            total_score = (0.40 * desc_score) + (0.35 * skill_score) + (0.25 * memory_score)
+
+        if total_score > best_score:
+            best_worker = worker
+            best_score = total_score
+            best_memory_score = memory_score
+            best_skill_score = skill_score
+
+    if best_worker is None:
+        return None, 'no_confident_match'
+    if best_memory_score > 0:
+        return best_worker, f'{assignment_mode}_{memory_mode}_memory_match'
+    if best_skill_score > 0:
+        return best_worker, f'{assignment_mode}_skill_match'
+    return best_worker, f'{assignment_mode}_description_match'
+
+
+def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str, user_id: str | None = None) -> tuple[Agent | None, str]:
     """目的：以混合路由策略挑選工作代理者。
     為什麼：先用快路徑降低延遲，再以語意比對與模型裁決補齊準確率。
     """
@@ -808,6 +992,22 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
             return explicit, 'tasked_explicit_mention'
         return explicit, 'explicit_mention'
 
+    assignment_mode = _resolve_router_assignment_mode()
+    memory_mode = _resolve_memory_routing_mode()
+
+    if assignment_mode == 'description_only':
+        worker, reason = _pick_worker_without_default(workers=tasked_workers, message=routing_message)
+        if worker is not None:
+            return worker, f'tasked_{reason}'
+        public_worker, public_reason = _pick_worker_without_default(workers=public_workers, message=routing_message)
+        if public_worker is not None:
+            return public_worker, f'public_{public_reason}'
+        if public_workers:
+            return public_workers[0], 'public_default_fallback'
+        if tasked_workers:
+            return tasked_workers[0], 'tasked_default_fallback'
+        return None, 'worker_not_found'
+
     all_worker_skill_names: list[str] = []
     for worker in (public_workers + tasked_workers):
         worker_skill_names = _extract_agent_skill_names(db=db, agent=worker)
@@ -829,7 +1029,7 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
         intent_skill_name = None
     _log.debug(f'intent_skill_name={intent_skill_name}')
 
-    if intent_skill_name:
+    if intent_skill_name and assignment_mode == 'skill_first':
         for worker in (public_workers + tasked_workers):
             names = _extract_agent_skill_names(db=db, agent=worker)
             if any(str(n).strip().lower() == intent_skill_name for n in names):
@@ -840,6 +1040,24 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str) -> tup
                 if worker_class == 'tasked':
                     return worker, f'tasked_skill_hint_{intent_skill_name}'
                 return worker, f'skill_hint_{intent_skill_name}'
+
+    if assignment_mode in {'hybrid', 'memory_first'}:
+        scored_worker, scored_reason = _pick_worker_by_memory_hybrid_score(
+            db=db,
+            workers=(tasked_workers + public_workers),
+            message=routing_message,
+            user_id=(str(user_id) if user_id else None),
+            matched_skill_name=intent_skill_name,
+            assignment_mode=assignment_mode,
+            memory_mode=memory_mode,
+        )
+        if scored_worker is not None:
+            worker_class = str(getattr(scored_worker, 'agent_class', '') or '')
+            if worker_class == 'tasked':
+                return scored_worker, f'tasked_{scored_reason}'
+            if worker_class == 'public':
+                return scored_worker, f'public_{scored_reason}'
+            return scored_worker, scored_reason
 
     worker, reason = _pick_worker_without_default(workers=tasked_workers, message=routing_message)
     if worker is not None:
@@ -887,7 +1105,7 @@ def _is_query_style_message(message: str) -> bool:
     has_query_token = any(token in normalized_message for token in query_tokens)
     _log.debug(f'message="{message}" has_query_token={has_query_token}')
     has_action_token = any(token in normalized_message for token in action_tokens)
-    _log.debug(f'message="{message}" has_action_token={has_action_token}')  
+    _log.debug(f'message="{message}" has_action_token={has_action_token}')
     return has_query_token and (not has_action_token)
 
 
@@ -1880,6 +2098,7 @@ async def chat_stream(
     attachment_ids: list[str] | None = None,
     route_reason: str | None = None,
     persist_user_message: bool = True,
+    allow_memory_write: bool = True,
     persist_message: str | None = None,  # 若提供，DB 儲存此值而非 message（避免系統注入內容洩漏到畫面）
     db: Session = Depends(get_db),  # 数据库会话依赖，用于数据库操作
     current_user: User = Depends(get_current_user),  # 当前用户依赖，获取当前登录用户信息
@@ -1980,13 +2199,29 @@ async def chat_stream(
             exclude_message_id=(user_message.id if user_message is not None else None),
         )
 
-    _log.debug(f'chat_stream prepared agent_ctx={agent_ctx} history_context_length={len(history_context)}')
+    memory_retrieve_result = memory_service.retrieve(
+        query=message,
+        user_id=str(current_user.id),
+        agent_id=str(agent.id),
+        run_id=str(conversation.id),
+    )
+    memory_context = _build_memory_context(snippets=memory_retrieve_result.snippets)
+
+    _log.debug(
+        'chat_stream prepared contexts',
+        agent_ctx=agent_ctx,
+        history_context_length=len(history_context),
+        memory_context_length=len(memory_context),
+        memory_provider=memory_retrieve_result.provider,
+        memory_hits=len(memory_retrieve_result.snippets),
+    )
 
     composed_user_message = _build_capability_prompt(
         router_obj=router,
         agent_ctx=agent_ctx,
         message=message,
         history_context=history_context,
+        memory_context=memory_context,
     )
     started_at = time.monotonic()
     system_prompt_snapshot = _resolve_agent_system_prompt_snapshot(agent)
@@ -2938,6 +3173,25 @@ async def chat_stream(
                 )
             except Exception:
                 pass
+            if allow_memory_write and merged:
+                try:
+                    memory_service.write(
+                        messages=[
+                            {'role': 'user', 'content': str(message)},
+                            {'role': 'assistant', 'content': str(merged)},
+                        ],
+                        user_id=str(current_user.id),
+                        agent_id=str(agent.id),
+                        run_id=str(conversation.id),
+                        metadata={
+                            'scope_type': 'interaction_scope',
+                            'write_reason': 'user_assistant_pair',
+                            'conversation_id': str(conversation.id),
+                            'route_reason': str(route_reason or ''),
+                        },
+                    )
+                except Exception as error:
+                    _log.warning('memory.write_failed', error=str(error), conversation_id=str(conversation.id))
     return StreamingResponse(_gen_hb(), media_type='text/event-stream')
 
 
@@ -3064,6 +3318,7 @@ async def _run_subtask_stream(
     sub_response = await chat_stream(
         agent_id=agent_id,
         message=enriched_message,
+        allow_memory_write=False,
         db=db,
         current_user=current_user,
     )
@@ -3559,7 +3814,12 @@ async def chat_entry_router(
                     yield event
             else:
                 # decompose 失敗或降級 → 走單代理選擇器，不直接固定主代理
-                worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=enriched_message)
+                worker, route_reason = _pick_worker_agent(
+                    db=db,
+                    router_agent=router_agent,
+                    message=enriched_message,
+                    user_id=str(current_user.id),
+                )
                 if worker is None:
                     worker = router_agent
                     route_reason = 'decompose_failed_worker_not_found'
@@ -3618,7 +3878,12 @@ async def chat_entry_router(
     # ── 單代理路徑（原有邏輯不變）──
 
     _log.debug('single_agent_routing', user_message=message, router_agent_id=str(router_agent.id), debug=debug_trace_enabled)
-    worker, route_reason = _pick_worker_agent(db=db, router_agent=router_agent, message=enriched_message)
+    worker, route_reason = _pick_worker_agent(
+        db=db,
+        router_agent=router_agent,
+        message=enriched_message,
+        user_id=str(current_user.id),
+    )
     is_fallback = False
     if worker is None:
         worker = router_agent

@@ -104,3 +104,40 @@
 - `mock`：測試用模擬記憶供應器，不依賴外部服務。
 - `mem0_oss`：使用 Mem0 開源版（自託管），可接既有 Qdrant。
 - `mem0_platform`：使用 Mem0 官方託管平台 API（非任意第三方雲端記憶服務）。
+
+## 路由與記憶影響說明
+
+以下原則作為本功能的路由設計基準：
+
+- 長期記憶會影響系統回應是否適當。
+- 主代理在選擇次代理與替次代理準備上下文時，可透過 `ROUTER_ASSIGNMENT_MODE` 與 `AGENT_MEMORY_ROUTING_MODE` 兩個參數設定，決定長期記憶影響多寡。
+
+### 參數責任
+
+- `ROUTER_ASSIGNMENT_MODE`：主代理挑選次代理的主決策開關。
+- `AGENT_MEMORY_ROUTING_MODE`：僅在主決策使用記憶訊號時生效，用於控制記憶分數的計算與權重。
+
+### 建議評分公式（實作基線）
+
+當 `ROUTER_ASSIGNMENT_MODE=hybrid` 時，對每個候選次代理計算：
+
+`total_score = w_desc * desc_score + w_skill * skill_score + w_mem * memory_score`
+
+建議預設權重：
+
+- `w_desc = 0.40`
+- `w_skill = 0.35`
+- `w_mem = 0.25`
+
+### memory_score 子策略（受 AGENT_MEMORY_ROUTING_MODE 控制）
+
+- `memory_first`：記憶命中可作為主導訊號；命中高且超門檻時可提前定案。
+- `skill_first`：技能命中優先；記憶訊號僅作加分或同分決勝（tie-break）。
+- `description_only`：記憶只用於上下文，不影響路由分數。
+- `hybrid`：融合 `user_scope`、`agent_scope`、`interaction_scope` 記憶分數後再加權。
+
+### 主決策與子策略交互規則
+
+- 若 `ROUTER_ASSIGNMENT_MODE=description_only`，忽略 `AGENT_MEMORY_ROUTING_MODE`。
+- 若 `ROUTER_ASSIGNMENT_MODE=skill_first`，記憶訊號僅在技能分數接近時作補充。
+- 若 `ROUTER_ASSIGNMENT_MODE=memory_first` 或 `hybrid`，`AGENT_MEMORY_ROUTING_MODE` 會直接影響 `memory_score` 的計算、門檻與最終影響比重。
