@@ -1,7 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from functools import lru_cache
-from typing import Optional
 import logging
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # - LLM_TIMEOUT_SECONDS：LLM 逾時秒數（整數）
     LITELLM_CLOUD_PROVIDER: str = 'openai'
     LITELLM_ONPREM_BASE_URL: str = ''
-    
+
     LLM_DEFAULT_TIER: str = 'cloud'
     LLM_TIMEOUT_SECONDS: int = 60
     # Doom loop 防護門檻（連續相同工具+輸入觸發）
@@ -73,6 +73,36 @@ class Settings(BaseSettings):
     CHAT_HISTORY_MAX_TOKENS: int = 2500
     CHAT_HISTORY_INCLUDE_TOOL_TEXT: bool = False
 
+    # 記憶層設定
+    # AGENT_MEMORY_PROVIDER: off | mock | mem0_oss | mem0_platform
+    AGENT_MEMORY_PROVIDER: str = 'off'
+    # 記憶導向路由策略：description_only | hybrid | skill_first | memory_first
+    AGENT_MEMORY_ROUTING_MODE: str = 'hybrid'
+    AGENT_MEMORY_READ_ENABLED: bool = True
+    AGENT_MEMORY_WRITE_ENABLED: bool = True
+    AGENT_MEMORY_TOP_K: int = 5
+    AGENT_MEMORY_APP_ID: str = 'dyagent'
+    # 寫回策略：assistant_only | user_assistant_pair | with_error_notes
+    AGENT_MEMORY_WRITE_POLICY: str = 'user_assistant_pair'
+    SHORT_TERM_MEMORY_TTL_SEC: int = 3600
+    SHORT_TERM_MEMORY_MAX_MESSAGES: int = 10
+
+    # Mem0 OSS 設定
+    MEM0_VECTOR_PROVIDER: str = 'qdrant'
+    MEM0_QDRANT_HOST: str = 'localhost'
+    MEM0_QDRANT_PORT: int = 6333
+    MEM0_QDRANT_COLLECTION: str = 'dyagent_long_term_memories'
+    MEM0_LLM_PROVIDER: str = 'openai'
+    MEM0_LLM_API_BASE: str = ''
+    MEM0_LLM_MODEL: str = ''
+    MEM0_LLM_API_KEY: str = ''
+    MEM0_EMBEDDER_PROVIDER: str = 'openai'
+    MEM0_EMBEDDER_API_BASE: str = ''
+    MEM0_EMBEDDER_MODEL: str = ''
+    MEM0_EMBEDDER_API_KEY: str = ''
+    # Mem0 Platform 設定
+    MEM0_API_KEY: str = ''
+
     # Embedding 設定
     # provider: deterministic | sentence_transformers | ollama | vllm
     EMBEDDING_PROVIDER: str = 'deterministic'
@@ -82,6 +112,8 @@ class Settings(BaseSettings):
 
     # Router 路由門檻（0~1）
     ROUTER_EMBEDDING_THRESHOLD: float = 0.55
+    # 主代理分派策略：description_only | hybrid | skill_first | memory_first
+    ROUTER_ASSIGNMENT_MODE: str = 'skill_first'
 
     # 預設模型（依供應商與地端引擎）
     OPENAI_MODEL: str = 'gpt-4o'
@@ -132,7 +164,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', case_sensitive=True, extra='allow')
 
 
-@lru_cache()
+@lru_cache
 def get_settings():
     return Settings()
 
@@ -172,3 +204,30 @@ def validate_llm_settings() -> None:
         log.warning("config.invalid_chat_history_max_messages: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_MESSAGES)
     if settings.CHAT_HISTORY_MAX_TOKENS < 0:
         log.warning("config.invalid_chat_history_max_tokens: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_TOKENS)
+    router_assignment_mode = str(settings.ROUTER_ASSIGNMENT_MODE or '').strip().lower()
+    if router_assignment_mode not in {'description_only', 'hybrid', 'skill_first', 'memory_first'}:
+        log.warning(
+            "config.invalid_router_assignment_mode: value=%s expect=description_only|hybrid|skill_first|memory_first",
+            settings.ROUTER_ASSIGNMENT_MODE,
+        )
+    memory_provider = str(settings.AGENT_MEMORY_PROVIDER or '').strip().lower()
+    if memory_provider not in {'off', 'mock', 'mem0_oss', 'mem0_platform'}:
+        log.warning(
+            "config.invalid_agent_memory_provider: value=%s expect=off|mock|mem0_oss|mem0_platform",
+            settings.AGENT_MEMORY_PROVIDER,
+        )
+    memory_routing_mode = str(settings.AGENT_MEMORY_ROUTING_MODE or '').strip().lower()
+    if memory_routing_mode not in {'description_only', 'hybrid', 'skill_first', 'memory_first'}:
+        log.warning(
+            "config.invalid_agent_memory_routing_mode: value=%s expect=description_only|hybrid|skill_first|memory_first",
+            settings.AGENT_MEMORY_ROUTING_MODE,
+        )
+    if settings.AGENT_MEMORY_TOP_K <= 0:
+        log.warning("config.invalid_agent_memory_top_k: value=%s expect=>0 int", settings.AGENT_MEMORY_TOP_K)
+    if settings.SHORT_TERM_MEMORY_TTL_SEC <= 0:
+        log.warning("config.invalid_short_term_memory_ttl_sec: value=%s expect=>0 int", settings.SHORT_TERM_MEMORY_TTL_SEC)
+    if settings.SHORT_TERM_MEMORY_MAX_MESSAGES <= 0:
+        log.warning(
+            "config.invalid_short_term_memory_max_messages: value=%s expect=>0 int",
+            settings.SHORT_TERM_MEMORY_MAX_MESSAGES,
+        )
