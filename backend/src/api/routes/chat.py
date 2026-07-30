@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from functools import lru_cache
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
@@ -32,6 +32,7 @@ from src.models import (
     Message,
     MultiAgentSession,
     MultiAgentTask,
+    RagDataset,
     SkillEntry,
     SkillInteraction,
     User,
@@ -42,6 +43,8 @@ from src.services.chat_router import ChatRouter
 from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
 from src.services.memory_service import memory_service
+from src.services.qdrant_service import qdrant_service
+from src.services.redis_service import redis_service
 from src.services.skill_registry import get_skill_registry, get_skill_rule_router
 
 router = APIRouter()
@@ -50,6 +53,8 @@ _log = get_logger("api.chat")
 REFERENCE_FETCH_TIMEOUT_SECONDS = 8
 REFERENCE_FETCH_MAX_CHARS = 6000
 REFERENCE_FETCH_MAX_URLS = 2
+CHAT_RAG_MAX_CONTEXT_CHARS = 2400
+CHAT_RAG_MAX_SNIPPET_CHARS = 400
 DEFAULT_SKILL_INTENT_AMBIGUOUS_TOKENS = (
     '台灣', '臺灣', 'taiwan',
     '我要', '我想', '幫我', '請幫我', '麻煩幫我', '查詢', '查一下',
@@ -135,6 +140,14 @@ def _require_chat_permission(current_user: User) -> None:
     為什麼：避免多個路由重複寫同一檢查邏輯，降低遺漏風險。
     """
     if not check_permission(current_user, 'chat'):
+        raise forbidden_error()
+
+
+def _require_admin_permission(current_user: User) -> None:
+    """目的：集中管理端點權限檢查。
+    為什麼：記憶治理 API 僅供管理者使用，避免一般使用者存取除錯與跨使用者操作。
+    """
+    if str(getattr(current_user, 'role', '') or '') != 'admin':
         raise forbidden_error()
 
 
@@ -259,6 +272,8 @@ def _build_capability_prompt(
     message: str,
     history_context: str = '',
     memory_context: str = '',
+    rag_context: str = '',
+    rag_runtime: dict[str, Any] | None = None,
 ) -> str:
     """目的：統一能力前綴與工具指引拼接。
     為什麼：避免不同路由在 prompt 組裝上出現不一致。
@@ -274,12 +289,21 @@ def _build_capability_prompt(
     guide = router_obj._render_toolcall_guide(agent_ctx)
     history_text = str(history_context or '').strip()
     memory_text = str(memory_context or '').strip()
-    if history_text and memory_text:
-        return f"{prefix}{guide}\n{memory_text}\n\n{history_text}\n\n[Current User Message]\n{message}"
-    if history_text:
-        return f"{prefix}{guide}\n{history_text}\n\n[Current User Message]\n{message}"
-    if memory_text:
-        return f"{prefix}{guide}\n{memory_text}\n\n[Current User Message]\n{message}"
+    rag_text = str(rag_context or '').strip()
+    runtime = rag_runtime if isinstance(rag_runtime, dict) else {}
+    rag_hits = int(runtime.get('hits') or 0)
+    rag_guard_text = ''
+    if rag_text and rag_hits > 0:
+        rag_guard_text = (
+            '[RAG Runtime Guard]\n'
+            '你已取得使用者授權資料集的檢索片段。\n'
+            '回覆時必須優先依據 [RAG Context]，不得宣稱「無法存取資料集」或「無法搜尋資料集」。\n'
+            '若資訊不足，請明確說明缺少哪個欄位，但仍要先回報已命中的內容。'
+        )
+    context_blocks = [block for block in (rag_guard_text, memory_text, history_text, rag_text) if block]
+    if context_blocks:
+        context_text = '\n\n'.join(context_blocks)
+        return f"{prefix}{guide}\n{context_text}\n\n[Current User Message]\n{message}"
     return f"{prefix}{guide}\n{message}"
 
 
@@ -358,6 +382,48 @@ def _build_recent_history_context(
         picked.append((role, content[:1200]))
         if len(picked) >= max_messages:
             break
+
+    if not picked:
+        return ''
+
+    picked.reverse()
+    lines = ['[Conversation History]', '以下為同一會話最近對話，請延續上下文回答：']
+    for role, content in picked:
+        label = '使用者' if role == 'user' else '助理'
+        lines.append(f"- {label}: {content}")
+    return '\n'.join(lines)
+
+
+def _build_short_term_history_context(
+    *,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    include_tool_text: bool,
+) -> str:
+    """目的：將 Redis 短期記憶轉為聊天上下文區塊。
+    為什麼：短期記憶可避免每輪查 DB，需提供與既有 history_context 相容的格式。
+    """
+    if max_tokens <= 0:
+        return ''
+    if not messages:
+        return ''
+
+    picked: list[tuple[str, str]] = []
+    used_tokens = 0
+    for row in reversed(messages):
+        role = str((row or {}).get('role') or '').strip().lower()
+        content_raw = str((row or {}).get('content') or '').strip()
+        if role not in {'user', 'assistant'} or not content_raw:
+            continue
+        content = content_raw if include_tool_text else _strip_tool_protocol_text(content_raw)
+        content = content.strip()
+        if not content:
+            continue
+        entry_tokens = _estimate_token_count(content) + 8
+        if (used_tokens + entry_tokens) > max_tokens:
+            break
+        used_tokens += entry_tokens
+        picked.append((role, content[:1200]))
 
     if not picked:
         return ''
@@ -834,11 +900,11 @@ def _resolve_memory_routing_mode() -> str:
     """目的：讀取並正規化記憶子策略設定。
     為什麼：只有在主策略使用記憶訊號時才需要此設定，集中解析可維持一致性。
     """
-    raw_mode = str(getattr(settings, 'AGENT_MEMORY_ROUTING_MODE', 'hybrid') or 'hybrid').strip().lower()
-    allowed_modes = {'description_only', 'hybrid', 'skill_first', 'memory_first'}
+    raw_mode = str(getattr(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_hybrid') or 'mem_hybrid').strip().lower()
+    allowed_modes = {'mem_disabled', 'mem_hybrid', 'mem_boost', 'mem_dominant'}
     if raw_mode in allowed_modes:
         return raw_mode
-    return 'hybrid'
+    return 'mem_hybrid'
 
 
 def _estimate_worker_description_score(*, worker: Agent, message: str) -> float:
@@ -871,7 +937,7 @@ def _estimate_worker_memory_score(
     """目的：估算候選代理的長期記憶命中分數。
     為什麼：memory_first/hybrid 需要把歷史記憶訊號量化後納入主路由評分。
     """
-    if memory_mode == 'description_only':
+    if memory_mode == 'mem_disabled':
         return 0.0
     if not bool(getattr(settings, 'AGENT_MEMORY_READ_ENABLED', True)):
         return 0.0
@@ -895,9 +961,9 @@ def _estimate_worker_memory_score(
     except Exception:
         return 0.0
 
-    if memory_mode == 'memory_first':
+    if memory_mode == 'mem_dominant':
         return max(0.0, min(1.0, base_score))
-    if memory_mode == 'skill_first':
+    if memory_mode == 'mem_boost':
         return max(0.0, min(1.0, base_score)) if skill_signal else 0.0
     return max(0.0, min(1.0, base_score))
 
@@ -943,7 +1009,7 @@ def _pick_worker_by_memory_hybrid_score(
             skill_signal=skill_signal,
         )
 
-        if assignment_mode == 'memory_first' and memory_mode == 'memory_first' and memory_score >= 0.8:
+        if assignment_mode == 'memory_first' and memory_mode == 'mem_dominant' and memory_score >= 0.8:
             return worker, 'memory_first_threshold_match'
 
         if assignment_mode == 'memory_first':
@@ -1107,6 +1173,26 @@ def _is_query_style_message(message: str) -> bool:
     has_action_token = any(token in normalized_message for token in action_tokens)
     _log.debug(f'message="{message}" has_action_token={has_action_token}')
     return has_query_token and (not has_action_token)
+
+
+def _is_rag_then_tool_request(message: str) -> bool:
+    """目的：判斷訊息是否屬於「先查資料再交由工具產出」類型。
+    為什麼：RAG 命中時不應一律禁用工具，否則無法支援報表/文件產生等複合流程。
+    """
+    normalized_message = str(message or '').strip().lower()
+    if not normalized_message:
+        return False
+
+    query_tokens = [
+        '搜尋', '查詢', '查找', '找出', '根據資料集', '依據資料集', '引用', '比對',
+    ]
+    deliverable_tokens = [
+        'docx', '報表', '報告', '匯出', '產生', '生成', '整理成', '輸出',
+    ]
+
+    has_query_token = any(token in normalized_message for token in query_tokens)
+    has_deliverable_token = any(token in normalized_message for token in deliverable_tokens)
+    return has_query_token and has_deliverable_token
 
 
 def _has_meaningful_skill_overlap(*, skill_row: SkillEntry, normalized_message: str) -> bool:
@@ -1757,6 +1843,319 @@ def _normalize_attachment_ids(raw_attachment_ids: Any) -> list[str]:
     return list(dict.fromkeys(normalized_ids))
 
 
+def _normalize_selected_dataset_ids(raw_dataset_ids: Any) -> list[str]:
+    """目的：正規化聊天請求中的資料集 ID 清單。
+    為什麼：避免無效 UUID 或重複值污染檢索範圍，並維持後端行為可預期。
+    """
+    normalized_ids: list[str] = []
+    for raw_item in list(raw_dataset_ids or []):
+        normalized_item = str(raw_item or '').strip()
+        if not normalized_item:
+            continue
+        try:
+            uuid.UUID(normalized_item)
+        except Exception:
+            continue
+        normalized_ids.append(normalized_item)
+    return list(dict.fromkeys(normalized_ids))
+
+
+def _extract_selected_dataset_ids_from_message(message: str) -> list[str]:
+    """目的：從訊息中的「使用資料集」附加區塊抽取資料集 ID。
+    為什麼：前端偶發未帶 selected_dataset_ids 時，仍需保留使用者在文字上下文中明確指定的資料集範圍。
+    """
+    message_text = str(message or '')
+    if not message_text:
+        return []
+
+    marker_text = '使用資料集:'
+    marker_index = message_text.find(marker_text)
+    if marker_index < 0:
+        return []
+
+    dataset_section = message_text[marker_index:]
+    raw_ids = re.findall(r'id=([0-9a-fA-F\-]{36})', dataset_section)
+    return _normalize_selected_dataset_ids(raw_ids)
+
+
+def _merge_selected_dataset_ids(*, payload_ids: list[str], message: str) -> list[str]:
+    """目的：合併 payload 與訊息文字中的資料集 ID。
+    為什麼：避免前端與訊息附加區塊來源不一致時遺失使用者本輪選用的資料集。
+    """
+    normalized_payload_ids = _normalize_selected_dataset_ids(payload_ids)
+    inferred_ids = _extract_selected_dataset_ids_from_message(message)
+    return list(dict.fromkeys(normalized_payload_ids + inferred_ids))
+
+
+def _resolve_forced_agent_by_selected_datasets(*, db: Session, selected_dataset_ids: list[str]) -> Agent | None:
+    """目的：根據使用者本輪選用的私有資料集推導應固定使用的代理者。
+    為什麼：私有資料集僅能由其 owner agent 檢索，若路由到其他代理者會造成資料集選用失效。
+    """
+    normalized_dataset_ids = _normalize_selected_dataset_ids(selected_dataset_ids)
+    if not normalized_dataset_ids:
+        return None
+
+    dataset_rows = db.query(RagDataset).filter(
+        RagDataset.id.in_(normalized_dataset_ids),
+        RagDataset.enabled == True,  # noqa: E712
+    ).all()
+
+    private_owner_ids: list[str] = []
+    for dataset_row in dataset_rows:
+        if str(getattr(dataset_row, 'scope', '') or '') != 'agent_private':
+            continue
+        owner_agent_id = str(getattr(dataset_row, 'agent_id', '') or '').strip()
+        if not owner_agent_id:
+            continue
+        private_owner_ids.append(owner_agent_id)
+
+    unique_owner_ids = list(dict.fromkeys(private_owner_ids))
+    if len(unique_owner_ids) != 1:
+        return None
+
+    try:
+        owner_agent_uuid = uuid.UUID(unique_owner_ids[0])
+    except Exception:
+        return None
+
+    owner_agent = db.query(Agent).filter(
+        Agent.id == owner_agent_uuid,
+        Agent.enabled == True,  # noqa: E712
+    ).first()
+    return owner_agent
+
+
+def _dataset_collection_name_for_chat(dataset_row: RagDataset) -> str:
+    """目的：統一聊天檢索時的 Qdrant collection 命名。
+    為什麼：聊天檢索與上傳索引必須使用同一命名規則，才能命中既有向量資料。
+    """
+    custom_index_name = str(getattr(dataset_row, 'index_name', '') or '').strip()
+    if custom_index_name:
+        return custom_index_name
+
+    dataset_id_text = str(getattr(dataset_row, 'id', '') or '').replace('-', '')
+    if str(getattr(dataset_row, 'scope', '') or '') == 'agent_private':
+        return f'rag_private_{dataset_id_text}'
+    return f'rag_dataset_{dataset_id_text}'
+
+
+def _build_chat_rag_context(
+    *,
+    db: Session,
+    agent: Agent,
+    query: str,
+    selected_dataset_ids: list[str],
+) -> tuple[str, dict[str, Any]]:
+    """目的：依聊天請求與代理設定產生可注入 Prompt 的 RAG 片段上下文。
+    為什麼：讓聊天路徑可真實命中資料集內容，而非僅依賴文字提示。
+    """
+    query_text = str(query or '').strip()
+    if not query_text:
+        return '', {'enabled': False, 'reason': 'empty_query', 'hits': 0, 'selected_rows': []}
+
+    rag_config = agent.rag_config if isinstance(agent.rag_config, dict) else {}
+    top_k_value = int((rag_config or {}).get('topK') or 5)
+    top_k = min(20, max(1, top_k_value))
+
+    bound_global_ids = [str(item) for item in list((rag_config or {}).get('global_dataset_ids') or []) if item]
+    bound_private_ids = [str(item) for item in list((rag_config or {}).get('private_dataset_ids') or []) if item]
+    bound_dataset_ids = list(dict.fromkeys(bound_global_ids + bound_private_ids))
+
+    default_global_rows = db.query(RagDataset).filter(
+        RagDataset.scope == 'global',
+        RagDataset.enabled == True,  # noqa: E712
+        RagDataset.sensitivity == 'normal',
+    ).all()
+    default_global_ids = [str(row.id) for row in default_global_rows]
+
+    _log.info(
+        'chat.rag.selection_start',
+        agent_id=str(getattr(agent, 'id', '') or ''),
+        selected_dataset_ids=selected_dataset_ids,
+        bound_dataset_ids=bound_dataset_ids,
+        default_global_count=len(default_global_ids),
+        top_k=top_k,
+    )
+
+    candidate_dataset_ids = selected_dataset_ids if selected_dataset_ids else list(dict.fromkeys(bound_dataset_ids + default_global_ids))
+    if not candidate_dataset_ids:
+        _log.info(
+            'chat.rag.selection_end',
+            reason='no_dataset_candidates',
+            selected_dataset_ids=selected_dataset_ids,
+            candidate_dataset_ids=[],
+        )
+        return '', {
+            'enabled': False,
+            'reason': 'no_dataset_candidates',
+            'selected_dataset_ids': selected_dataset_ids,
+            'effective_dataset_ids': [],
+            'hits': 0,
+            'selected_rows': [],
+        }
+
+    dataset_rows = db.query(RagDataset).filter(
+        RagDataset.id.in_(candidate_dataset_ids),
+        RagDataset.enabled == True,  # noqa: E712
+    ).all()
+    dataset_by_id = {str(row.id): row for row in dataset_rows}
+
+    effective_rows: list[RagDataset] = []
+    for dataset_id in candidate_dataset_ids:
+        dataset_row = dataset_by_id.get(str(dataset_id))
+        if dataset_row is None:
+            continue
+        scope = str(getattr(dataset_row, 'scope', '') or '')
+        if scope == 'global':
+            if str(getattr(dataset_row, 'sensitivity', '') or '') != 'normal':
+                continue
+            effective_rows.append(dataset_row)
+            continue
+        if scope == 'agent_private' and str(getattr(dataset_row, 'agent_id', '') or '') == str(agent.id):
+            effective_rows.append(dataset_row)
+
+    if not effective_rows:
+        _log.info(
+            'chat.rag.selection_end',
+            reason='no_accessible_datasets',
+            selected_dataset_ids=selected_dataset_ids,
+            candidate_dataset_ids=candidate_dataset_ids,
+            effective_dataset_ids=[],
+        )
+        return '', {
+            'enabled': False,
+            'reason': 'no_accessible_datasets',
+            'selected_dataset_ids': selected_dataset_ids,
+            'effective_dataset_ids': [],
+            'hits': 0,
+            'selected_rows': [],
+        }
+
+    try:
+        query_vector = embedding_service.embed_one(query_text)
+    except Exception as error:
+        return '', {
+            'enabled': True,
+            'reason': 'embedding_failed',
+            'error': str(error),
+            'selected_dataset_ids': selected_dataset_ids,
+            'effective_dataset_ids': [str(row.id) for row in effective_rows],
+            'hits': 0,
+            'selected_rows': [],
+        }
+
+    merged_rows: list[dict[str, Any]] = []
+    for dataset_row in effective_rows:
+        collection_name = _dataset_collection_name_for_chat(dataset_row)
+        results = qdrant_service.search(collection_name=collection_name, query_vector=query_vector, limit=top_k)
+        _log.info(
+            'chat.rag.collection_search',
+            dataset_id=str(getattr(dataset_row, 'id', '') or ''),
+            dataset_name=str(getattr(dataset_row, 'name', '') or ''),
+            collection_name=collection_name,
+            hit_count=len(results),
+        )
+        for item in results:
+            payload_obj = item.get('payload') if isinstance(item, dict) and isinstance(item.get('payload'), dict) else {}
+            snippet_text = str(payload_obj.get('snippet') or payload_obj.get('text') or '').strip()
+            if not snippet_text:
+                continue
+            merged_rows.append({
+                'score': float(item.get('score') or 0.0),
+                'dataset_id': str(dataset_row.id),
+                'dataset_name': str(getattr(dataset_row, 'name', '') or ''),
+                'filename': str(payload_obj.get('filename') or ''),
+                'file_key': str(payload_obj.get('file_key') or ''),
+                'page_number': (int(payload_obj.get('page_number')) if isinstance(payload_obj.get('page_number'), int) else None),
+                'snippet': snippet_text,
+            })
+
+    if not merged_rows:
+        _log.info(
+            'chat.rag.selection_end',
+            reason='no_hits',
+            selected_dataset_ids=selected_dataset_ids,
+            effective_dataset_ids=[str(row.id) for row in effective_rows],
+            merged_rows=0,
+        )
+        return '', {
+            'enabled': True,
+            'reason': 'no_hits',
+            'selected_dataset_ids': selected_dataset_ids,
+            'effective_dataset_ids': [str(row.id) for row in effective_rows],
+            'hits': 0,
+            'selected_rows': [],
+        }
+
+    merged_rows.sort(key=lambda row: float(row.get('score') or 0.0), reverse=True)
+    seen_keys: set[tuple[str, str, int | None, str]] = set()
+    selected_rows: list[dict[str, Any]] = []
+    for item in merged_rows:
+        dedupe_key = (
+            str(item.get('dataset_id') or ''),
+            str(item.get('filename') or ''),
+            item.get('page_number') if isinstance(item.get('page_number'), int) else None,
+            str(item.get('snippet') or '')[:120],
+        )
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        selected_rows.append(item)
+        if len(selected_rows) >= top_k:
+            break
+
+    max_chars = max(600, int(getattr(settings, 'CHAT_RAG_MAX_CONTEXT_CHARS', CHAT_RAG_MAX_CONTEXT_CHARS) or CHAT_RAG_MAX_CONTEXT_CHARS))
+    used_chars = 0
+    context_lines = ['[RAG Context]', '以下內容來自使用者授權資料集，僅在與問題相關時採納，並優先根據內容回答：']
+    for item in selected_rows:
+        snippet = str(item.get('snippet') or '').strip().replace('\n', ' ')
+        snippet = snippet[:CHAT_RAG_MAX_SNIPPET_CHARS]
+        dataset_name = str(item.get('dataset_name') or '未命名資料集')
+        filename = str(item.get('filename') or '未知檔名')
+        page_number = item.get('page_number') if isinstance(item.get('page_number'), int) else None
+        source_label = f'{dataset_name} / {filename}' + (f' / 第 {page_number} 頁' if page_number is not None else '')
+        line_text = f'- [{source_label}] {snippet}'
+        if used_chars + len(line_text) > max_chars:
+            break
+        context_lines.append(line_text)
+        used_chars += len(line_text)
+
+    if len(context_lines) <= 2:
+        _log.info(
+            'chat.rag.selection_end',
+            reason='hits_trimmed_by_limit',
+            selected_dataset_ids=selected_dataset_ids,
+            effective_dataset_ids=[str(row.id) for row in effective_rows],
+            merged_rows=len(merged_rows),
+            selected_rows=0,
+        )
+        return '', {
+            'enabled': True,
+            'reason': 'hits_trimmed_by_limit',
+            'selected_dataset_ids': selected_dataset_ids,
+            'effective_dataset_ids': [str(row.id) for row in effective_rows],
+            'hits': 0,
+            'selected_rows': [],
+        }
+
+    _log.info(
+        'chat.rag.selection_end',
+        reason='ok',
+        selected_dataset_ids=selected_dataset_ids,
+        effective_dataset_ids=[str(row.id) for row in effective_rows],
+        merged_rows=len(merged_rows),
+        selected_rows=len(selected_rows),
+    )
+    return '\n'.join(context_lines), {
+        'enabled': True,
+        'reason': 'ok',
+        'selected_dataset_ids': selected_dataset_ids,
+        'effective_dataset_ids': [str(row.id) for row in effective_rows],
+        'hits': len(context_lines) - 2,
+        'selected_rows': selected_rows,
+    }
+
+
 def _inject_attachment_markdowns_into_payload(
     *,
     payload: dict[str, Any],
@@ -1785,6 +2184,64 @@ def _inject_attachment_markdowns_into_payload(
             normalized_payload['text'] = f'{existing_text}\n\n{attachment_text}'
         else:
             normalized_payload['text'] = attachment_text
+    return normalized_payload
+
+
+def _inject_rag_evidence_into_payload(
+    *,
+    payload: dict[str, Any],
+    query: str,
+    rag_runtime: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """目的：將 RAG 命中證據注入工具 payload，支援 rag_then_tool。
+    為什麼：工具（含 Skills / MCP）需要可直接消費的 evidence 結構，才能產出可追溯內容。
+    """
+    normalized_payload = dict(payload or {})
+    runtime = rag_runtime if isinstance(rag_runtime, dict) else {}
+    selected_rows = runtime.get('selected_rows') if isinstance(runtime.get('selected_rows'), list) else []
+    if not selected_rows:
+        return normalized_payload
+
+    evidence_rows: list[dict[str, Any]] = []
+    citations: list[str] = []
+    for item in selected_rows:
+        if not isinstance(item, dict):
+            continue
+        dataset_name = str(item.get('dataset_name') or '')
+        filename = str(item.get('filename') or '')
+        page_number = item.get('page_number') if isinstance(item.get('page_number'), int) else None
+        citation = f'{dataset_name}/{filename}' + (f'#p{page_number}' if page_number is not None else '')
+        evidence_rows.append({
+            'dataset_id': str(item.get('dataset_id') or ''),
+            'dataset_name': dataset_name,
+            'doc_id': str(item.get('doc_id') or ''),
+            'chunk_id': str(item.get('chunk_id') or ''),
+            'filename': filename,
+            'page_number': page_number,
+            'text': str(item.get('snippet') or ''),
+            'score': float(item.get('score') or 0.0),
+            'citation': citation,
+        })
+        if citation and citation not in citations:
+            citations.append(citation)
+
+    if not evidence_rows:
+        return normalized_payload
+
+    summary_lines: list[str] = []
+    for row in evidence_rows[:5]:
+        snippet = str(row.get('text') or '').replace('\n', ' ').strip()
+        snippet = snippet[:180]
+        if not snippet:
+            continue
+        summary_lines.append(f"- {row.get('citation')}: {snippet}")
+
+    normalized_payload['_rag'] = {
+        'query': str(query or '').strip(),
+        'summary': '\n'.join(summary_lines),
+        'evidence': evidence_rows,
+        'citations': citations,
+    }
     return normalized_payload
 
 
@@ -2096,6 +2553,7 @@ async def chat_stream(
     message: str,  # 用户输入的消息内容，需要AI代理处理和回应
     conversation_id: str | None = None,
     attachment_ids: list[str] | None = None,
+    selected_dataset_ids: list[str] | None = None,
     route_reason: str | None = None,
     persist_user_message: bool = True,
     allow_memory_write: bool = True,
@@ -2137,6 +2595,16 @@ async def chat_stream(
         conversation = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
 
     normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
+    normalized_selected_dataset_ids = _merge_selected_dataset_ids(
+        payload_ids=(selected_dataset_ids or []),
+        message=message,
+    )
+    _log.info(
+        'chat.stream.selected_datasets',
+        conversation_id=str(conversation.id),
+        agent_id=str(agent.id),
+        selected_dataset_ids=normalized_selected_dataset_ids,
+    )
     if normalized_attachment_ids:
         chat_attachment_service.bind_attachments_to_conversation(
             db=db,
@@ -2190,14 +2658,39 @@ async def chat_stream(
     history_mode = str(getattr(settings, 'CHAT_HISTORY_MODE', 'recent') or 'recent').strip().lower()
     history_context = ''
     if history_mode == 'recent':
-        history_context = _build_recent_history_context(
-            db=db,
-            conversation_id=conversation.id,
-            max_messages=max(0, int(getattr(settings, 'CHAT_HISTORY_MAX_MESSAGES', 8) or 0)),
-            max_tokens=max(0, int(getattr(settings, 'CHAT_HISTORY_MAX_TOKENS', 2500) or 0)),
-            include_tool_text=bool(getattr(settings, 'CHAT_HISTORY_INCLUDE_TOOL_TEXT', False)),
-            exclude_message_id=(user_message.id if user_message is not None else None),
+        max_history_messages = max(0, int(getattr(settings, 'CHAT_HISTORY_MAX_MESSAGES', 8) or 0))
+        max_history_tokens = max(0, int(getattr(settings, 'CHAT_HISTORY_MAX_TOKENS', 2500) or 0))
+        include_tool_text = bool(getattr(settings, 'CHAT_HISTORY_INCLUDE_TOOL_TEXT', False))
+        short_term_messages = []
+        try:
+            short_term_messages = await redis_service.get_short_term_messages(
+                conversation_id=str(conversation.id),
+                limit=max_history_messages,
+            )
+        except Exception as error:
+            _log.warning('short_term_memory.read_failed', conversation_id=str(conversation.id), error=str(error))
+        history_context = _build_short_term_history_context(
+            messages=short_term_messages,
+            max_tokens=max_history_tokens,
+            include_tool_text=include_tool_text,
         )
+        _log.debug(f'chat_stream short_term_history_context={history_context}')
+        if not history_context:
+            history_context = _build_recent_history_context(
+                db=db,
+                conversation_id=conversation.id,
+                max_messages=max_history_messages,
+                max_tokens=max_history_tokens,
+                include_tool_text=include_tool_text,
+                exclude_message_id=(user_message.id if user_message is not None else None),
+            )
+
+    rag_context, rag_runtime = _build_chat_rag_context(
+        db=db,
+        agent=agent,
+        query=message,
+        selected_dataset_ids=normalized_selected_dataset_ids,
+    )
 
     memory_retrieve_result = memory_service.retrieve(
         query=message,
@@ -2216,6 +2709,7 @@ async def chat_stream(
             'hits': int(len(memory_retrieve_result.snippets)),
             'elapsed_ms': int(memory_retrieve_result.elapsed_ms or 0),
             'error': str(memory_retrieve_result.error or ''),
+            'error_code': str(memory_retrieve_result.error_code or ''),
         },
     )
 
@@ -2224,8 +2718,10 @@ async def chat_stream(
         agent_ctx=agent_ctx,
         history_context_length=len(history_context),
         memory_context_length=len(memory_context),
+        rag_context_length=len(rag_context),
         memory_provider=memory_retrieve_result.provider,
         memory_hits=len(memory_retrieve_result.snippets),
+        rag_runtime=rag_runtime,
     )
 
     composed_user_message = _build_capability_prompt(
@@ -2234,6 +2730,8 @@ async def chat_stream(
         message=message,
         history_context=history_context,
         memory_context=memory_context,
+        rag_context=rag_context,
+        rag_runtime=rag_runtime,
     )
     started_at = time.monotonic()
     system_prompt_snapshot = _resolve_agent_system_prompt_snapshot(agent)
@@ -2252,6 +2750,7 @@ async def chat_stream(
                 'skills': list(agent_ctx.get('skills') or []),
                 'mcp_names': [str(c.get('name')) for c in (agent_ctx.get('mcp') or []) if isinstance(c, dict) and c.get('name')],
                 'rag': agent_ctx.get('rag') or {},
+                'rag_runtime': rag_runtime,
                 'route': route_info,
                 'entry': 'agents.chat.stream',
             }
@@ -2439,6 +2938,124 @@ async def chat_stream(
                         return _strip_system_reminder_text('\n'.join(parts)).strip()
             return ''
 
+        def _build_rag_citation_block(result_obj: Any) -> str:
+            # 目的：從工具結果提取可顯示的引用來源（檔名與頁碼）。
+            # 為什麼：使用者需要在最終回答看到引用依據，提升可驗證性。
+            if not result_obj:
+                return ''
+
+            candidate_rows: list[dict[str, Any]] = []
+
+            def _collect_rows(container_obj: Any) -> None:
+                if isinstance(container_obj, list):
+                    for row in container_obj:
+                        if isinstance(row, dict):
+                            candidate_rows.append(row)
+                    return
+                if not isinstance(container_obj, dict):
+                    return
+                for key in ('results', 'documents', 'hits', 'items'):
+                    rows = container_obj.get(key)
+                    if isinstance(rows, list):
+                        for row in rows:
+                            if isinstance(row, dict):
+                                candidate_rows.append(row)
+
+            _collect_rows(result_obj)
+            if isinstance(result_obj, dict):
+                _collect_rows(result_obj.get('result'))
+
+            if not candidate_rows:
+                return ''
+
+            citation_lines: list[str] = []
+            seen_citations: set[tuple[str, int | None]] = set()
+
+            def _build_dataset_document_open_url(*, dataset_id: str, file_key: str) -> str:
+                normalized_dataset_id = str(dataset_id or '').strip()
+                normalized_file_key = str(file_key or '').strip()
+                if (not normalized_dataset_id) or (not normalized_file_key):
+                    return ''
+                return f'/api/rag/datasets/{normalized_dataset_id}/documents/{quote(normalized_file_key, safe="")}/open'
+
+            for row in candidate_rows:
+                payload = row.get('payload') if isinstance(row.get('payload'), dict) else {}
+                filename = str(
+                    payload.get('filename')
+                    or row.get('filename')
+                    or ''
+                ).strip()
+                if not filename:
+                    continue
+
+                page_number_raw = payload.get('page_number')
+                if not isinstance(page_number_raw, int):
+                    page_number_raw = row.get('page_number') if isinstance(row.get('page_number'), int) else None
+                page_number = int(page_number_raw) if isinstance(page_number_raw, int) else None
+                citation_key = (filename, page_number)
+                if citation_key in seen_citations:
+                    continue
+                seen_citations.add(citation_key)
+
+                dataset_id = str(payload.get('dataset_id') or row.get('dataset_id') or '').strip()
+                file_key = str(payload.get('file_key') or row.get('file_key') or '').strip()
+                source_url = str(payload.get('source_url') or row.get('source_url') or payload.get('url') or row.get('url') or '').strip()
+                link_url = _build_dataset_document_open_url(dataset_id=dataset_id, file_key=file_key)
+                if not link_url and source_url:
+                    link_url = source_url
+
+                display_label = filename if page_number is None else f'{filename}（第 {page_number} 頁）'
+                if link_url:
+                    citation_lines.append(f'- [{display_label}]({link_url})')
+                else:
+                    citation_lines.append(f'- {display_label}')
+
+                if len(citation_lines) >= 8:
+                    break
+
+            if not citation_lines:
+                return ''
+            return '\n\n參考來源：\n' + '\n'.join(citation_lines)
+
+        def _build_rag_runtime_citation_block(runtime_obj: dict[str, Any] | None) -> str:
+            # 目的：為純 RAG 回覆補上可點擊引用來源。
+            # 為什麼：未經工具路徑時，仍需讓使用者直接開啟來源文件驗證內容。
+            runtime = runtime_obj if isinstance(runtime_obj, dict) else {}
+            rows = runtime.get('selected_rows') if isinstance(runtime.get('selected_rows'), list) else []
+            if not rows:
+                return ''
+
+            citation_lines: list[str] = []
+            seen_citations: set[tuple[str, str, int | None]] = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                filename = str(row.get('filename') or '').strip()
+                dataset_id = str(row.get('dataset_id') or '').strip()
+                file_key = str(row.get('file_key') or '').strip()
+                page_number = row.get('page_number') if isinstance(row.get('page_number'), int) else None
+                if not filename:
+                    continue
+
+                citation_key = (dataset_id, filename, page_number)
+                if citation_key in seen_citations:
+                    continue
+                seen_citations.add(citation_key)
+
+                display_label = filename if page_number is None else f'{filename}（第 {page_number} 頁）'
+                if dataset_id and file_key:
+                    file_url = f'/api/rag/datasets/{dataset_id}/documents/{quote(file_key, safe="")}/open'
+                    citation_lines.append(f'- [{display_label}]({file_url})')
+                else:
+                    citation_lines.append(f'- {display_label}')
+
+                if len(citation_lines) >= 8:
+                    break
+
+            if not citation_lines:
+                return ''
+            return '\n\n參考來源：\n' + '\n'.join(citation_lines)
+
         async def _handle_skill_mode_result(tool_name: str, tool_response: dict[str, Any]) -> tuple[bool, list[str]]:
             # 目的：統一處理技能回傳的 UI/FINAL/ERROR 模式事件。
             # 為什麼：避免多條工具呼叫分支各自重複判斷，造成行為不一致。
@@ -2554,6 +3171,30 @@ async def chat_stream(
                     if hinted in allowed_tools:
                         return hinted
 
+            rag_hits = int((rag_runtime or {}).get('hits') or 0)
+            has_selected_datasets = bool(normalized_selected_dataset_ids)
+            rag_then_tool_candidate = _is_rag_then_tool_request(message)
+            should_skip_shortcut_due_to_rag = has_selected_datasets and (rag_hits > 0) and (not rag_then_tool_candidate)
+            if should_skip_shortcut_due_to_rag:
+                _log.info(
+                    'chat.intent_skill.shortcut_skipped_due_to_rag',
+                    conversation_id=str(conversation.id),
+                    agent_id=str(agent.id),
+                    selected_dataset_ids=normalized_selected_dataset_ids,
+                    rag_reason=str((rag_runtime or {}).get('reason') or ''),
+                    rag_hits=rag_hits,
+                )
+                return None
+            if has_selected_datasets and (rag_hits > 0) and rag_then_tool_candidate:
+                _log.info(
+                    'chat.intent_skill.rag_then_tool_candidate',
+                    conversation_id=str(conversation.id),
+                    agent_id=str(agent.id),
+                    selected_dataset_ids=normalized_selected_dataset_ids,
+                    rag_reason=str((rag_runtime or {}).get('reason') or ''),
+                    rag_hits=rag_hits,
+                )
+
             selected_skill_name = _detect_intent_skill_name(
                 db=db,
                 message=message,
@@ -2566,6 +3207,15 @@ async def chat_stream(
                     message=message,
                 )
                 return None
+            _log.info(
+                'chat.intent_skill.detected',
+                conversation_id=str(conversation.id),
+                agent_id=str(agent.id),
+                selected_skill_name=selected_skill_name,
+                selected_dataset_ids=normalized_selected_dataset_ids,
+                rag_reason=str((rag_runtime or {}).get('reason') or ''),
+                rag_hits=int((rag_runtime or {}).get('hits') or 0),
+            )
             return selected_skill_name
 
         def _should_start_skill_interaction(tool_name: str) -> bool:
@@ -2667,6 +3317,21 @@ async def chat_stream(
                 payload=start_payload,
                 attachment_markdowns=_get_attachment_markdowns(),
             )
+            should_attach_rag_evidence = bool(normalized_selected_dataset_ids) and int((rag_runtime or {}).get('hits') or 0) > 0 and _is_rag_then_tool_request(message)
+            if should_attach_rag_evidence:
+                start_payload = _inject_rag_evidence_into_payload(
+                    payload=start_payload,
+                    query=message,
+                    rag_runtime=rag_runtime,
+                )
+                _log.info(
+                    'chat.tool.payload_built_from_rag',
+                    conversation_id=str(conversation.id),
+                    agent_id=str(agent.id),
+                    tool=intent_skill_tool,
+                    selected_dataset_ids=normalized_selected_dataset_ids,
+                    rag_hits=int((rag_runtime or {}).get('hits') or 0),
+                )
             can_run_shortcut = _can_run_intent_shortcut_payload(intent_skill_tool, start_payload, should_start_interaction)
             if not can_run_shortcut:
                 intent_skill_tool = None
@@ -2676,6 +3341,16 @@ async def chat_stream(
                 should_start_interaction=should_start_interaction,
                 can_run_shortcut=can_run_shortcut,
                 payload=start_payload,
+            )
+            _log.info(
+                'chat.intent_skill.shortcut_ready',
+                conversation_id=str(conversation.id),
+                agent_id=str(agent.id),
+                tool=intent_skill_tool,
+                can_run_shortcut=can_run_shortcut,
+                selected_dataset_ids=normalized_selected_dataset_ids,
+                rag_reason=str((rag_runtime or {}).get('reason') or ''),
+                rag_hits=int((rag_runtime or {}).get('hits') or 0),
             )
 
         if intent_skill_tool:
@@ -2721,9 +3396,11 @@ async def chat_stream(
                 result_obj = (res or {}).get('result', {})
                 _log.debug(f'Raw tool result for {intent_skill_tool}: {result_obj}')
                 direct_text = _extract_readable_text_from_tool_result(result_obj)
+                citation_block = _build_rag_citation_block(result_obj)
                 result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
                 if direct_text:
-                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                    answer_text = f'{direct_text}{citation_block}' if citation_block and ('參考來源：' not in direct_text) else direct_text
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(answer_text, ensure_ascii=False)} }}\n\n"
                     yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                     return
                 observed_any = False
@@ -2732,11 +3409,23 @@ async def chat_stream(
                     yield evt
                 if not observed_any:
                     yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
+                if citation_block:
+                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(citation_block, ensure_ascii=False)} }}\n\n"
                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                 return
 
             turn_status = 'tool_error'
             turn_error = str((res or {}).get('error') or 'skill_shortcut_failed')
+            _log.warning(
+                'chat.intent_skill.shortcut_failed',
+                conversation_id=str(conversation.id),
+                agent_id=str(agent.id),
+                tool=intent_skill_tool,
+                error=turn_error,
+                selected_dataset_ids=normalized_selected_dataset_ids,
+                rag_reason=str((rag_runtime or {}).get('reason') or ''),
+                rag_hits=int((rag_runtime or {}).get('hits') or 0),
+            )
             fb = await _fallback_general_answer(turn_error)
             yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
             yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
@@ -2763,6 +3452,21 @@ async def chat_stream(
                         payload=tool_payload,
                         attachment_markdowns=_get_attachment_markdowns(),
                     )
+                    should_attach_rag_evidence = bool(normalized_selected_dataset_ids) and int((rag_runtime or {}).get('hits') or 0) > 0 and _is_rag_then_tool_request(message)
+                    if should_attach_rag_evidence:
+                        tool_payload = _inject_rag_evidence_into_payload(
+                            payload=tool_payload,
+                            query=message,
+                            rag_runtime=rag_runtime,
+                        )
+                        _log.info(
+                            'chat.tool.payload_built_from_rag',
+                            conversation_id=str(conversation.id),
+                            agent_id=str(agent.id),
+                            tool=tool_name,
+                            selected_dataset_ids=normalized_selected_dataset_ids,
+                            rag_hits=int((rag_runtime or {}).get('hits') or 0),
+                        )
                     _log.debug(f'Detected tool call: {tool_name} with payload: {tool_payload}')
                     detected_tool = True
                     react_step += 1
@@ -2811,6 +3515,7 @@ async def chat_stream(
                         env = conn.get('env') if isinstance(conn.get('env'), dict) else {}
                         tool_timeout_s = float(getattr(settings, 'MCP_TOOL_TIMEOUT_SEC', 30) or 30)
                         successful_result_text: str | None = None
+                        successful_result_obj: Any = None
                         try:
                             async with asyncio.timeout(tool_timeout_s):
                                 async for frame in router._mcp.stream_rpc_call_stdio(
@@ -2834,6 +3539,7 @@ async def chat_stream(
                                     yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(_display_frame, ensure_ascii=False)} }}\n\n"
                                     ok = frame.get('ok') if isinstance(frame, dict) else None
                                     if ok is True:
+                                        successful_result_obj = frame.get('result') if isinstance(frame, dict) else None
                                         successful_result_text = frame.get('_result_text') or _json.dumps(frame.get('result', {}), ensure_ascii=False)
                                         break
                                     elif ok is False:
@@ -2853,6 +3559,9 @@ async def chat_stream(
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 async for evt in _observe_and_answer(tool_name, successful_result_text):
                                     yield evt
+                                citation_block = _build_rag_citation_block(successful_result_obj)
+                                if citation_block:
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(citation_block, ensure_ascii=False)} }}\n\n"
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                         except TimeoutError:
@@ -2895,6 +3604,7 @@ async def chat_stream(
                         auth = conn.get('auth') if isinstance(conn, dict) else None
                         tool_timeout_s = float(getattr(settings, 'MCP_TOOL_TIMEOUT_SEC', 30) or 30)
                         successful_result_text: str | None = None
+                        successful_result_obj: Any = None
                         try:
                             async with asyncio.timeout(tool_timeout_s):
                                 async for frame in router._mcp.stream_rpc_call_ws(
@@ -2920,6 +3630,7 @@ async def chat_stream(
                                     yield f"data: {{\"type\":\"tool\",\"name\":{_json.dumps(tool_name)},\"frame\":{_json.dumps(_display_frame, ensure_ascii=False)} }}\n\n"
                                     ok = frame.get('ok') if isinstance(frame, dict) else None
                                     if ok is True:
+                                        successful_result_obj = frame.get('result') if isinstance(frame, dict) else None
                                         successful_result_text = frame.get('_result_text') or _json.dumps(frame.get('result', {}), ensure_ascii=False)
                                         break
                                     elif ok is False:
@@ -2939,6 +3650,9 @@ async def chat_stream(
                                 yield "data: {\"type\":\"text_clear_tool\"}\n\n"
                                 async for evt in _observe_and_answer(tool_name, successful_result_text):
                                     yield evt
+                                citation_block = _build_rag_citation_block(successful_result_obj)
+                                if citation_block:
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(citation_block, ensure_ascii=False)} }}\n\n"
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                         except TimeoutError:
@@ -2974,9 +3688,11 @@ async def chat_stream(
                                 result_obj = (res or {}).get('result', {})
                                 _log.debug(f'Raw tool result for {tool_name}: {result_obj}')
                                 direct_text = _extract_readable_text_from_tool_result(result_obj)
+                                citation_block = _build_rag_citation_block(result_obj)
                                 result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
                                 if direct_text:
-                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                                    answer_text = f'{direct_text}{citation_block}' if citation_block and ('參考來源：' not in direct_text) else direct_text
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(answer_text, ensure_ascii=False)} }}\n\n"
                                     yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                     return
                                 observed_any = False
@@ -2985,6 +3701,8 @@ async def chat_stream(
                                     yield evt
                                 if not observed_any:
                                     yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
+                                if citation_block:
+                                    yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(citation_block, ensure_ascii=False)} }}\n\n"
                                 yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                                 return
                     else:
@@ -3020,9 +3738,11 @@ async def chat_stream(
                         result_obj = (res or {}).get('result', {})
                         _log.debug(f'Raw tool result for {tool_name}: {result_obj}')
                         direct_text = _extract_readable_text_from_tool_result(result_obj)
+                        citation_block = _build_rag_citation_block(result_obj)
                         result_text = direct_text if direct_text else _json.dumps(result_obj, ensure_ascii=False)
                         if direct_text:
-                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(direct_text, ensure_ascii=False)} }}\n\n"
+                            answer_text = f'{direct_text}{citation_block}' if citation_block and ('參考來源：' not in direct_text) else direct_text
+                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(answer_text, ensure_ascii=False)} }}\n\n"
                             yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                             return
                         observed_any = False
@@ -3031,6 +3751,8 @@ async def chat_stream(
                             yield evt
                         if not observed_any:
                             yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(result_text, ensure_ascii=False)} }}\n\n"
+                        if citation_block:
+                            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(citation_block, ensure_ascii=False)} }}\n\n"
                         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
                         return
                     if not ok_flag:
@@ -3043,6 +3765,10 @@ async def chat_stream(
             yield "data: {\"type\":\"text_clear_tool\"}\n\n"
             fb = await _fallback_general_answer('incomplete_tool_call')
             yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(fb, ensure_ascii=False)} }}\n\n"
+        if react_step == 0:
+            rag_citation_block = _build_rag_runtime_citation_block(rag_runtime)
+            if rag_citation_block and ('參考來源：' not in buffer):
+                yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(rag_citation_block, ensure_ascii=False)} }}\n\n"
         yield _react_event("finish", "本輪 ReAct 執行完成", {"steps": react_step})
         yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
 
@@ -3163,6 +3889,7 @@ async def chat_stream(
                     'skills': list(agent_ctx.get('skills') or []),
                     'mcp_names': [str(c.get('name')) for c in (agent_ctx.get('mcp') or []) if isinstance(c, dict) and c.get('name')],
                     'rag': agent_ctx.get('rag') or {},
+                    'rag_runtime': rag_runtime,
                     'route': route_info,
                     'entry': 'agents.chat.stream',
                 }
@@ -3226,6 +3953,25 @@ async def chat_stream(
                             'write_reason': 'user_assistant_pair',
                         },
                     )
+            try:
+                short_term_ttl = max(1, int(getattr(settings, 'SHORT_TERM_MEMORY_TTL_SEC', 3600) or 3600))
+                short_term_max_messages = max(1, int(getattr(settings, 'SHORT_TERM_MEMORY_MAX_MESSAGES', 10) or 10))
+                await redis_service.append_short_term_message(
+                    conversation_id=str(conversation.id),
+                    role='user',
+                    content=str(message),
+                    ttl_seconds=short_term_ttl,
+                    max_messages=short_term_max_messages,
+                )
+                await redis_service.append_short_term_message(
+                    conversation_id=str(conversation.id),
+                    role='assistant',
+                    content=str(merged),
+                    ttl_seconds=short_term_ttl,
+                    max_messages=short_term_max_messages,
+                )
+            except Exception as error:
+                _log.warning('short_term_memory.write_failed', conversation_id=str(conversation.id), error=str(error))
     return StreamingResponse(_gen_hb(), media_type='text/event-stream')
 
 
@@ -3328,6 +4074,7 @@ async def _run_subtask_stream(
     task_index: int,
     total_tasks: int,
     completed_so_far: int,
+    selected_dataset_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """目的：執行單個子任務，將現有 chat_stream SSE 轉譯為 agent.* 事件。
     為什麼：複用既有 ReAct/工具呼叫邏輯，只在包裝層加上 agent 標識與 DB 寫入。
@@ -3352,6 +4099,7 @@ async def _run_subtask_stream(
     sub_response = await chat_stream(
         agent_id=agent_id,
         message=enriched_message,
+        selected_dataset_ids=selected_dataset_ids,
         allow_memory_write=False,
         db=db,
         current_user=current_user,
@@ -3516,6 +4264,7 @@ async def _multi_agent_orchestrator(
     current_user: User,
     router_agent: Agent,
     conversation: Conversation,
+    selected_dataset_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """目的：Orchestrator ReAct 主循環：分解 → 執行子代理 → 合成 → 自評 → 必要時重試。
     為什麼：單一協調點確保任務可重試、結果可觀測、SSE 流統一。
@@ -3639,6 +4388,7 @@ async def _multi_agent_orchestrator(
                     task_index=idx,
                     total_tasks=len(task_rows),
                     completed_so_far=completed_so_far,
+                    selected_dataset_ids=selected_dataset_ids,
                 ):
                     yield event_str
 
@@ -3761,6 +4511,19 @@ async def chat_entry_router(
         raise validation_error('Message cannot be empty')
     enriched_message = _inject_reference_content(message)
     attachment_ids = _normalize_attachment_ids((payload or {}).get('attachment_ids'))
+    selected_dataset_ids = _merge_selected_dataset_ids(
+        payload_ids=_normalize_selected_dataset_ids((payload or {}).get('selected_dataset_ids')),
+        message=enriched_message,
+    )
+    _log.info(
+        'chat.entry.selected_datasets',
+        selected_dataset_ids=selected_dataset_ids,
+        has_attachment_input=('[附加輸入]' in enriched_message),
+    )
+    forced_dataset_agent = _resolve_forced_agent_by_selected_datasets(
+        db=db,
+        selected_dataset_ids=selected_dataset_ids,
+    )
 
     requested_conversation_id = str((payload or {}).get('conversation_id') or '').strip()
     requested_conversation: Conversation | None = None
@@ -3788,6 +4551,14 @@ async def chat_entry_router(
 
     #判斷：multi：進多代理 orchestrator，single：走單代理挑選 _pick_worker_agent
     routing = _classify_routing(message=enriched_message, workers=workers)
+    if forced_dataset_agent is not None and routing == 'multi':
+        routing = 'single'
+    _log.info(
+        'chat.entry.routing_prepared',
+        routing=routing,
+        forced_dataset_agent_id=(str(forced_dataset_agent.id) if forced_dataset_agent is not None else ''),
+        selected_dataset_ids=selected_dataset_ids,
+    )
     debug_trace_enabled = bool(getattr(settings, 'CHAT_DEBUG_TRACE', False)) or bool((payload or {}).get('debug'))
     if routing == 'multi':
         import asyncio as _asyncio
@@ -3844,6 +4615,7 @@ async def chat_entry_router(
                     current_user=current_user,
                     router_agent=router_agent,
                     conversation=conversation,
+                    selected_dataset_ids=selected_dataset_ids,
                 ):
                     yield event
             else:
@@ -3859,8 +4631,11 @@ async def chat_entry_router(
                     route_reason = 'decompose_failed_worker_not_found'
                 else:
                     route_reason = f"decompose_failed_{route_reason}"
+                if forced_dataset_agent is not None and str(worker.id) != str(forced_dataset_agent.id):
+                    worker = forced_dataset_agent
+                    route_reason = f'{route_reason}_selected_dataset_private_owner_forced'
                 worker_class = str(getattr(worker, 'agent_class', '') or '')
-                if worker_class in {'public', 'tasked'}:
+                if worker_class in {'public', 'tasked'} and forced_dataset_agent is None:
                     if not _is_agent_ready_for_chat(db=db, agent=worker):
                         worker = router_agent
                         route_reason = f'decompose_failed_{worker_class}_not_ready_master_fallback'
@@ -3901,6 +4676,7 @@ async def chat_entry_router(
                     message=enriched_message,
                     conversation_id=str(degrade_conversation.id),
                     attachment_ids=attachment_ids,
+                    selected_dataset_ids=selected_dataset_ids,
                     db=db,
                     current_user=current_user,
                 )
@@ -3925,8 +4701,12 @@ async def chat_entry_router(
         route_reason = 'worker_not_found_fallback'
     elif route_reason in {'default_fallback'}:
         is_fallback = True
+    if forced_dataset_agent is not None and str(worker.id) != str(forced_dataset_agent.id):
+        worker = forced_dataset_agent
+        route_reason = f'{route_reason}_selected_dataset_private_owner_forced'
+        is_fallback = False
     worker_class = str(getattr(worker, 'agent_class', '') or '')
-    if worker_class in {'public', 'tasked'}:
+    if worker_class in {'public', 'tasked'} and forced_dataset_agent is None:
         if not _is_agent_ready_for_chat(db=db, agent=worker):
             worker = router_agent
             is_fallback = True
@@ -4000,6 +4780,7 @@ async def chat_entry_router(
         persist_message=enriched_message,
         conversation_id=str(conversation.id),
         attachment_ids=attachment_ids,
+        selected_dataset_ids=selected_dataset_ids,
         persist_user_message=True,
         db=db,
         current_user=current_user,
@@ -4135,6 +4916,92 @@ async def forget_my_long_term_memory(
     if not result.ok:
         raise validation_error('清除長期記憶失敗，請稍後再試')
     return {'ok': True, 'provider': str(memory_service.provider_name or '')}
+
+
+@router.get('/memory/health')
+async def get_memory_health(
+    current_user: User = Depends(get_current_user),
+):
+    """目的：回傳記憶系統健康狀態供管理端監控。
+    為什麼：記憶 provider 可能故障或降級，需有可觀測端點支援維運與除錯。
+    """
+    _require_admin_permission(current_user)
+    health = memory_service.health()
+    return {
+        'ok': bool(health.ok),
+        'provider': str(health.provider or ''),
+        'degraded': bool(health.degraded),
+        'error': str(health.error or ''),
+        'error_code': str(health.error_code or ''),
+        'read_enabled': bool(getattr(settings, 'AGENT_MEMORY_READ_ENABLED', True)),
+        'write_enabled': bool(getattr(settings, 'AGENT_MEMORY_WRITE_ENABLED', True)),
+    }
+
+
+@router.post('/memory/search')
+async def search_memory_for_debug(
+    payload: dict[str, Any] = Body(...),
+    current_user: User = Depends(get_current_user),
+):
+    """目的：提供管理者記憶檢索除錯介面。
+    為什麼：可快速驗證 scope 與檢索結果，縮短記憶策略調整迭代時間。
+    """
+    _require_admin_permission(current_user)
+    query = str((payload or {}).get('query') or '').strip()
+    if not query:
+        raise validation_error('query 為必填')
+
+    top_k_value = int((payload or {}).get('top_k') or getattr(settings, 'AGENT_MEMORY_TOP_K', 5) or 5)
+    result = memory_service.retrieve(
+        query=query,
+        user_id=(str((payload or {}).get('user_id') or '').strip() or None),
+        agent_id=(str((payload or {}).get('agent_id') or '').strip() or None),
+        run_id=(str((payload or {}).get('run_id') or '').strip() or None),
+        app_id=(str((payload or {}).get('app_id') or '').strip() or None),
+        top_k=max(1, top_k_value),
+    )
+    return {
+        'ok': bool(result.ok),
+        'provider': str(result.provider or ''),
+        'elapsed_ms': int(result.elapsed_ms or 0),
+        'error': str(result.error or ''),
+        'error_code': str(result.error_code or ''),
+        'snippets': [
+            {
+                'text': str(item.text or ''),
+                'score': float(item.score or 0.0),
+                'scope_type': str(item.scope_type or ''),
+                'source': str(item.source or ''),
+                'metadata': dict(item.metadata or {}),
+            }
+            for item in result.snippets
+        ],
+    }
+
+
+@router.post('/memory/users/{user_id}/forget')
+async def forget_user_memory_by_admin(
+    user_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """目的：提供管理者清除指定使用者長期記憶的治理端點。
+    為什麼：處理隱私請求、資安事件或資料修正時，需要跨使用者的管理操作能力。
+    """
+    _require_admin_permission(current_user)
+    _validate_uuid_or_not_found('User', user_id)
+    user_row = db.query(User).filter(User.id == user_id).first()
+    if user_row is None:
+        raise not_found_error('User', user_id)
+
+    app_id = ''
+    if isinstance(payload, dict):
+        app_id = str(payload.get('app_id') or '').strip()
+    result = memory_service.forget_user(user_id=user_id, app_id=(app_id or None))
+    if not result.ok:
+        raise validation_error('清除使用者長期記憶失敗，請稍後再試')
+    return {'ok': True, 'provider': str(memory_service.provider_name or ''), 'user_id': str(user_id)}
 
 
 @router.get('/conversations')

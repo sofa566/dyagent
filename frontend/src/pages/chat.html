@@ -288,6 +288,52 @@
     .markdown-body th { background: #f1f5f9; font-weight: 600; }
     .markdown-body a { color: #4f46e5; text-decoration: underline; overflow-wrap: anywhere; word-break: break-all; }
     .markdown-body hr { border: none; border-top: 1px solid var(--border-color); margin: 0.8em 0; }
+    .citation-block {
+      margin-top: 0.7rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 6px 8px;
+    }
+    .citation-block summary {
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #334155;
+      font-weight: 600;
+      user-select: none;
+    }
+    .citation-list {
+      margin: 8px 0 0;
+      padding-left: 1.1rem;
+    }
+    .citation-list li { margin: 4px 0; }
+    .citation-link {
+      color: #1d4ed8;
+      text-decoration: underline;
+      font-size: 0.84rem;
+      word-break: break-all;
+    }
+    .citation-open-btn {
+      border: none;
+      background: transparent;
+      color: #1d4ed8;
+      text-decoration: underline;
+      font-size: 0.84rem;
+      padding: 0;
+      cursor: pointer;
+      text-align: left;
+      word-break: break-all;
+    }
+    .citation-copy-btn {
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: #334155;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .citation-copy-btn:hover { background: #f1f5f9; }
     .agent-output { margin: 6px 0; }
     .agent-output-label { display: inline-block; font-size: 0.74rem; font-weight: 700; color: #4f46e5; background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-bottom: 4px; }
     .message.user .markdown-body a { color: #c7d2fe; }
@@ -736,6 +782,101 @@
       }
     }
 
+    function splitAssistantCitations(rawText) {
+      // 目的：把助理回覆切成主內容與引用清單。
+      // 為什麼：引用區需要獨立可收合與可點擊，不能直接混在一般 Markdown。
+      const normalizedText = String(rawText || '').trim();
+      if (!normalizedText) {
+        return { mainText: '', citations: [] };
+      }
+      const marker = '\n\n參考來源：';
+      const markerIndex = normalizedText.lastIndexOf(marker);
+      if (markerIndex < 0) {
+        return { mainText: normalizedText, citations: [] };
+      }
+      const mainText = normalizedText.slice(0, markerIndex).trim();
+      const citationText = normalizedText.slice(markerIndex + marker.length).trim();
+      const citations = citationText
+        .split('\n')
+        .map((lineText) => String(lineText || '').trim())
+        .filter((lineText) => lineText.startsWith('- '))
+        .map((lineText) => lineText.slice(2).trim())
+        .filter(Boolean);
+      if (citations.length === 0) {
+        return { mainText: normalizedText, citations: [] };
+      }
+      return { mainText, citations };
+    }
+
+    function renderCitationItem(citationText) {
+      const normalizedCitationText = String(citationText || '').trim();
+      if (!normalizedCitationText) {
+        return '';
+      }
+      const markdownLinkMatch = normalizedCitationText.match(/^\[(.+?)\]\((.+?)\)$/);
+      if (markdownLinkMatch && markdownLinkMatch[1] && markdownLinkMatch[2]) {
+        const label = markdownLinkMatch[1].trim();
+        const url = markdownLinkMatch[2].trim();
+        if (isDatasetCitationApiUrl(url)) {
+          const encodedUrl = encodeURIComponent(url);
+          return `<li><button type="button" class="citation-open-btn" data-citation-open-url="${encodedUrl}">${escapeHTML(label || normalizedCitationText)}</button></li>`;
+        }
+        return `<li><a class="citation-link" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(label || normalizedCitationText)}</a></li>`;
+      }
+      const matchedRelativePath = normalizedCitationText.match(/(\/api\/rag\/datasets\/\S+)/i);
+      if (matchedRelativePath && matchedRelativePath[1]) {
+        const url = matchedRelativePath[1];
+        const encodedUrl = encodeURIComponent(url);
+        return `<li><button type="button" class="citation-open-btn" data-citation-open-url="${encodedUrl}">${escapeHTML(normalizedCitationText)}</button></li>`;
+      }
+      const matchedUrl = normalizedCitationText.match(/https?:\/\/\S+/i);
+      if (matchedUrl && matchedUrl[0]) {
+        const url = matchedUrl[0];
+        if (isDatasetCitationApiUrl(url)) {
+          const encodedUrl = encodeURIComponent(url);
+          return `<li><button type="button" class="citation-open-btn" data-citation-open-url="${encodedUrl}">${escapeHTML(normalizedCitationText)}</button></li>`;
+        }
+        return `<li><a class="citation-link" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(normalizedCitationText)}</a></li>`;
+      }
+      const escapedText = escapeHTML(normalizedCitationText);
+      const copyText = encodeURIComponent(normalizedCitationText);
+      return `<li><button type="button" class="citation-copy-btn" data-citation-copy="${copyText}">${escapedText}</button></li>`;
+    }
+
+    function beautifyAssistantText(rawText) {
+      // 目的：讓純文字回覆在前端自動補齊段落與條列換行。
+      // 為什麼：模型偶發輸出單行長文，影響可讀性與掃讀效率。
+      const normalizedText = String(rawText || '').trim();
+      if (!normalizedText) return '';
+      let outputText = normalizedText;
+      outputText = outputText.replace(/([：:])\s*(\d+\.)/g, '$1\n\n$2');
+      outputText = outputText.replace(/([。！？!?])\s*(\d+\.)/g, '$1\n\n$2');
+      outputText = outputText.replace(/(\d+\.\s[^\n]{4,180}?)(\s*)(?=\d+\.)/g, '$1\n');
+      return outputText;
+    }
+
+    function renderAssistantMarkdownWithCitations(rawText) {
+      // 目的：統一渲染助理內容與引用區塊。
+      // 為什麼：歷史訊息與串流訊息都要保持相同顯示格式，避免重複邏輯。
+      const parsed = splitAssistantCitations(rawText);
+      const beautifiedMainText = beautifyAssistantText(parsed.mainText || '');
+      const mainHtml = `<div class="markdown-body">${marked.parse(beautifiedMainText)}</div>`;
+      if (!Array.isArray(parsed.citations) || parsed.citations.length === 0) {
+        return mainHtml;
+      }
+      const citationItems = parsed.citations.map((citationText) => renderCitationItem(citationText)).filter(Boolean).join('');
+      if (!citationItems) {
+        return mainHtml;
+      }
+      const citationHtml = (
+        `<details class="citation-block">`
+        + `<summary>參考來源（${parsed.citations.length}）</summary>`
+        + `<ul class="citation-list">${citationItems}</ul>`
+        + `</details>`
+      );
+      return `${mainHtml}${citationHtml}`;
+    }
+
     function clearAttachments() {
       attachmentsState.files = [];
       attachmentsState.urls = [];
@@ -743,6 +884,124 @@
       attachmentsState.googleFiles = [];
       renderAttachmentTray();
     }
+
+    function getApiBaseForDirectFetch() {
+      // 目的：在頁面內取得與 main.js 一致的 API base。
+      // 為什麼：引用檔案下載是 blob 流程，需直接 fetch 並帶授權，不走 api.request(JSON) 路徑。
+      const pageUrl = new URL(window.location.href);
+      const override = pageUrl.searchParams.get('api_base') || localStorage.getItem('API_BASE');
+      const devDefault = `${window.location.protocol}//${window.location.hostname}:8000/api`;
+      return override || (window.location.port === '5173' ? devDefault : '/api');
+    }
+
+    function resolveCitationRequestUrl(urlText) {
+      const rawUrl = String(urlText || '').trim();
+      if (!rawUrl) return '';
+      const parsedUrl = new URL(rawUrl, window.location.origin);
+      const apiBase = getApiBaseForDirectFetch();
+      const isApiPath = parsedUrl.pathname.startsWith('/api/');
+      if (!isApiPath) {
+        return parsedUrl.toString();
+      }
+      const apiSuffix = parsedUrl.pathname.slice('/api'.length) + (parsedUrl.search || '');
+      if (apiBase === '/api') {
+        return `/api${apiSuffix}`;
+      }
+      return `${String(apiBase || '').replace(/\/$/, '')}${apiSuffix}`;
+    }
+
+    function isDatasetCitationApiUrl(urlText) {
+      const rawUrl = String(urlText || '').trim();
+      if (!rawUrl) return false;
+      try {
+        const parsedUrl = new URL(rawUrl, window.location.origin);
+        const pathName = String(parsedUrl.pathname || '');
+        const isOpenPath = pathName.endsWith('/open') || pathName.endsWith('/open-preview');
+        return pathName.startsWith('/api/rag/datasets/') && pathName.includes('/documents/') && isOpenPath;
+      } catch {
+        return false;
+      }
+    }
+
+    async function openAuthorizedCitationLink(urlText) {
+      // 目的：以授權 header 下載引用檔案並另開視窗。
+      // 為什麼：直接點 API 連結不會帶 Authorization，會被後端拒絕。
+      const requestUrl = resolveCitationRequestUrl(urlText);
+      if (!requestUrl) return;
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        showError('尚未登入，無法開啟來源檔案');
+        return;
+      }
+      try {
+        const response = await fetch(requestUrl, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+        if (!response.ok) {
+          let errorMessage = `開啟來源失敗：HTTP ${response.status}`;
+          try {
+            const payload = await response.json();
+            if (payload && payload.detail && payload.detail.error) {
+              errorMessage = `開啟來源失敗：${String(payload.detail.error)}`;
+            }
+          } catch {}
+          showError(errorMessage);
+          return;
+        }
+        const fileBlob = await response.blob();
+        const objectUrl = URL.createObjectURL(fileBlob);
+        const openedWindow = window.open(objectUrl, '_blank', 'noopener,noreferrer');
+        if (!openedWindow) {
+          const fallbackLink = document.createElement('a');
+          fallbackLink.href = objectUrl;
+          fallbackLink.target = '_blank';
+          fallbackLink.rel = 'noopener noreferrer';
+          fallbackLink.click();
+        }
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      } catch (error) {
+        showError((error && error.message) || '開啟來源失敗');
+      }
+    }
+
+    chatMessages.addEventListener('click', async (event) => {
+      const openTarget = event.target && event.target.closest ? event.target.closest('[data-citation-open-url]') : null;
+      if (openTarget) {
+        const encodedUrl = String(openTarget.getAttribute('data-citation-open-url') || '');
+        if (encodedUrl) {
+          event.preventDefault();
+          await openAuthorizedCitationLink(decodeURIComponent(encodedUrl));
+          return;
+        }
+      }
+      const citationLink = event.target && event.target.closest ? event.target.closest('a.citation-link') : null;
+      if (citationLink) {
+        const href = String(citationLink.getAttribute('href') || '').trim();
+        if (isDatasetCitationApiUrl(href)) {
+          event.preventDefault();
+          await openAuthorizedCitationLink(href);
+          return;
+        }
+      }
+      const target = event.target && event.target.closest ? event.target.closest('[data-citation-copy]') : null;
+      if (!target) return;
+      const encodedText = String(target.getAttribute('data-citation-copy') || '');
+      if (!encodedText) return;
+      const citationText = decodeURIComponent(encodedText);
+      try {
+        await navigator.clipboard.writeText(citationText);
+        const originalText = target.textContent || '';
+        target.textContent = '已複製';
+        setTimeout(() => {
+          target.textContent = originalText;
+        }, 1200);
+      } catch {
+        showError('複製引用失敗');
+      }
+    });
 
     function getUploadedAttachmentIds() {
       return attachmentsState.files
@@ -1288,6 +1547,23 @@
     let agentRegistry = [];
     let renderRevision = 0;
 
+    function isRouterLikeAgent(agentId) {
+      const targetId = String(agentId || '').trim();
+      if (!targetId) return false;
+      const row = (agentRegistry || []).find((item) => String((item && item.id) || '') === targetId);
+      if (!row) return false;
+      const agentClass = String((row && row.agent_class) || '').trim().toLowerCase();
+      return !!row.is_router || agentClass === 'master';
+    }
+
+    function resolveConversationListEndpoint(agentId) {
+      // 目的：依當前代理者型態選擇正確會話清單端點。
+      // 為什麼：主代理（router/master）實際回覆常落在工作代理，若只查 /agents/{id}/conversations 會看不到既有紀錄。
+      if (autoRoutingMode) return '/conversations';
+      if (isRouterLikeAgent(agentId)) return '/conversations';
+      return `/agents/${agentId}/conversations`;
+    }
+
     async function loadAgents() {
       try {
         // 先嘗試 public 清單（所有登入者可見）
@@ -1384,7 +1660,7 @@
         convEmpty.style.display = 'none';
         convList.innerHTML = '<li class="conv-item"><div class="conv-meta">載入中…</div></li>';
         // auto-routing 模式取得全部對話（跨 agent），非 auto-routing 取得指定 agent 的對話
-        const convUrl = autoRoutingMode ? '/conversations' : `/agents/${agentId}/conversations`;
+        const convUrl = resolveConversationListEndpoint(agentId);
         const response = await api.get(convUrl);
         currentConversations = Array.isArray(response.conversations) ? response.conversations : [];
         renderSidebar(currentConversations);
@@ -1626,7 +1902,7 @@
           const protocolDebug = SHOW_PROTOCOL_DEBUG && (parsed.blocks || []).length > 0
             ? `<details class="agent-detail"><summary class="agent-text-label">工具呼叫協定（除錯）</summary><pre class="code" style="white-space:pre-wrap;margin-top:6px;">${escapeHTML((parsed.blocks || []).join('\n\n'))}</pre></details>`
             : '';
-          body = `${routeBanner}${protocolDebug}<div class="markdown-body">${marked.parse(cleanedAssistantText)}</div>`;
+          body = `${routeBanner}${protocolDebug}${renderAssistantMarkdownWithCitations(cleanedAssistantText)}`;
         }
         return `<div class="message ${msg.role}">${body}<small style="opacity:0.7;">${toLocalTimeStringSafe(msg.timestamp)}</small></div>`;
       }).join('');
@@ -2066,6 +2342,9 @@
         return;
       }
       const uploadedAttachmentIds = getUploadedAttachmentIds();
+      const selectedDatasetIds = attachmentsState.datasets
+        .map((datasetRow) => String((datasetRow || {}).id || '').trim())
+        .filter(Boolean);
       const attachmentContext = buildAttachmentContext();
       const composedMessage = `${msg}${attachmentContext.contextText}`;
       if (!currentAgentId) {
@@ -2181,6 +2460,7 @@
               message: composedMessage,
               conversation_id: currentConversationId || null,
               attachment_ids: uploadedAttachmentIds,
+              selected_dataset_ids: selectedDatasetIds,
             })
             : undefined,
           signal: controller.signal,
@@ -2199,6 +2479,7 @@
                 message: composedMessage,
                 conversation_id: currentConversationId || null,
                 attachment_ids: uploadedAttachmentIds,
+                selected_dataset_ids: selectedDatasetIds,
               })
               : undefined,
             signal: controller.signal,
@@ -2249,7 +2530,7 @@
                 const extracted = extractProtocolBlocks(accText);
                 appendProtocolBlocks(extracted.blocks);
                 accText = stripToolProtocolText(extracted.cleaned);
-                p.innerHTML = marked.parse(accText);
+                p.innerHTML = renderAssistantMarkdownWithCitations(accText);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
               } else if (payload.type === 'route.decision') {
                 const reasonText = payload.reason ? `（${String(payload.reason)}）` : '';
@@ -2259,12 +2540,13 @@
                 } else if (payload.target_agent_id) {
                   routeInfo.textContent = `本輪由：${String(payload.target_agent_id)} 代理者回覆${reasonText}${degradedText}`;
                 }
-                if (payload.target_agent_id) {
-                  currentAgentId = String(payload.target_agent_id);
-                  if (!autoRoutingMode) {
-                    try { agentSelect.value = String(payload.target_agent_id); } catch {}
-                  }
+              if (payload.target_agent_id) {
+                currentAgentId = String(payload.target_agent_id);
+                try { localStorage.setItem('last_agent_id', currentAgentId); } catch {}
+                if (!autoRoutingMode) {
+                  try { agentSelect.value = String(payload.target_agent_id); } catch {}
                 }
+              }
               } else if (payload.type === 'debug') {
                 console.debug('[CHAT DEBUG]', payload);
               } else if (payload.type === 'orchestrator.thinking') {
@@ -2363,7 +2645,7 @@
                 routeInfo.textContent = `多代理協作完成（${payload.completed || 0} 個代理，共 ${payload.react_steps_used || 1} 輪）`;
                 routeInfo.classList.add('orchestrator-done');
                 try {
-                  const refreshUrl = autoRoutingMode ? '/conversations' : `/agents/${currentAgentId}/conversations`;
+                  const refreshUrl = resolveConversationListEndpoint(currentAgentId);
                   const refreshed = await api.get(refreshUrl);
                   currentConversations = Array.isArray(refreshed.conversations) ? refreshed.conversations : [];
                   renderSidebar(currentConversations);
@@ -2462,7 +2744,7 @@
                 if (cleanedText.trim().length > 0 || String(accText || '').trim().length === 0) {
                   accText = cleanedText;
                 }
-                if (p) p.innerHTML = marked.parse(accText);
+                if (p) p.innerHTML = renderAssistantMarkdownWithCitations(accText);
               } else if (payload.type === 'done') {
                 sawDoneEvent = true;
                 doneConversationId = payload.conversation_id ? String(payload.conversation_id) : null;
@@ -2559,7 +2841,7 @@
         } else {
           accText += `\n\n[錯誤] ${(e && e.message) || '串流錯誤'}`;
         }
-        p.innerHTML = marked.parse(accText);
+        p.innerHTML = renderAssistantMarkdownWithCitations(accText);
       } finally {
         messageInput.disabled = false;
         submitBtn.disabled = false;
