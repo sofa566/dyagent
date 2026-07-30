@@ -4,21 +4,21 @@ uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 
 # Database
-sqlalchemy==2.0.25
-psycopg2-binary==2.9.9
+sqlalchemy==2.0.31
+psycopg2-binary>=2.9.10,<3.0.0
 alembic==1.13.1
 
 # Redis
 redis==5.0.1
 
 # Qdrant (Vector Database)
-qdrant-client==1.7.0
+qdrant-client==1.9.1
 
 # LangChain and RAG
-langchain==1.2.10
-langchain-community==0.4.1
-langchain-openai==1.1.10
-langchain-text-splitters==1.1.1
+langchain==0.3.27
+langchain-community==0.3.28
+langchain-openai==0.3.35
+langchain-text-splitters==0.3.11
 chromadb==1.5.4
 
 # Authentication
@@ -49,4 +49,4 @@ mcp==1.0.0
 python-docx
 
 jieba==0.42.1
-mem0ai
+mem0ai==0.1.18

@@ -132,8 +132,21 @@
       <h3>文件管理 - <span id="upload-modal-name"></span></h3>
       <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
         <button type="button" class="btn btn-primary" id="upload-btn">+ 上傳文件</button>
+        <button type="button" class="btn btn-danger" id="upload-cancel-btn" style="display:none;">中斷上傳</button>
         <input type="file" id="upload-file-input" style="display:none;" multiple>
         <span id="upload-status" style="color:var(--text-secondary);"></span>
+      </div>
+      <div id="upload-progress-wrap" style="display:none;margin-bottom:10px;">
+        <div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+          <div id="upload-progress-bar" style="height:100%;width:0%;background:#2563eb;transition:width 0.2s ease;"></div>
+        </div>
+        <div id="upload-progress-text" style="margin-top:4px;font-size:12px;color:var(--text-secondary);">單檔 0%</div>
+      </div>
+      <div id="upload-total-progress-wrap" style="display:none;margin-bottom:10px;">
+        <div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+          <div id="upload-total-progress-bar" style="height:100%;width:0%;background:#059669;transition:width 0.2s ease;"></div>
+        </div>
+        <div id="upload-total-progress-text" style="margin-top:4px;font-size:12px;color:var(--text-secondary);">總進度 0%</div>
       </div>
       <div style="border:1px solid var(--border-color);border-radius:var(--radius);max-height:300px;overflow-y:auto;">
         <table class="table" style="margin:0;">
@@ -142,6 +155,8 @@
               <th>檔案名稱</th>
               <th style="width:100px;">大小</th>
               <th style="width:160px;">上傳時間</th>
+              <th style="width:180px;">索引狀態</th>
+              <th style="width:88px;">操作</th>
             </tr>
           </thead>
           <tbody id="upload-file-list"></tbody>
@@ -172,11 +187,12 @@
             <tr>
               <th style="width:70px;">分數</th>
               <th style="width:140px;">來源檔案</th>
+              <th style="width:72px;">頁碼</th>
               <th>片段內容</th>
             </tr>
           </thead>
           <tbody id="search-results">
-            <tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>
+            <tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>
           </tbody>
         </table>
       </div>
@@ -344,7 +360,7 @@
           await api.put(`/rag/datasets/${encodeURIComponent(editingPrivateId)}`, payload);
           showSuccess('已更新私有資料集');
         } else {
-          await api.post('/rag/datasets', payload);
+          await api.post(`/agents/${encodeURIComponent(agentId)}/rag/datasets`, payload);
           showSuccess('已建立私有資料集');
         }
         closeModal(datasetModal);
@@ -374,11 +390,166 @@
     // ========== 上傳/文件列表 Modal ==========
     let currentUploadDatasetId = '';
     const uploadFileInput = document.getElementById('upload-file-input');
+    const uploadBtn = document.getElementById('upload-btn');
+    const uploadCancelBtn = document.getElementById('upload-cancel-btn');
+    const uploadProgressWrap = document.getElementById('upload-progress-wrap');
+    const uploadProgressBar = document.getElementById('upload-progress-bar');
+    const uploadProgressText = document.getElementById('upload-progress-text');
+    const uploadTotalProgressWrap = document.getElementById('upload-total-progress-wrap');
+    const uploadTotalProgressBar = document.getElementById('upload-total-progress-bar');
+    const uploadTotalProgressText = document.getElementById('upload-total-progress-text');
+    const DEFAULT_SYNC_INDEX_LIMIT_BYTES = 32 * 1024 * 1024;
+    let isUploadInProgress = false;
+    let uploadAbortRequested = false;
+    let activeUploadXhr = null;
+
+    function setUploadControlState(inProgress) {
+      isUploadInProgress = !!inProgress;
+      uploadBtn.disabled = isUploadInProgress;
+      uploadCancelBtn.style.display = isUploadInProgress ? 'inline-flex' : 'none';
+      uploadCancelBtn.disabled = !isUploadInProgress;
+    }
+
+    function setUploadProgress(percent) {
+      const normalizedPercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+      uploadProgressWrap.style.display = 'block';
+      uploadProgressBar.style.width = `${normalizedPercent}%`;
+      uploadProgressText.textContent = `單檔 ${normalizedPercent}%`;
+    }
+
+    function setUploadTotalProgress(percent) {
+      const normalizedPercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+      uploadTotalProgressWrap.style.display = 'block';
+      uploadTotalProgressBar.style.width = `${normalizedPercent}%`;
+      uploadTotalProgressText.textContent = `總進度 ${normalizedPercent}%`;
+    }
+
+    function parseSyncLimitError(errorText) {
+      const normalizedErrorText = String(errorText || '');
+      const match = normalizedErrorText.match(/file_too_large_for_sync_index:max=(\d+):actual=(\d+)/);
+      if (!match) {
+        return null;
+      }
+      const maxBytes = Number(match[1]) || DEFAULT_SYNC_INDEX_LIMIT_BYTES;
+      const actualBytes = Number(match[2]) || 0;
+      return { maxBytes, actualBytes };
+    }
+
+    function normalizeIndexStatus(statusText) {
+      const status = String(statusText || '').trim().toLowerCase();
+      if (status === 'queued' || status === 'indexing' || status === 'ready' || status === 'failed' || status === 'uploaded') {
+        return status;
+      }
+      return 'uploaded';
+    }
+
+    function formatIndexStatusCell(doc) {
+      const status = normalizeIndexStatus(doc && doc.status);
+      const stage = String((doc && doc.stage) || '').trim();
+      const progressValue = Number(doc && doc.progress);
+      const hasProgress = Number.isFinite(progressValue);
+      const normalizedProgress = hasProgress ? Math.max(0, Math.min(100, Math.round(progressValue))) : null;
+      const errorText = String((doc && doc.last_error) || '').trim();
+      const statusLabelMap = {
+        uploaded: '尚未索引',
+        queued: '排隊中',
+        indexing: '索引中',
+        ready: '完成',
+        failed: '失敗',
+      };
+      const statusLabel = statusLabelMap[status] || statusLabelMap.uploaded;
+      const stageText = stage ? `（${escapeHtml(stage)}）` : '';
+      const progressText = normalizedProgress === null ? '' : ` ${normalizedProgress}%`;
+      const errorHtml = (status === 'failed' && errorText)
+        ? `<div style="font-size:12px;color:var(--error-color);margin-top:2px;" title="${escapeHtml(errorText)}">${escapeHtml(errorText)}</div>`
+        : '';
+      return `<div><span>${statusLabel}${stageText}${progressText}</span>${errorHtml}</div>`;
+    }
+
+    function showUploadResultMessage(fileName, uploadResult) {
+      const normalizedFileName = String(fileName || '未命名檔案');
+      if ((uploadResult && uploadResult.status) === 'ready') {
+        showSuccess(`${normalizedFileName}: 索引完成`);
+        return 'ready';
+      }
+
+      if ((uploadResult && uploadResult.status) === 'indexing') {
+        showSuccess(`${normalizedFileName}: 已上傳，背景索引中`);
+        return 'pending';
+      }
+
+      if ((uploadResult && uploadResult.status) === 'queued') {
+        showSuccess(`${normalizedFileName}: 已上傳，背景索引中`);
+        return 'pending';
+      }
+
+      const syncLimitInfo = parseSyncLimitError(uploadResult && uploadResult.last_error);
+      if (syncLimitInfo) {
+        const actualSizeText = formatBytes(syncLimitInfo.actualBytes);
+        const maxSizeText = formatBytes(syncLimitInfo.maxBytes);
+        showSuccess(`${normalizedFileName}: 已上傳（${actualSizeText}），超過同步索引上限 ${maxSizeText}，需先分割檔案再上傳才能立即檢索`);
+        return 'pending';
+      }
+
+      showError(`${normalizedFileName}: ${(uploadResult && uploadResult.message) || '索引失敗'}`);
+      return 'failed';
+    }
+
+    function uploadDatasetFileWithProgress({ datasetId, file, token, onProgress, onXhrReady }) {
+      // 目的：以可追蹤進度的方式上傳單一文件。
+      // 為什麼：原生 fetch 無法可靠取得上傳進度，需改用 XHR 提供即時百分比。
+      return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `/api/rag/datasets/${encodeURIComponent(datasetId)}/upload`);
+        onXhrReady(xhr);
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        }
+
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) {
+            return;
+          }
+          const percent = (event.loaded / event.total) * 100;
+          onProgress(percent);
+        };
+
+        xhr.onerror = () => reject(new Error('網路錯誤，請稍後再試'));
+        xhr.onabort = () => reject(new Error('上傳已中斷'));
+        xhr.onload = () => {
+          let payload = {};
+          try {
+            payload = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+          } catch {
+            payload = {};
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(payload);
+            return;
+          }
+          reject(new Error(payload.error || payload.detail || `HTTP ${xhr.status}`));
+        };
+
+        xhr.send(formData);
+      });
+    }
 
     async function openUploadModal(datasetId, datasetName) {
       currentUploadDatasetId = datasetId;
       document.getElementById('upload-modal-name').textContent = datasetName;
       document.getElementById('upload-status').textContent = '';
+      uploadAbortRequested = false;
+      activeUploadXhr = null;
+      setUploadControlState(false);
+      uploadProgressWrap.style.display = 'none';
+      uploadProgressBar.style.width = '0%';
+      uploadProgressText.textContent = '單檔 0%';
+      uploadTotalProgressWrap.style.display = 'none';
+      uploadTotalProgressBar.style.width = '0%';
+      uploadTotalProgressText.textContent = '總進度 0%';
       await loadDocuments(datasetId);
       openModal(uploadModal);
     }
@@ -390,27 +561,122 @@
         const res = await api.get(`/rag/datasets/${encodeURIComponent(datasetId)}/documents`);
         const docs = res.documents || [];
         if (docs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
         } else {
           tbody.innerHTML = docs.map(doc => `
             <tr>
               <td>${escapeHtml(doc.filename)}</td>
               <td>${formatBytes(doc.size_bytes)}</td>
               <td>${formatDate(doc.uploaded_at)}</td>
+              <td>${formatIndexStatusCell(doc)}</td>
+              <td><button class="btn btn-danger" data-file-del="${escapeHtml(doc.file_key || '')}" data-file-name="${escapeHtml(doc.filename || '')}">刪除</button></td>
             </tr>
           `).join('');
         }
         summary.textContent = `共 ${docs.length} 個檔案`;
+        return docs;
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
         summary.textContent = '';
         showError(err.message || '載入文件列表失敗');
+        return [];
       }
     }
 
-    document.getElementById('upload-btn').addEventListener('click', () => {
+    async function waitForPendingIndexes({ datasetId, pendingFileKeys }) {
+      const pendingSet = new Set((pendingFileKeys || []).map((item) => String(item || '').trim()).filter(Boolean));
+      if (pendingSet.size === 0) {
+        return { readyCount: 0, failedCount: 0 };
+      }
+
+      const statusEl = document.getElementById('upload-status');
+      const maxWaitMs = 30 * 60 * 1000;
+      const pollIntervalMs = 2000;
+      const startedAt = Date.now();
+      let readyCount = 0;
+      let failedCount = 0;
+
+      while (Date.now() - startedAt < maxWaitMs) {
+        const docs = await loadDocuments(datasetId);
+        let completed = 0;
+        let progressAccumulator = 0;
+        let progressCount = 0;
+        readyCount = 0;
+        failedCount = 0;
+
+        for (const doc of docs || []) {
+          const fileKey = String((doc && doc.file_key) || '').trim();
+          if (!pendingSet.has(fileKey)) {
+            continue;
+          }
+
+          const status = normalizeIndexStatus(doc && doc.status);
+          const progressRaw = Number(doc && doc.progress);
+          const progress = Number.isFinite(progressRaw)
+            ? Math.max(0, Math.min(100, Math.round(progressRaw)))
+            : (status === 'ready' || status === 'failed' ? 100 : 0);
+
+          progressAccumulator += progress;
+          progressCount += 1;
+          if (status === 'ready') {
+            readyCount += 1;
+            completed += 1;
+          } else if (status === 'failed') {
+            failedCount += 1;
+            completed += 1;
+          }
+        }
+
+        const indexedProgress = progressCount > 0 ? (progressAccumulator / progressCount) : 0;
+        setUploadProgress(100);
+        setUploadTotalProgress(indexedProgress);
+        statusEl.textContent = `背景索引中：完成 ${completed}/${pendingSet.size}（成功 ${readyCount}、失敗 ${failedCount}）`;
+
+        if (completed >= pendingSet.size) {
+          return { readyCount, failedCount };
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+
+      statusEl.textContent = '背景索引仍在進行，請稍後重新開啟本視窗查看狀態';
+      return { readyCount, failedCount };
+    }
+
+    document.getElementById('upload-file-list').addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!target || target.tagName !== 'BUTTON') return;
+      const fileKey = String(target.getAttribute('data-file-del') || '').trim();
+      const fileName = String(target.getAttribute('data-file-name') || '').trim();
+      if (!fileKey || !currentUploadDatasetId) return;
+
+      const confirmed = window.confirm(`確定刪除「${fileName || fileKey}」嗎？\n將同時移除對應索引資料。`);
+      if (!confirmed) return;
+
+      try {
+        await api.delete(`/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/documents/${encodeURIComponent(fileKey)}`);
+        showSuccess('文件已刪除，可重新上傳');
+        await loadDocuments(currentUploadDatasetId);
+      } catch (error) {
+        showError((error && error.message) || '刪除文件失敗');
+      }
+    });
+
+    uploadBtn.addEventListener('click', () => {
       uploadFileInput.value = '';
       uploadFileInput.click();
+    });
+
+    uploadCancelBtn.addEventListener('click', () => {
+      if (!isUploadInProgress) {
+        return;
+      }
+      uploadAbortRequested = true;
+      uploadCancelBtn.disabled = true;
+      document.getElementById('upload-status').textContent = '正在中斷上傳...';
+      if (activeUploadXhr) {
+        activeUploadXhr.abort();
+      }
     });
 
     uploadFileInput.addEventListener('change', async () => {
@@ -419,36 +685,85 @@
 
       const statusEl = document.getElementById('upload-status');
       const token = localStorage.getItem('auth_token') || '';
+      let readyCount = 0;
+      let pendingCount = 0;
+      let failedCount = 0;
+      let skippedCount = 0;
+      const pendingFileKeys = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        statusEl.textContent = `上傳中 (${i + 1}/${files.length}): ${file.name}`;
+      uploadAbortRequested = false;
+      activeUploadXhr = null;
+      setUploadControlState(true);
 
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-          const response = await fetch(`/api/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/upload`, {
-            method: 'POST',
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            body: formData,
-          });
-
-          if (!response.ok) {
-            const err = await response.json().catch(() => ({}));
-            throw new Error(err.error || err.detail || `HTTP ${response.status}`);
+      try {
+        for (let i = 0; i < files.length; i++) {
+          if (uploadAbortRequested) {
+            skippedCount = files.length - i;
+            break;
           }
 
-          const data = await response.json();
-          if (data.status !== 'ready') {
-            showError(`${file.name}: ${data.message || '索引失敗'}`);
+          const file = files[i];
+          statusEl.textContent = `上傳中 (${i + 1}/${files.length}): ${file.name}`;
+          setUploadProgress(0);
+          setUploadTotalProgress((i / files.length) * 100);
+
+          try {
+            const data = await uploadDatasetFileWithProgress({
+              datasetId: currentUploadDatasetId,
+              file,
+              token,
+              onProgress: (percent) => {
+                setUploadProgress(percent);
+                const totalPercent = ((i + (percent / 100)) / files.length) * 100;
+                setUploadTotalProgress(totalPercent);
+              },
+              onXhrReady: (xhr) => {
+                activeUploadXhr = xhr;
+              },
+            });
+            activeUploadXhr = null;
+            setUploadProgress(100);
+            setUploadTotalProgress(((i + 1) / files.length) * 100);
+            const uploadState = showUploadResultMessage(file.name, data);
+            if (uploadState === 'ready') readyCount += 1;
+            if (uploadState === 'pending') {
+              pendingCount += 1;
+              pendingFileKeys.push(String((data && data.file_key) || '').trim());
+            }
+            if (uploadState === 'failed') failedCount += 1;
+          } catch (err) {
+            activeUploadXhr = null;
+            if (uploadAbortRequested) {
+              skippedCount = Math.max(0, files.length - i);
+              break;
+            }
+            showError(`${file.name}: ${err.message}`);
+            failedCount += 1;
           }
-        } catch (err) {
-          showError(`${file.name}: ${err.message}`);
         }
+      } finally {
+        setUploadControlState(false);
+        activeUploadXhr = null;
       }
 
-      statusEl.textContent = '上傳完成';
+      if (uploadAbortRequested) {
+        statusEl.textContent = `已中斷：索引成功 ${readyCount}、待處理 ${pendingCount}、失敗 ${failedCount}、未上傳 ${skippedCount}`;
+      } else {
+        statusEl.textContent = `上傳完成：索引成功 ${readyCount}、待處理 ${pendingCount}、失敗 ${failedCount}`;
+        setUploadProgress(100);
+        setUploadTotalProgress(100);
+        if (pendingCount > 0 && !uploadAbortRequested) {
+          const pendingResult = await waitForPendingIndexes({
+            datasetId: currentUploadDatasetId,
+            pendingFileKeys,
+          });
+          readyCount += Number(pendingResult.readyCount || 0);
+          failedCount += Number(pendingResult.failedCount || 0);
+          pendingCount = Math.max(0, pendingCount - Number(pendingResult.readyCount || 0) - Number(pendingResult.failedCount || 0));
+          statusEl.textContent = `索引完成：成功 ${readyCount}、失敗 ${failedCount}、進行中 ${pendingCount}`;
+          setUploadTotalProgress(100);
+        }
+      }
       uploadFileInput.value = '';
       await loadDocuments(currentUploadDatasetId);
     });
@@ -466,7 +781,7 @@
       document.getElementById('search-query').value = '';
       document.getElementById('search-status').style.display = 'none';
       document.getElementById('search-results').innerHTML =
-        '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>';
+        '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>';
       openModal(searchModal);
     }
 
@@ -483,7 +798,7 @@
       statusEl.style.display = 'block';
       statusEl.className = 'search-status-loading';
       statusEl.textContent = '搜尋中...';
-      resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;">搜尋中...</td></tr>';
+      resultsEl.innerHTML = '<tr><td colspan="4" style="text-align:center;">搜尋中...</td></tr>';
 
       try {
         const res = await api.post(`/rag/datasets/${encodeURIComponent(currentSearchDatasetId)}/search`, {
@@ -494,7 +809,7 @@
         if (res.ok === false) {
           statusEl.className = 'search-status-error';
           statusEl.textContent = `搜尋失敗：${res.error || res.message}（耗時 ${res.elapsed_ms} ms）`;
-          resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+          resultsEl.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
           return;
         }
 
@@ -506,16 +821,17 @@
             <tr>
               <td>${(r.score * 100).toFixed(1)}%</td>
               <td title="${escapeHtml(r.payload?.filename || '')}">${escapeHtml(r.payload?.filename || '-')}</td>
+              <td>${Number.isInteger(r.payload?.page_number) ? String(r.payload.page_number) : '-'}</td>
               <td title="${escapeHtml(r.payload?.snippet || '')}">${escapeHtml((r.payload?.snippet || '').substring(0, 200))}${(r.payload?.snippet || '').length > 200 ? '...' : ''}</td>
             </tr>
           `).join('');
         } else {
-          resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">無符合的結果</td></tr>';
+          resultsEl.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">無符合的結果</td></tr>';
         }
       } catch (err) {
         statusEl.className = 'search-status-error';
         statusEl.textContent = `搜尋失敗：${err.message}`;
-        resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+        resultsEl.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
       }
     });
 

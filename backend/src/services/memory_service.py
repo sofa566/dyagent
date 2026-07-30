@@ -9,6 +9,7 @@ from src.core.logging import get_logger
 from src.services.memory_providers.base import (
     MemoryHealth,
     MemoryProvider,
+    MemoryProviderError,
     MemorySnippet,
     MemoryWriteResult,
 )
@@ -62,6 +63,7 @@ class MemoryRetrieveResult:
     provider: str
     ok: bool
     error: str | None = None
+    error_code: str | None = None
 
 
 class MemoryService:
@@ -119,6 +121,9 @@ class MemoryService:
                 ok=True,
             )
         except Exception as error:
+            error_code = None
+            if isinstance(error, MemoryProviderError):
+                error_code = error.code
             self._log.warning('memory.retrieve_failed', error=str(error))
             return MemoryRetrieveResult(
                 snippets=[],
@@ -126,6 +131,7 @@ class MemoryService:
                 provider=self.provider_name,
                 ok=False,
                 error=str(error),
+                error_code=error_code,
             )
 
     def write(

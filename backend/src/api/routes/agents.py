@@ -766,6 +766,7 @@ async def test_agent_rag(
                 'snippet': str(payload_obj.get('snippet') or ''),
                 'source': collection,
                 'filename': str(payload_obj.get('filename') or ''),
+                'page_number': (int(payload_obj.get('page_number')) if isinstance(payload_obj.get('page_number'), int) else None),
             })
 
     merged_results.sort(key=lambda x: x.get('score', 0.0), reverse=True)

@@ -21,7 +21,7 @@ from src.api.routes.chat import (
     _pick_worker_agent,
 )
 from src.core.config import settings
-from src.models import Agent, MultiAgentSession, MultiAgentTask, Workspace
+from src.models import Agent, MultiAgentSession, MultiAgentTask, RagDataset, Workspace
 
 
 # ──────────────────────────────────────────────
@@ -355,7 +355,7 @@ class TestWorkerClassRouting:
 
         with (
             patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'memory_first'),
-            patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'memory_first'),
+            patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_dominant'),
             patch('src.api.routes.chat.memory_service.retrieve', side_effect=_fake_memory_retrieve),
         ):
             worker, reason = _pick_worker_agent(
@@ -368,6 +368,188 @@ class TestWorkerClassRouting:
         assert worker is not None
         assert str(worker.id) == str(tasked.id)
         assert 'memory' in reason
+
+    def test_router_assignment_mode_skill_first_prefers_skill_hint(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='銷售任務代理', description='銷售流程與報表', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+
+        def _fake_extract_agent_skill_names(*, db, agent):
+            return ['sales-skill'] if str(agent.id) == str(tasked.id) else []
+
+        with (
+            patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'skill_first'),
+            patch('src.api.routes.chat._detect_intent_skill_name', return_value='sales-skill'),
+            patch('src.api.routes.chat._extract_agent_skill_names', side_effect=_fake_extract_agent_skill_names),
+        ):
+            worker, reason = _pick_worker_agent(
+                db=db,
+                router_agent=router,
+                message='請協助我整理本月銷售報表',
+                user_id='user-a',
+            )
+
+        assert worker is not None
+        assert str(worker.id) == str(tasked.id)
+        assert reason == 'tasked_skill_hint_sales-skill'
+
+    def test_router_assignment_mode_hybrid_uses_weighted_scoring(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='工程任務代理', description='程式與自動化', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+
+        def _fake_desc_score(*, worker, message):
+            if str(worker.id) == str(public.id):
+                return 0.9
+            return 0.3
+
+        with (
+            patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'hybrid'),
+            patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_disabled'),
+            patch('src.api.routes.chat._detect_intent_skill_name', return_value=None),
+            patch('src.api.routes.chat._extract_agent_skill_names', return_value=[]),
+            patch('src.api.routes.chat._estimate_worker_description_score', side_effect=_fake_desc_score),
+        ):
+            worker, reason = _pick_worker_agent(
+                db=db,
+                router_agent=router,
+                message='請給我一段建議',
+                user_id='user-a',
+            )
+
+        assert worker is not None
+        assert str(worker.id) == str(public.id)
+        assert reason == 'public_hybrid_description_match'
+
+    def test_memory_routing_mode_changes_hybrid_result(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked_a = Agent(
+            name='A 代理', description='偏描述匹配', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        tasked_b = Agent(
+            name='B 代理', description='偏記憶匹配', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked_a); db.add(tasked_b)
+        db.commit(); db.refresh(router); db.refresh(tasked_a); db.refresh(tasked_b)
+
+        def _fake_desc_score(*, worker, message):
+            if str(worker.id) == str(tasked_a.id):
+                return 0.5
+            return 0.4
+
+        def _fake_memory_retrieve(*args, **kwargs):
+            agent_id = str(kwargs.get('agent_id') or '')
+            if agent_id == str(tasked_b.id):
+                snippet = types.SimpleNamespace(text='記憶命中', score=1.0, scope_type='user_scope')
+                return types.SimpleNamespace(ok=True, snippets=[snippet], provider='mock')
+            return types.SimpleNamespace(ok=True, snippets=[], provider='mock')
+
+        with (
+            patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'hybrid'),
+            patch('src.api.routes.chat._detect_intent_skill_name', return_value=None),
+            patch('src.api.routes.chat._extract_agent_skill_names', return_value=[]),
+            patch('src.api.routes.chat._estimate_worker_description_score', side_effect=_fake_desc_score),
+            patch('src.api.routes.chat.memory_service.retrieve', side_effect=_fake_memory_retrieve),
+        ):
+            with patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_disabled'):
+                worker_without_memory, _ = _pick_worker_agent(
+                    db=db,
+                    router_agent=router,
+                    message='請協助我處理需求',
+                    user_id='user-a',
+                )
+            with patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_dominant'):
+                worker_with_memory, _ = _pick_worker_agent(
+                    db=db,
+                    router_agent=router,
+                    message='請協助我處理需求',
+                    user_id='user-a',
+                )
+
+        assert worker_without_memory is not None
+        assert worker_with_memory is not None
+        assert str(worker_without_memory.id) == str(tasked_a.id)
+        assert str(worker_with_memory.id) == str(tasked_b.id)
+
+    def test_memory_routing_mode_skill_first_requires_skill_signal(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked_a = Agent(
+            name='A 代理', description='一般路由', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        tasked_b = Agent(
+            name='B 代理', description='記憶命中代理', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked_a); db.add(tasked_b)
+        db.commit(); db.refresh(router); db.refresh(tasked_a); db.refresh(tasked_b)
+
+        def _fake_desc_score(*, worker, message):
+            return 0.5
+
+        def _fake_memory_retrieve(*args, **kwargs):
+            agent_id = str(kwargs.get('agent_id') or '')
+            if agent_id == str(tasked_b.id):
+                snippet = types.SimpleNamespace(text='記憶命中', score=1.0, scope_type='user_scope')
+                return types.SimpleNamespace(ok=True, snippets=[snippet], provider='mock')
+            return types.SimpleNamespace(ok=True, snippets=[], provider='mock')
+
+        with (
+            patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'hybrid'),
+            patch('src.api.routes.chat._detect_intent_skill_name', return_value=None),
+            patch('src.api.routes.chat._extract_agent_skill_names', return_value=[]),
+            patch('src.api.routes.chat._estimate_worker_description_score', side_effect=_fake_desc_score),
+            patch('src.api.routes.chat.memory_service.retrieve', side_effect=_fake_memory_retrieve),
+        ):
+            with patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_boost'):
+                worker_skill_first, _ = _pick_worker_agent(
+                    db=db,
+                    router_agent=router,
+                    message='請協助我處理需求',
+                    user_id='user-a',
+                )
+            with patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'mem_dominant'):
+                worker_memory_first, _ = _pick_worker_agent(
+                    db=db,
+                    router_agent=router,
+                    message='請協助我處理需求',
+                    user_id='user-a',
+                )
+
+        assert worker_skill_first is not None
+        assert worker_memory_first is not None
+        assert str(worker_skill_first.id) == str(tasked_a.id)
+        assert str(worker_memory_first.id) == str(tasked_b.id)
 
 
 # ──────────────────────────────────────────────
@@ -419,6 +601,142 @@ class TestSingleAgentRegression:
         body = response.text
         assert 'orchestrator.plan' not in body
         assert 'orchestrator.done' not in body
+
+    def test_forward_selected_dataset_ids_to_chat_stream(self, client, admin_token, db, workspace):
+        """Given 前端送出 selected_dataset_ids，When POST /api/chat，Then 轉發到 chat_stream 供 RAG 檢索。"""
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, workspace_id=workspace.id,
+        )
+        worker = Agent(
+            name='Worker', description='工作代理', model_type='cloud',
+            is_router=False, workspace_id=workspace.id,
+        )
+        db.add(router)
+        db.add(worker)
+        db.commit()
+        db.refresh(worker)
+
+        dataset_id = str(uuid.uuid4())
+        with patch('src.api.routes.chat.chat_stream') as mock_stream:
+            async def _fake_stream(*a, **kw):
+                resp = MagicMock()
+
+                async def _iter():
+                    yield b'data: {"type":"done","conversation_id":"fake"}\n\n'
+
+                resp.body_iterator = _iter()
+                return resp
+
+            mock_stream.side_effect = _fake_stream
+            response = client.post(
+                '/api/chat',
+                headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
+                json={'message': '測試資料集轉發', 'selected_dataset_ids': [dataset_id]},
+            )
+
+        assert response.status_code == 200
+        called_kwargs = mock_stream.call_args.kwargs
+        assert called_kwargs.get('selected_dataset_ids') == [dataset_id]
+
+    def test_selected_private_dataset_forces_owner_agent(self, client, admin_token, db, workspace):
+        """Given 使用者選擇私有資料集，When /api/chat 路由，Then 固定轉發到資料集 owner agent。"""
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, workspace_id=workspace.id,
+        )
+        owner_worker = Agent(
+            name='OwnerWorker', description='資料集 owner 代理者', model_type='cloud',
+            is_router=False, workspace_id=workspace.id,
+        )
+        fallback_worker = Agent(
+            name='FallbackWorker', description='一般路由候選', model_type='cloud',
+            is_router=False, workspace_id=workspace.id,
+        )
+        db.add(router)
+        db.add(owner_worker)
+        db.add(fallback_worker)
+        db.commit()
+        db.refresh(owner_worker)
+        db.refresh(fallback_worker)
+
+        private_dataset = RagDataset(
+            name='Owner 私有資料集',
+            scope='agent_private',
+            agent_id=owner_worker.id,
+            sensitivity='normal',
+            enabled=True,
+        )
+        db.add(private_dataset)
+        db.commit()
+        db.refresh(private_dataset)
+
+        with (
+            patch('src.api.routes.chat._pick_worker_agent', return_value=(fallback_worker, 'public_default_fallback')),
+            patch('src.api.routes.chat.chat_stream') as mock_stream,
+        ):
+            async def _fake_stream(*a, **kw):
+                resp = MagicMock()
+
+                async def _iter():
+                    yield b'data: {"type":"done","conversation_id":"fake"}\n\n'
+
+                resp.body_iterator = _iter()
+                return resp
+
+            mock_stream.side_effect = _fake_stream
+            response = client.post(
+                '/api/chat',
+                headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
+                json={'message': '請用我選的資料集回答', 'selected_dataset_ids': [str(private_dataset.id)]},
+            )
+
+        assert response.status_code == 200
+        called_kwargs = mock_stream.call_args.kwargs
+        assert called_kwargs['agent_id'] == str(owner_worker.id)
+        assert 'selected_dataset_private_owner_forced' in response.text
+
+    def test_infer_selected_dataset_ids_from_message_context(self, client, admin_token, db, workspace):
+        """Given payload 未帶 selected_dataset_ids，When 訊息含附加資料集 ID，Then 仍可轉發到 chat_stream。"""
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, workspace_id=workspace.id,
+        )
+        worker = Agent(
+            name='Worker', description='工作代理', model_type='cloud',
+            is_router=False, workspace_id=workspace.id,
+        )
+        db.add(router)
+        db.add(worker)
+        db.commit()
+
+        dataset_id = str(uuid.uuid4())
+        message_with_dataset_context = (
+            '請使用我選擇的資料集搜尋 MCP server\n\n'
+            '[附加輸入]\n'
+            f'使用資料集:\n- mis_pb (id={dataset_id}, scope=global)'
+        )
+
+        with patch('src.api.routes.chat.chat_stream') as mock_stream:
+            async def _fake_stream(*a, **kw):
+                resp = MagicMock()
+
+                async def _iter():
+                    yield b'data: {"type":"done","conversation_id":"fake"}\n\n'
+
+                resp.body_iterator = _iter()
+                return resp
+
+            mock_stream.side_effect = _fake_stream
+            response = client.post(
+                '/api/chat',
+                headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
+                json={'message': message_with_dataset_context},
+            )
+
+        assert response.status_code == 200
+        called_kwargs = mock_stream.call_args.kwargs
+        assert called_kwargs.get('selected_dataset_ids') == [dataset_id]
 
     def test_public_not_ready_fallback_to_master(self, client, admin_token, db, workspace):
         """Given public 代理不可用，When POST /api/chat，Then 轉回 master 代理。"""

@@ -143,3 +143,96 @@ class TestMemory:
 
         assert response.status_code == 400
         assert response.json().get('detail', {}).get('code') == 'VALIDATION_ERROR'
+
+    def test_memory_health_requires_admin(self, client, regular_user_token):
+        response = client.get(
+            '/api/memory/health',
+            headers={'Authorization': f'Bearer {regular_user_token}'},
+        )
+        assert response.status_code == 403
+
+    def test_memory_health_success(self, client, admin_token, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        monkeypatch.setattr(
+            chat_routes.memory_service,
+            'health',
+            lambda: SimpleNamespace(ok=True, provider='mock', degraded=False, error=None, error_code=None),
+        )
+        response = client.get(
+            '/api/memory/health',
+            headers={'Authorization': f'Bearer {admin_token}'},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload.get('ok') is True
+        assert payload.get('provider') == 'mock'
+
+    def test_memory_search_success(self, client, admin_token, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        monkeypatch.setattr(
+            chat_routes.memory_service,
+            'retrieve',
+            lambda **kwargs: SimpleNamespace(
+                ok=True,
+                provider='mock',
+                elapsed_ms=3,
+                error=None,
+                error_code=None,
+                snippets=[
+                    SimpleNamespace(
+                        text='user: 喜歡簡潔回覆',
+                        score=0.95,
+                        scope_type='user_scope',
+                        source='mock',
+                        metadata={'tag': 'preference'},
+                    )
+                ],
+            ),
+        )
+        response = client.post(
+            '/api/memory/search',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={'query': '簡潔', 'top_k': 5},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload.get('ok') is True
+        assert len(payload.get('snippets') or []) == 1
+        assert payload['snippets'][0]['scope_type'] == 'user_scope'
+
+    def test_memory_search_query_required(self, client, admin_token):
+        response = client.post(
+            '/api/memory/search',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={'query': ''},
+        )
+        assert response.status_code == 400
+
+    def test_memory_forget_user_by_admin_success(self, client, admin_token, regular_user, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        monkeypatch.setattr(
+            chat_routes.memory_service,
+            'forget_user',
+            lambda *, user_id, app_id=None: SimpleNamespace(ok=True, error=None),
+        )
+        response = client.post(
+            f'/api/memory/users/{regular_user.id}/forget',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={},
+        )
+
+        assert response.status_code == 200
+        assert response.json().get('ok') is True
+
+    def test_memory_forget_user_by_admin_not_found(self, client, admin_token):
+        response = client.post(
+            '/api/memory/users/00000000-0000-0000-0000-000000000000/forget',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={},
+        )
+        assert response.status_code == 404

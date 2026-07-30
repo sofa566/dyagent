@@ -52,10 +52,10 @@
 
 ### 子策略對 memory_score 的影響
 
-- `memory_first`：記憶命中可主導決策；高命中可提前定案。
-- `skill_first`：技能訊號優先，記憶僅加分或 tie-break。
-- `description_only`：記憶僅注入上下文，不參與路由計分。
-- `hybrid`：融合 `user_scope`、`agent_scope`、`interaction_scope` 記憶後計分。
+- `mem_dominant`：記憶命中可主導決策；高命中可提前定案。
+- `mem_boost`：技能訊號優先，記憶僅加分或 tie-break。
+- `mem_disabled`：記憶僅注入上下文，不參與路由計分。
+- `mem_hybrid`：融合 `user_scope`、`agent_scope`、`interaction_scope` 記憶後計分。
 
 ### 主決策與子策略交互規則
 

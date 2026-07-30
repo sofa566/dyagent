@@ -76,8 +76,8 @@ class Settings(BaseSettings):
     # 記憶層設定
     # AGENT_MEMORY_PROVIDER: off | mock | mem0_oss | mem0_platform
     AGENT_MEMORY_PROVIDER: str = 'off'
-    # 記憶導向路由策略：description_only | hybrid | skill_first | memory_first
-    AGENT_MEMORY_ROUTING_MODE: str = 'hybrid'
+    # 記憶導向子策略：mem_disabled | mem_hybrid | mem_boost | mem_dominant
+    AGENT_MEMORY_ROUTING_MODE: str = 'mem_hybrid'
     AGENT_MEMORY_READ_ENABLED: bool = True
     AGENT_MEMORY_WRITE_ENABLED: bool = True
     AGENT_MEMORY_TOP_K: int = 5
@@ -112,6 +112,14 @@ class Settings(BaseSettings):
 
     # Router 路由門檻（0~1）
     ROUTER_EMBEDDING_THRESHOLD: float = 0.55
+    # RAG 背景索引併發上限（其餘任務進佇列）
+    RAG_INDEX_MAX_CONCURRENCY: int = 1
+    # RAG 背景索引批次大小（每批向量化 chunk 數）
+    RAG_INDEX_BATCH_SIZE: int = 8
+    # RAG 索引進度停滯逾時秒數（超時會視為 stale）
+    RAG_INDEX_STALE_TIMEOUT_SEC: int = 15 * 60
+    # PDF docling 備援抽取允許的最大檔案大小（bytes）；0 代表完全停用
+    RAG_PDF_DOCLING_MAX_FILE_BYTES: int = 32 * 1024 * 1024
     # 主代理分派策略：description_only | hybrid | skill_first | memory_first
     ROUTER_ASSIGNMENT_MODE: str = 'skill_first'
 
@@ -217,9 +225,9 @@ def validate_llm_settings() -> None:
             settings.AGENT_MEMORY_PROVIDER,
         )
     memory_routing_mode = str(settings.AGENT_MEMORY_ROUTING_MODE or '').strip().lower()
-    if memory_routing_mode not in {'description_only', 'hybrid', 'skill_first', 'memory_first'}:
+    if memory_routing_mode not in {'mem_disabled', 'mem_hybrid', 'mem_boost', 'mem_dominant'}:
         log.warning(
-            "config.invalid_agent_memory_routing_mode: value=%s expect=description_only|hybrid|skill_first|memory_first",
+            "config.invalid_agent_memory_routing_mode: value=%s expect=mem_disabled|mem_hybrid|mem_boost|mem_dominant",
             settings.AGENT_MEMORY_ROUTING_MODE,
         )
     if settings.AGENT_MEMORY_TOP_K <= 0:
@@ -230,4 +238,15 @@ def validate_llm_settings() -> None:
         log.warning(
             "config.invalid_short_term_memory_max_messages: value=%s expect=>0 int",
             settings.SHORT_TERM_MEMORY_MAX_MESSAGES,
+        )
+    if settings.RAG_INDEX_MAX_CONCURRENCY <= 0:
+        log.warning("config.invalid_rag_index_max_concurrency: value=%s expect=>0 int", settings.RAG_INDEX_MAX_CONCURRENCY)
+    if settings.RAG_INDEX_BATCH_SIZE <= 0:
+        log.warning("config.invalid_rag_index_batch_size: value=%s expect=>0 int", settings.RAG_INDEX_BATCH_SIZE)
+    if settings.RAG_INDEX_STALE_TIMEOUT_SEC <= 0:
+        log.warning("config.invalid_rag_index_stale_timeout_sec: value=%s expect=>0 int", settings.RAG_INDEX_STALE_TIMEOUT_SEC)
+    if settings.RAG_PDF_DOCLING_MAX_FILE_BYTES < 0:
+        log.warning(
+            "config.invalid_rag_pdf_docling_max_file_bytes: value=%s expect=>=0 int",
+            settings.RAG_PDF_DOCLING_MAX_FILE_BYTES,
         )

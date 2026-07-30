@@ -20,12 +20,23 @@ class MemoryHealth:
     provider: str
     degraded: bool = False
     error: str | None = None
+    error_code: str | None = None
 
 
 @dataclass
 class MemoryWriteResult:
     ok: bool
     error: str | None = None
+    error_code: str | None = None
+
+
+class MemoryProviderError(Exception):
+    # 目的：提供 provider 層可辨識的錯誤型別。
+    # 為什麼：memory service 需依錯誤分類（timeout/auth/provider_unavailable）做 fail-open 與觀測。
+
+    def __init__(self, *, code: str, message: str):
+        super().__init__(message)
+        self.code = str(code or 'provider_unavailable')
 
 
 class MemoryProvider(ABC):

@@ -65,3 +65,76 @@ def test_read_disabled_returns_empty(monkeypatch) -> None:
     )
     assert result.ok is True
     assert result.snippets == []
+
+
+def test_scope_isolation_blocks_other_user() -> None:
+    provider = MockMemoryProvider()
+    service = MemoryService(provider=provider)
+    service.write(
+        messages=[{'role': 'user', 'content': '這是 user-a 的偏好'}],
+        user_id='user-a',
+        agent_id='agent-a',
+        run_id='conv-a',
+    )
+
+    result = service.retrieve(
+        query='偏好',
+        user_id='user-b',
+        agent_id='agent-a',
+        run_id='conv-a',
+    )
+    assert result.ok is True
+    assert result.snippets == []
+
+
+def test_top_k_truncates_results() -> None:
+    provider = MockMemoryProvider()
+    service = MemoryService(provider=provider)
+    for idx in range(3):
+        service.write(
+            messages=[{'role': 'user', 'content': f'共同關鍵字 第{idx}筆'}],
+            user_id='user-a',
+            agent_id='agent-a',
+            run_id=f'conv-{idx}',
+        )
+
+    result = service.retrieve(
+        query='共同關鍵字',
+        user_id='user-a',
+        agent_id='agent-a',
+        run_id=None,
+        top_k=2,
+    )
+    assert result.ok is True
+    assert len(result.snippets) == 2
+
+
+def test_provider_failure_returns_fail_open_result(monkeypatch) -> None:
+    provider = MockMemoryProvider()
+    service = MemoryService(provider=provider)
+
+    def raise_search_error(**kwargs):
+        raise RuntimeError('search_error')
+
+    def raise_add_error(**kwargs):
+        raise RuntimeError('add_error')
+
+    monkeypatch.setattr(provider, 'search', raise_search_error)
+    monkeypatch.setattr(provider, 'add', raise_add_error)
+
+    retrieve_result = service.retrieve(
+        query='任意字串',
+        user_id='user-a',
+        agent_id='agent-a',
+        run_id='conv-a',
+    )
+    write_result = service.write(
+        messages=[{'role': 'user', 'content': '任意內容'}],
+        user_id='user-a',
+        agent_id='agent-a',
+        run_id='conv-a',
+    )
+
+    assert retrieve_result.snippets == []
+    assert retrieve_result.ok is False
+    assert write_result.ok is False

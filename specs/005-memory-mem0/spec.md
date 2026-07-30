@@ -64,7 +64,7 @@
 ### 功能需求
 
 - **FR-001**: 系統 MUST 提供可切換的記憶供應模式：`off`、`mem0_oss`、`mem0_platform`、`mock`。
-- **FR-002**: 系統 MUST 支援記憶路由策略模式：`description_only`、`hybrid`、`skill_first`、`memory_first`。
+- **FR-002**: 系統 MUST 支援記憶路由子策略模式：`mem_disabled`、`mem_hybrid`、`mem_boost`、`mem_dominant`。
 - **FR-003**: 系統 MUST 在 Master 分派後組裝雙層上下文：短期記憶（Redis）+ 長期記憶（Mem0）。
 - **FR-004**: 系統 MUST 以 `user_id`、`agent_id`、`conversation_id(run_id)`、`app_id` 做檢索隔離。
 - **FR-005**: 系統 MUST 支援三種長期記憶範疇：使用者記憶、代理專業記憶、使用者-代理交叉記憶。
@@ -131,10 +131,10 @@
 
 ### memory_score 子策略（受 AGENT_MEMORY_ROUTING_MODE 控制）
 
-- `memory_first`：記憶命中可作為主導訊號；命中高且超門檻時可提前定案。
-- `skill_first`：技能命中優先；記憶訊號僅作加分或同分決勝（tie-break）。
-- `description_only`：記憶只用於上下文，不影響路由分數。
-- `hybrid`：融合 `user_scope`、`agent_scope`、`interaction_scope` 記憶分數後再加權。
+- `mem_dominant`：記憶命中可作為主導訊號；命中高且超門檻時可提前定案。
+- `mem_boost`：技能命中優先；記憶訊號僅作加分或同分決勝（tie-break）。
+- `mem_disabled`：記憶只用於上下文，不影響路由分數。
+- `mem_hybrid`：融合 `user_scope`、`agent_scope`、`interaction_scope` 記憶分數後再加權。
 
 ### 主決策與子策略交互規則
 

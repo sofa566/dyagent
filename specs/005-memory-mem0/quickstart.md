@@ -12,7 +12,7 @@ pip install -r requirements.txt
 ```env
 # 記憶總開關與供應器
 AGENT_MEMORY_PROVIDER=mem0_oss
-AGENT_MEMORY_ROUTING_MODE=hybrid
+AGENT_MEMORY_ROUTING_MODE=mem_hybrid
 AGENT_MEMORY_READ_ENABLED=true
 AGENT_MEMORY_WRITE_ENABLED=true
 AGENT_MEMORY_TOP_K=5

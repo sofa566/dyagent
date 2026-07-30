@@ -19,7 +19,7 @@ else
     npm run build
     nohup npm run dev > "$FRONTEND_LOG" 2>&1 &
   )
-  disown || true
+  disown >/dev/null 2>&1 || true
 fi
 
 echo "[done] dev stack started"
