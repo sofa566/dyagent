@@ -49,3 +49,4 @@ mcp==1.0.0
 python-docx
 
 jieba==0.42.1
+mem0ai

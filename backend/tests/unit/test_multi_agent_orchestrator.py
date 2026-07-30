@@ -20,6 +20,7 @@ from src.api.routes.chat import (
     _inject_prior_context,
     _pick_worker_agent,
 )
+from src.core.config import settings
 from src.models import Agent, MultiAgentSession, MultiAgentTask, Workspace
 
 
@@ -298,6 +299,75 @@ class TestWorkerClassRouting:
         assert worker is not None
         assert str(worker.id) == str(public.id)
         assert reason == 'public_default_fallback'
+
+    def test_router_assignment_mode_description_only_ignores_skill_hint(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='銷售任務代理', description='處理銷售查詢', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+
+        with (
+            patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'description_only'),
+            patch('src.api.routes.chat._detect_intent_skill_name', return_value='fake-skill'),
+        ):
+            worker, reason = _pick_worker_agent(db=db, router_agent=router, message='請協助我處理銷售報表')
+
+        assert worker is not None
+        assert str(worker.id) in {str(tasked.id), str(public.id)}
+        assert 'skill_hint_' not in reason
+
+    def test_router_assignment_mode_memory_first_uses_memory_signal(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='程式任務代理', description='程式優化', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(tasked); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+
+        def _fake_memory_retrieve(*args, **kwargs):
+            agent_id = str(kwargs.get('agent_id') or '')
+            if agent_id == str(tasked.id):
+                memory_snippet = types.SimpleNamespace(
+                    text='過往偏好：程式需求優先交給程式任務代理',
+                    score=0.95,
+                    scope_type='interaction_scope',
+                )
+                return types.SimpleNamespace(ok=True, snippets=[memory_snippet], provider='mock')
+            return types.SimpleNamespace(ok=True, snippets=[], provider='mock')
+
+        with (
+            patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'memory_first'),
+            patch.object(settings, 'AGENT_MEMORY_ROUTING_MODE', 'memory_first'),
+            patch('src.api.routes.chat.memory_service.retrieve', side_effect=_fake_memory_retrieve),
+        ):
+            worker, reason = _pick_worker_agent(
+                db=db,
+                router_agent=router,
+                message='請幫我優化這段 Python 程式',
+                user_id='user-a',
+            )
+
+        assert worker is not None
+        assert str(worker.id) == str(tasked.id)
+        assert 'memory' in reason
 
 
 # ──────────────────────────────────────────────

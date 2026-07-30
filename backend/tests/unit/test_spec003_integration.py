@@ -298,6 +298,260 @@ class TestRouterAndLlmTurn:
         assert turn_row.status == 'tool_error'
         assert 'tool_unavailable' in (turn_row.error or '')
 
+    def test_chat_stream_skips_intent_shortcut_when_selected_dataset_has_rag_hits(
+        self,
+        client,
+        admin_token,
+        agent,
+        monkeypatch,
+    ):
+        """Given 使用者指定資料集且 RAG 命中，When 偵測到技能意圖，Then 不走 intent shortcut 直接保留 LLM 回覆路徑。"""
+        from src.api.routes import chat as chat_routes
+        from src.services.chat_router import ChatRouter
+
+        async def fake_stream_complete_async(llm_client, *, prompt: str, tier: str | None):
+            _ = llm_client, prompt, tier
+            yield 'RAG 一般回覆路徑'
+
+        def fake_prepare_integrations(self, *, db, agent_id: str):
+            _ = db, agent_id
+            self._allowed_tools = {'weather_tool'}
+            return {
+                'skills': ['weather_tool'],
+                'mcp': [],
+                'rag': {'enabled': True, 'sources': ['test-ds'], 'topK': 5},
+            }
+
+        async def fail_if_tool_called(self, *, session_id: str, tool: str, payload: dict, db, agent_id: str):
+            _ = self, session_id, tool, payload, db, agent_id
+            raise RuntimeError('intent shortcut should be skipped when rag hits > 0')
+
+        monkeypatch.setattr(chat_routes, '_stream_complete_async', fake_stream_complete_async)
+        monkeypatch.setattr(chat_routes, '_detect_intent_skill_name', lambda **kwargs: 'weather_tool')
+        monkeypatch.setattr(
+            chat_routes,
+            '_build_chat_rag_context',
+            lambda **kwargs: ('[RAG]\n- 命中測試片段', {'reason': 'ok', 'hits': 3, 'selected_rows': [{'text': 'RASA'}]}),
+        )
+        monkeypatch.setattr(ChatRouter, '_prepare_integrations', fake_prepare_integrations)
+        monkeypatch.setattr(ChatRouter, 'call_tool_async', fail_if_tool_called)
+
+        message_with_dataset_context = (
+            '請在資料集找 MCP server 並回答\n\n'
+            '[附加輸入]\n'
+            '使用資料集:\n'
+            '- mis_pb (id=0052dc8c-4dfc-4cff-b812-aca0f32b051d, scope=global)'
+        )
+
+        response = client.get(
+            f'/api/agents/{agent.id}/chat/stream',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            params={'message': message_with_dataset_context},
+        )
+
+        assert response.status_code == 200
+        body = response.text
+        assert 'RAG 一般回覆路徑' in body
+        assert 'tool_start' not in body
+
+    def test_chat_stream_rag_then_tool_injects_evidence_payload(
+        self,
+        client,
+        admin_token,
+        agent,
+        monkeypatch,
+    ):
+        """Given 資料集檢索與產出報表需求並存，When 走 intent shortcut，Then payload 需帶入 RAG evidence。"""
+        from src.api.routes import chat as chat_routes
+        from src.services.chat_router import ChatRouter
+
+        captured_payloads: list[dict] = []
+
+        async def fake_stream_complete_async(llm_client, *, prompt: str, tier: str | None):
+            _ = llm_client, prompt, tier
+            yield '工具執行後一般回覆'
+
+        def fake_prepare_integrations(self, *, db, agent_id: str):
+            _ = db, agent_id
+            self._allowed_tools = {'docx_report_tool'}
+            return {
+                'skills': ['docx_report_tool'],
+                'mcp': [],
+                'rag': {'enabled': True, 'sources': ['test-ds'], 'topK': 5},
+            }
+
+        async def fake_call_tool_async(self, *, session_id: str, tool: str, payload: dict, db, agent_id: str):
+            _ = self, session_id, db, agent_id
+            captured_payloads.append({'tool': tool, 'payload': payload})
+            return {'ok': True, 'result': {'output': 'docx_done'}}
+
+        monkeypatch.setattr(chat_routes, '_stream_complete_async', fake_stream_complete_async)
+        monkeypatch.setattr(chat_routes, '_detect_intent_skill_name', lambda **kwargs: 'docx_report_tool')
+        monkeypatch.setattr(
+            chat_routes,
+            '_build_chat_rag_context',
+            lambda **kwargs: (
+                '[RAG]\n- 命中測試片段',
+                {
+                    'reason': 'ok',
+                    'hits': 2,
+                    'selected_rows': [
+                        {
+                            'dataset_id': '0052dc8c-4dfc-4cff-b812-aca0f32b051d',
+                            'dataset_name': 'mis_pb',
+                            'filename': 'rasa-note.txt',
+                            'page_number': 1,
+                            'snippet': 'RASA server support MCP integration',
+                            'score': 0.91,
+                        }
+                    ],
+                },
+            ),
+        )
+        monkeypatch.setattr(ChatRouter, '_prepare_integrations', fake_prepare_integrations)
+        monkeypatch.setattr(ChatRouter, 'call_tool_async', fake_call_tool_async)
+
+        message_with_dataset_context = (
+            '請先搜尋 RASA 再產出 docx 報表\n\n'
+            '[附加輸入]\n'
+            '使用資料集:\n'
+            '- mis_pb (id=0052dc8c-4dfc-4cff-b812-aca0f32b051d, scope=global)'
+        )
+
+        response = client.get(
+            f'/api/agents/{agent.id}/chat/stream',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            params={'message': message_with_dataset_context},
+        )
+
+        assert response.status_code == 200
+        assert captured_payloads
+        payload = captured_payloads[0]['payload']
+        rag_obj = payload.get('_rag') if isinstance(payload, dict) else None
+        assert captured_payloads[0]['tool'] == 'docx_report_tool'
+        assert isinstance(rag_obj, dict)
+        assert isinstance(rag_obj.get('evidence'), list)
+        assert len(rag_obj.get('evidence') or []) == 1
+        assert rag_obj.get('evidence')[0].get('text') == 'RASA server support MCP integration'
+
+    def test_chat_stream_injects_rag_runtime_guard_when_hits_exist(
+        self,
+        client,
+        admin_token,
+        agent,
+        monkeypatch,
+    ):
+        """Given RAG 命中片段，When 組裝主 prompt，Then 注入禁止誤稱無法存取資料集的 guard。"""
+        from src.api.routes import chat as chat_routes
+        from src.services.chat_router import ChatRouter
+
+        captured_prompts: list[str] = []
+
+        async def fake_stream_complete_async(llm_client, *, prompt: str, tier: str | None):
+            _ = llm_client, tier
+            captured_prompts.append(prompt)
+            yield '回覆'
+
+        def fake_prepare_integrations(self, *, db, agent_id: str):
+            _ = db, agent_id
+            self._allowed_tools = set()
+            return {
+                'skills': [],
+                'mcp': [],
+                'rag': {'enabled': False, 'sources': [], 'topK': 5},
+            }
+
+        monkeypatch.setattr(chat_routes, '_stream_complete_async', fake_stream_complete_async)
+        monkeypatch.setattr(
+            chat_routes,
+            '_build_chat_rag_context',
+            lambda **kwargs: ('[RAG Context]\n- 測試片段', {'reason': 'ok', 'hits': 1, 'selected_rows': [{'snippet': 'MCP server'}]}),
+        )
+        monkeypatch.setattr(ChatRouter, '_prepare_integrations', fake_prepare_integrations)
+
+        message_with_dataset_context = (
+            '請使用我選擇的資料集，搜尋 MCP server\n\n'
+            '[附加輸入]\n'
+            '使用資料集:\n'
+            '- mis_pb (id=0052dc8c-4dfc-4cff-b812-aca0f32b051d, scope=global)'
+        )
+
+        response = client.get(
+            f'/api/agents/{agent.id}/chat/stream',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            params={'message': message_with_dataset_context},
+        )
+
+        assert response.status_code == 200
+        assert captured_prompts
+        assert any('[RAG Runtime Guard]' in prompt for prompt in captured_prompts)
+        assert any('不得宣稱「無法存取資料集」' in prompt for prompt in captured_prompts)
+
+    def test_chat_stream_plain_rag_reply_appends_clickable_citations(
+        self,
+        client,
+        admin_token,
+        agent,
+        monkeypatch,
+    ):
+        """Given 一般 RAG 回覆未走工具，When 串流結束，Then 追加可點擊來源連結。"""
+        from src.api.routes import chat as chat_routes
+        from src.services.chat_router import ChatRouter
+
+        async def fake_stream_complete_async(llm_client, *, prompt: str, tier: str | None):
+            _ = llm_client, prompt, tier
+            yield '已依資料集找到 MCP server 相關內容。'
+
+        def fake_prepare_integrations(self, *, db, agent_id: str):
+            _ = db, agent_id
+            self._allowed_tools = set()
+            return {
+                'skills': [],
+                'mcp': [],
+                'rag': {'enabled': False, 'sources': [], 'topK': 5},
+            }
+
+        monkeypatch.setattr(chat_routes, '_stream_complete_async', fake_stream_complete_async)
+        monkeypatch.setattr(ChatRouter, '_prepare_integrations', fake_prepare_integrations)
+        monkeypatch.setattr(
+            chat_routes,
+            '_build_chat_rag_context',
+            lambda **kwargs: (
+                '[RAG Context]\n- 命中測試片段',
+                {
+                    'reason': 'ok',
+                    'hits': 1,
+                    'selected_rows': [
+                        {
+                            'dataset_id': '0052dc8c-4dfc-4cff-b812-aca0f32b051d',
+                            'filename': '33-1_回答MCP問題.docx',
+                            'file_key': 'abc123_33-1_回答MCP問題.docx',
+                            'page_number': None,
+                            'snippet': 'MCP server text',
+                        }
+                    ],
+                },
+            ),
+        )
+
+        message_with_dataset_context = (
+            '請使用我選擇的資料集，搜尋 MCP server\n\n'
+            '[附加輸入]\n'
+            '使用資料集:\n'
+            '- mis_pb (id=0052dc8c-4dfc-4cff-b812-aca0f32b051d, scope=global)'
+        )
+
+        response = client.get(
+            f'/api/agents/{agent.id}/chat/stream',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            params={'message': message_with_dataset_context},
+        )
+
+        assert response.status_code == 200
+        body = response.text
+        assert '參考來源' in body
+        assert '/api/rag/datasets/0052dc8c-4dfc-4cff-b812-aca0f32b051d/documents/abc123_33-1_%E5%9B%9E%E7%AD%94MCP%E5%95%8F%E9%A1%8C.docx/open' in body
+
 
 class TestLlmUsageAndCost:
     def test_normalize_usage_payload_and_estimate_cost(self):
