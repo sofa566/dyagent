@@ -97,6 +97,38 @@ def _has_any_permission(*, current_user: User, db: Session, permission_keys: lis
     return any(check_permission(current_user, permission_key, db=db) for permission_key in (permission_keys or []))
 
 
+def _resolve_user_dataset_permission_keys(*, db: Session, current_user: User) -> set[str]:
+    # 目的：取得使用者可用的資料集 execute 權限鍵。
+    # 為什麼：聊天可選資料集清單需由 entity.dataset.* 權限決策，避免隱含來源污染。
+    try:
+        capability = access_control_service.resolve_effective_capability(db, current_user)
+        permission_keys = {str(key) for key in (capability.permissions or [])}
+    except Exception:
+        permission_keys = set()
+    return {
+        permission_key
+        for permission_key in permission_keys
+        if permission_key.startswith('entity.dataset.') and permission_key.endswith('.execute')
+    }
+
+
+def _filter_datasets_by_user_permissions(*, dataset_rows: list[RagDataset], dataset_permission_keys: set[str]) -> list[RagDataset]:
+    # 目的：依使用者資料集 execute 權限過濾可用資料集。
+    # 為什麼：支援 id/name 舊鍵相容，並讓資料集可見性完全由實體權限決定。
+    filtered_rows: list[RagDataset] = []
+    for dataset_row in dataset_rows:
+        dataset_id = str(getattr(dataset_row, 'id', '') or '').strip()
+        dataset_name = str(getattr(dataset_row, 'name', '') or '').strip()
+        candidate_keys = set()
+        if dataset_id:
+            candidate_keys.add(f'entity.dataset.{dataset_id}.execute')
+        if dataset_name:
+            candidate_keys.add(f'entity.dataset.{dataset_name}.execute')
+        if candidate_keys.intersection(dataset_permission_keys):
+            filtered_rows.append(dataset_row)
+    return filtered_rows
+
+
 def _build_dataset_execute_permission_keys(*, dataset: RagDataset) -> set[str]:
     # 目的：產生資料集可對應的 execute 權限鍵集合。
     # 為什麼：刪除資料集時需同步清理既有 id/name 形式的歷史權限鍵。
@@ -2155,72 +2187,31 @@ async def list_selectable_rag_datasets(
     current_user: User = Depends(get_current_user),
 ):
     # 目的：提供聊天介面可選資料集清單。
-    # 為什麼：一般聊天使用者沒有 read_agent 權限，直接呼叫 /rag/datasets 會 403。
+    # 為什麼：資料集可見性需由 entity.dataset.* 決定，避免使用代理者預設綁定造成隱含來源。
     can_chat = check_permission(current_user, 'chat', db=db)
     can_read_rag = check_permission(current_user, 'rag.read', db=db)
     can_read_agent = check_permission(current_user, 'read_agent', db=db)
     if not can_chat and not can_read_agent and not can_read_rag:
         raise forbidden_error()
 
-    if not agent_id:
-        if not can_read_agent and not can_read_rag:
-            return {'datasets': []}
-        rows = db.query(RagDataset).filter(
-            RagDataset.scope == 'global',
-            RagDataset.enabled == True,  # noqa: E712
-            RagDataset.sensitivity == 'normal',
-        ).order_by(RagDataset.created_at.desc()).all()
-        return {'datasets': [_dataset_to_dict(r) for r in rows]}
+    if agent_id:
+        try:
+            agent_uuid = uuid.UUID(str(agent_id))
+        except Exception:
+            raise not_found_error('Agent', agent_id) from None
+        agent = db.query(Agent).filter(Agent.id == agent_uuid, Agent.enabled == True).first()  # noqa: E712
+        if agent is None:
+            raise not_found_error('Agent', agent_id)
 
-    try:
-        agent_uuid = uuid.UUID(str(agent_id))
-    except Exception:
-        raise not_found_error('Agent', agent_id) from None
-
-    agent = db.query(Agent).filter(Agent.id == agent_uuid, Agent.enabled == True).first()  # noqa: E712
-    if agent is None:
-        raise not_found_error('Agent', agent_id)
-
-    rag_cfg = agent.rag_config if isinstance(agent.rag_config, dict) else {}
-    global_ids = [str(x) for x in list((rag_cfg or {}).get('global_dataset_ids') or []) if x]
-    private_ids = [str(x) for x in list((rag_cfg or {}).get('private_dataset_ids') or []) if x]
-    dataset_ids = list(dict.fromkeys(global_ids + private_ids))
-
-    default_global_rows = db.query(RagDataset).filter(
-        RagDataset.scope == 'global',
+    dataset_rows = db.query(RagDataset).filter(
         RagDataset.enabled == True,  # noqa: E712
-        RagDataset.sensitivity == 'normal',
-    ).all()
-
-    if not dataset_ids:
-        sorted_default_rows = sorted(default_global_rows, key=lambda x: x.created_at or datetime.min, reverse=True)
-        return {'datasets': [_dataset_to_dict(r) for r in sorted_default_rows]}
-
-    rows = db.query(RagDataset).filter(
-        RagDataset.id.in_(dataset_ids),
-        RagDataset.enabled == True,  # noqa: E712
-    ).all()
-
-    out = []
-    out_ids: set[str] = set()
-    for row in rows:
-        if row.scope == 'global':
-            out.append(row)
-            out_ids.add(str(row.id))
-            continue
-        if row.scope == 'agent_private' and str(getattr(row, 'agent_id', '') or '') == str(agent.id):
-            out.append(row)
-            out_ids.add(str(row.id))
-
-    for default_row in default_global_rows:
-        default_row_id = str(default_row.id)
-        if default_row_id in out_ids:
-            continue
-        out.append(default_row)
-        out_ids.add(default_row_id)
-
-    out = sorted(out, key=lambda x: x.created_at or datetime.min, reverse=True)
-    return {'datasets': [_dataset_to_dict(r) for r in out]}
+    ).order_by(RagDataset.created_at.desc()).all()
+    dataset_permission_keys = _resolve_user_dataset_permission_keys(db=db, current_user=current_user)
+    accessible_rows = _filter_datasets_by_user_permissions(
+        dataset_rows=dataset_rows,
+        dataset_permission_keys=dataset_permission_keys,
+    )
+    return {'datasets': [_dataset_to_dict(row) for row in accessible_rows]}
 
 
 @router.post('/rag/datasets')

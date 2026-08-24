@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 from src.api.routes import rag as rag_routes
-from src.models import AccessGroup, AccessPermission, Document, GroupPermissionBinding, RagDataset
+from src.models import AccessGroup, AccessPermission, Document, GroupPermissionBinding, RagDataset, UserGroupBinding
 
 
 class TestRAGUpload:
@@ -320,7 +320,7 @@ class TestRagDatasetDocumentDelete:
         assert response.text == 'anonymous open content'
 
 
-class TestRagDatasetPermissionCleanup:
+class TestRagDatasetPermissionCleanupGlobal:
     def test_delete_global_dataset_removes_entity_execute_permission(self, client, db, admin_token, admin_user):
         dataset_row = RagDataset(name='cleanup-global', scope='global', enabled=True, owner_user_id=admin_user.id)
         db.add(dataset_row)
@@ -343,6 +343,50 @@ class TestRagDatasetPermissionCleanup:
         assert response.status_code == 200
         assert db.query(AccessPermission).filter(AccessPermission.key == permission_key).first() is None
         assert db.query(GroupPermissionBinding).filter(GroupPermissionBinding.permission_id == permission_id).count() == 0
+
+
+class TestSelectableDatasetsByEntityPermission:
+    def test_selectable_datasets_requires_entity_dataset_permission(self, client, db, regular_user, regular_user_token):
+        global_dataset = RagDataset(name='global-no-permission', scope='global', enabled=True, owner_user_id=regular_user.id)
+        db.add(global_dataset)
+        db.commit()
+
+        response = client.get(
+            '/api/rag/datasets/selectable',
+            headers={'Authorization': f'Bearer {regular_user_token}'},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload['datasets'] == []
+
+    def test_selectable_datasets_returns_only_granted_entity_datasets(self, client, db, regular_user, regular_user_token):
+        granted_dataset = RagDataset(name='dataset-granted', scope='global', enabled=True, owner_user_id=regular_user.id)
+        denied_dataset = RagDataset(name='dataset-denied', scope='global', enabled=True, owner_user_id=regular_user.id)
+        db.add_all([granted_dataset, denied_dataset])
+        db.flush()
+
+        granted_permission = AccessPermission(key=f'entity.dataset.{granted_dataset.id}.execute')
+        permission_group = AccessGroup(code='dataset_permission_group', name='Dataset Permission Group', enabled=True)
+        db.add_all([granted_permission, permission_group])
+        db.flush()
+        db.add(UserGroupBinding(user_id=regular_user.id, group_id=permission_group.id))
+        db.add(GroupPermissionBinding(group_id=permission_group.id, permission_id=granted_permission.id))
+        db.commit()
+
+        response = client.get(
+            '/api/rag/datasets/selectable',
+            headers={'Authorization': f'Bearer {regular_user_token}'},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        returned_ids = {str(item.get('id') or '') for item in payload['datasets']}
+        assert str(granted_dataset.id) in returned_ids
+        assert str(denied_dataset.id) not in returned_ids
+
+
+class TestRagDatasetPermissionCleanup:
 
     def test_delete_agent_private_dataset_removes_entity_execute_permission(self, client, db, admin_token, admin_user, agent):
         dataset_row = RagDataset(

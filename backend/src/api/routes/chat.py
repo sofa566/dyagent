@@ -1964,69 +1964,27 @@ def _normalize_selected_dataset_ids(raw_dataset_ids: Any) -> list[str]:
     return list(dict.fromkeys(normalized_ids))
 
 
-def _extract_selected_dataset_ids_from_message(message: str) -> list[str]:
-    """目的：從訊息中的「使用資料集」附加區塊抽取資料集 ID。
-    為什麼：前端偶發未帶 selected_dataset_ids 時，仍需保留使用者在文字上下文中明確指定的資料集範圍。
+def _resolve_user_dataset_permission_keys(*, db: Session, current_user: User) -> set[str]:
+    """目的：解析使用者可用的資料集 execute 權限鍵集合。
+    為什麼：聊天 RAG 可見性需完全由 entity.dataset.* 權限決定，不再依賴代理者綁定語意。
     """
-    message_text = str(message or '')
-    if not message_text:
-        return []
-
-    marker_text = '使用資料集:'
-    marker_index = message_text.find(marker_text)
-    if marker_index < 0:
-        return []
-
-    dataset_section = message_text[marker_index:]
-    raw_ids = re.findall(r'id=([0-9a-fA-F\-]{36})', dataset_section)
-    return _normalize_selected_dataset_ids(raw_ids)
-
-
-def _merge_selected_dataset_ids(*, payload_ids: list[str], message: str) -> list[str]:
-    """目的：合併 payload 與訊息文字中的資料集 ID。
-    為什麼：避免前端與訊息附加區塊來源不一致時遺失使用者本輪選用的資料集。
-    """
-    normalized_payload_ids = _normalize_selected_dataset_ids(payload_ids)
-    inferred_ids = _extract_selected_dataset_ids_from_message(message)
-    return list(dict.fromkeys(normalized_payload_ids + inferred_ids))
-
-
-def _resolve_forced_agent_by_selected_datasets(*, db: Session, selected_dataset_ids: list[str]) -> Agent | None:
-    """目的：根據使用者本輪選用的私有資料集推導應固定使用的代理者。
-    為什麼：私有資料集僅能由其 owner agent 檢索，若路由到其他代理者會造成資料集選用失效。
-    """
-    normalized_dataset_ids = _normalize_selected_dataset_ids(selected_dataset_ids)
-    if not normalized_dataset_ids:
-        return None
-
-    dataset_rows = db.query(RagDataset).filter(
-        RagDataset.id.in_(normalized_dataset_ids),
-        RagDataset.enabled == True,  # noqa: E712
-    ).all()
-
-    private_owner_ids: list[str] = []
-    for dataset_row in dataset_rows:
-        if str(getattr(dataset_row, 'scope', '') or '') != 'agent_private':
-            continue
-        owner_agent_id = str(getattr(dataset_row, 'agent_id', '') or '').strip()
-        if not owner_agent_id:
-            continue
-        private_owner_ids.append(owner_agent_id)
-
-    unique_owner_ids = list(dict.fromkeys(private_owner_ids))
-    if len(unique_owner_ids) != 1:
-        return None
-
     try:
-        owner_agent_uuid = uuid.UUID(unique_owner_ids[0])
+        capability = access_control_service.resolve_effective_capability(db, current_user)
+        permission_keys = {str(key) for key in (capability.permissions or [])}
     except Exception:
-        return None
+        permission_keys = set()
+    return {
+        permission_key
+        for permission_key in permission_keys
+        if permission_key.startswith('entity.dataset.') and permission_key.endswith('.execute')
+    }
 
-    owner_agent = db.query(Agent).filter(
-        Agent.id == owner_agent_uuid,
-        Agent.enabled == True,  # noqa: E712
-    ).first()
-    return owner_agent
+
+def _merge_selected_dataset_ids(*, payload_ids: list[str]) -> list[str]:
+    """目的：正規化前端傳入的 selected_dataset_ids。
+    為什麼：資料集使用需由使用者明確指定，不再從訊息文字隱含推導。
+    """
+    return _normalize_selected_dataset_ids(payload_ids)
 
 
 def _dataset_collection_name_for_chat(dataset_row: RagDataset) -> str:
@@ -2046,6 +2004,7 @@ def _dataset_collection_name_for_chat(dataset_row: RagDataset) -> str:
 def _build_chat_rag_context(
     *,
     db: Session,
+    current_user: User,
     agent: Agent,
     query: str,
     selected_dataset_ids: list[str],
@@ -2112,20 +2071,23 @@ def _build_chat_rag_context(
         RagDataset.enabled == True,  # noqa: E712
     ).all()
     dataset_by_id = {str(row.id): row for row in dataset_rows}
+    dataset_permission_keys = _resolve_user_dataset_permission_keys(db=db, current_user=current_user)
 
     effective_rows: list[RagDataset] = []
     for dataset_id in candidate_dataset_ids:
         dataset_row = dataset_by_id.get(str(dataset_id))
         if dataset_row is None:
             continue
-        scope = str(getattr(dataset_row, 'scope', '') or '')
-        if scope == 'global':
-            if str(getattr(dataset_row, 'sensitivity', '') or '') != 'normal':
-                continue
-            effective_rows.append(dataset_row)
+        dataset_id_text = str(getattr(dataset_row, 'id', '') or '').strip()
+        dataset_name_text = str(getattr(dataset_row, 'name', '') or '').strip()
+        candidate_permission_keys = set()
+        if dataset_id_text:
+            candidate_permission_keys.add(f'entity.dataset.{dataset_id_text}.execute')
+        if dataset_name_text:
+            candidate_permission_keys.add(f'entity.dataset.{dataset_name_text}.execute')
+        if not candidate_permission_keys.intersection(dataset_permission_keys):
             continue
-        if scope == 'agent_private' and str(getattr(dataset_row, 'agent_id', '') or '') == str(agent.id):
-            effective_rows.append(dataset_row)
+        effective_rows.append(dataset_row)
 
     if not effective_rows:
         _log.info(
@@ -2711,10 +2673,7 @@ async def chat_stream(
         conversation = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
 
     normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
-    normalized_selected_dataset_ids = _merge_selected_dataset_ids(
-        payload_ids=(selected_dataset_ids or []),
-        message=message,
-    )
+    normalized_selected_dataset_ids = _merge_selected_dataset_ids(payload_ids=(selected_dataset_ids or []))
     _log.info(
         'chat.stream.selected_datasets',
         conversation_id=str(conversation.id),
@@ -2803,6 +2762,7 @@ async def chat_stream(
 
     rag_context, rag_runtime = _build_chat_rag_context(
         db=db,
+        current_user=current_user,
         agent=agent,
         query=message,
         selected_dataset_ids=normalized_selected_dataset_ids,
@@ -4631,7 +4591,6 @@ async def chat_entry_router(
     attachment_ids = _normalize_attachment_ids((payload or {}).get('attachment_ids'))
     selected_dataset_ids = _merge_selected_dataset_ids(
         payload_ids=_normalize_selected_dataset_ids((payload or {}).get('selected_dataset_ids')),
-        message=enriched_message,
     )
     _log.info(
         'chat.entry.selected_datasets',
@@ -4639,16 +4598,6 @@ async def chat_entry_router(
         has_attachment_input=('[附加輸入]' in enriched_message),
     )
     private_agent_access_set = _resolve_user_private_agent_access_set(db=db, current_user=current_user)
-    forced_dataset_agent = _resolve_forced_agent_by_selected_datasets(
-        db=db,
-        selected_dataset_ids=selected_dataset_ids,
-    )
-    if forced_dataset_agent is not None and not _can_access_private_agent(
-        agent=forced_dataset_agent,
-        private_agent_ids=private_agent_access_set,
-    ):
-        raise forbidden_error('無權限使用此私有代理者')
-
     requested_conversation_id = str((payload or {}).get('conversation_id') or '').strip()
     requested_conversation: Conversation | None = None
     if requested_conversation_id:
@@ -4679,12 +4628,9 @@ async def chat_entry_router(
 
     #判斷：multi：進多代理 orchestrator，single：走單代理挑選 _pick_worker_agent
     routing = _classify_routing(message=enriched_message, workers=workers)
-    if forced_dataset_agent is not None and routing == 'multi':
-        routing = 'single'
     _log.info(
         'chat.entry.routing_prepared',
         routing=routing,
-        forced_dataset_agent_id=(str(forced_dataset_agent.id) if forced_dataset_agent is not None else ''),
         selected_dataset_ids=selected_dataset_ids,
     )
     debug_trace_enabled = bool(getattr(settings, 'CHAT_DEBUG_TRACE', False)) or bool((payload or {}).get('debug'))
@@ -4760,11 +4706,8 @@ async def chat_entry_router(
                     route_reason = 'decompose_failed_worker_not_found'
                 else:
                     route_reason = f"decompose_failed_{route_reason}"
-                if forced_dataset_agent is not None and str(worker.id) != str(forced_dataset_agent.id):
-                    worker = forced_dataset_agent
-                    route_reason = f'{route_reason}_selected_dataset_private_owner_forced'
                 worker_class = str(getattr(worker, 'agent_class', '') or '')
-                if worker_class in {'public', 'tasked'} and forced_dataset_agent is None:
+                if worker_class in {'public', 'tasked'}:
                     if not _is_agent_ready_for_chat(db=db, agent=worker):
                         worker = router_agent
                         route_reason = f'decompose_failed_{worker_class}_not_ready_master_fallback'
@@ -4831,12 +4774,8 @@ async def chat_entry_router(
         route_reason = 'worker_not_found_fallback'
     elif route_reason in {'default_fallback'}:
         is_fallback = True
-    if forced_dataset_agent is not None and str(worker.id) != str(forced_dataset_agent.id):
-        worker = forced_dataset_agent
-        route_reason = f'{route_reason}_selected_dataset_private_owner_forced'
-        is_fallback = False
     worker_class = str(getattr(worker, 'agent_class', '') or '')
-    if worker_class in {'public', 'tasked'} and forced_dataset_agent is None:
+    if worker_class in {'public', 'tasked'}:
         if not _is_agent_ready_for_chat(db=db, agent=worker):
             worker = router_agent
             is_fallback = True
