@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from src.core.database import get_db
 from src.middleware.auth import get_current_user
-from src.middleware.rbac import Role, require_role
+from src.middleware.rbac import require_permission
 from src.models import Agent, Conversation, Message, User, LlmTurn
 from src.models.events import EventPart
 from src.services.qdrant_service import qdrant_service
@@ -329,7 +329,7 @@ async def _build_overview(db: Session) -> dict:
 
 
 @router.get("/admin/dashboard/overview")
-@require_role([Role.ADMIN])
+@require_permission('dashboard.read')
 async def admin_dashboard_overview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -338,7 +338,7 @@ async def admin_dashboard_overview(
 
 
 @router.get("/admin/dashboard/stream")
-@require_role([Role.ADMIN])
+@require_permission('dashboard.read')
 async def admin_dashboard_stream(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

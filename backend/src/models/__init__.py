@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric, LargeBinary
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric, LargeBinary, UniqueConstraint
 from sqlalchemy.types import CHAR, TypeDecorator
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
@@ -48,20 +48,143 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(Enum('admin', 'agent_admin', 'user', name='user_role'), nullable=False, default='user')
+    enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 提醒：如需存取使用者日誌，請於查詢層以 user_id 過濾 Log 表（為避免測試環境多重映射，暫不在此建立關聯）
 
 
-class Role(Base):
-    __tablename__ = 'roles'
+class AccessPermission(Base):
+    # 目的：定義系統可授權的權限鍵（permission key）與說明。
+    # 為什麼：將權限從硬編碼搬到資料層，支援動態角色管理與一致驗證。
+    __tablename__ = 'access_permissions'
     __table_args__ = {'extend_existing': True}
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    name = Column(Enum('admin', 'agent_admin', 'user', name='role_name'), nullable=False, unique=True)
-    permissions = Column(JSON, default=list)
+    key = Column(String(100), nullable=False, unique=True)
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AccessRole(Base):
+    # 目的：定義可指派給使用者或群組的業務角色。
+    # 為什麼：以角色聚合多個權限，降低逐一對使用者授權的維運成本。
+    __tablename__ = 'access_roles'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    code = Column(String(60), nullable=False, unique=True)
+    name = Column(String(100), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    is_system = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AccessRolePermission(Base):
+    # 目的：記錄角色與權限的多對多對應。
+    # 為什麼：讓角色權限可獨立維護，並支援權限變更即時生效。
+    __tablename__ = 'access_role_permissions'
+    __table_args__ = (
+        UniqueConstraint('role_id', 'permission_id', name='uq_access_role_permission'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    role_id = Column(GUID(), ForeignKey('access_roles.id'), nullable=False)
+    permission_id = Column(GUID(), ForeignKey('access_permissions.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class AccessGroup(Base):
+    # 目的：定義使用者群組，作為角色批次授權載體。
+    # 為什麼：同權限人員可透過群組一次管理，避免大量個別維護。
+    __tablename__ = 'access_groups'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    code = Column(String(60), nullable=False, unique=True)
+    name = Column(String(100), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class UserRoleBinding(Base):
+    # 目的：建立使用者與角色的多對多直掛關係。
+    # 為什麼：保留個別使用者的授權彈性，符合 B 模式需求。
+    __tablename__ = 'user_role_bindings'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'role_id', name='uq_user_role_binding'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey('users.id'), nullable=False)
+    role_id = Column(GUID(), ForeignKey('access_roles.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class GroupRoleBinding(Base):
+    # 目的：建立群組與角色的多對多關係。
+    # 為什麼：群組可繼承角色，提供可擴充的大量帳號授權模型。
+    __tablename__ = 'group_role_bindings'
+    __table_args__ = (
+        UniqueConstraint('group_id', 'role_id', name='uq_group_role_binding'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    group_id = Column(GUID(), ForeignKey('access_groups.id'), nullable=False)
+    role_id = Column(GUID(), ForeignKey('access_roles.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class GroupPermissionBinding(Base):
+    # 目的：建立群組與權限的多對多直掛關係。
+    # 為什麼：群組可直接配置權限，降低僅透過角色間接管理的操作成本。
+    __tablename__ = 'group_permission_bindings'
+    __table_args__ = (
+        UniqueConstraint('group_id', 'permission_id', name='uq_group_permission_binding'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    group_id = Column(GUID(), ForeignKey('access_groups.id'), nullable=False)
+    permission_id = Column(GUID(), ForeignKey('access_permissions.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class UserGroupBinding(Base):
+    # 目的：建立使用者與群組的多對多關係。
+    # 為什麼：使用者可加入多群組並取得群組角色聯集權限。
+    __tablename__ = 'user_group_bindings'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'group_id', name='uq_user_group_binding'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey('users.id'), nullable=False)
+    group_id = Column(GUID(), ForeignKey('access_groups.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class AccessAuditLog(Base):
+    # 目的：記錄角色、群組與綁定關係的變更稽核軌跡。
+    # 為什麼：符合授權治理需求，可追蹤誰在何時調整了哪些權限。
+    __tablename__ = 'access_audit_logs'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    actor_user_id = Column(GUID(), ForeignKey('users.id'), nullable=True)
+    action = Column(String(80), nullable=False)
+    target_type = Column(String(50), nullable=False)
+    target_id = Column(String(64), nullable=True)
+    details = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class Workspace(Base):
@@ -84,7 +207,7 @@ class Agent(Base):
     description = Column(Text, default='')
     system_prompt = Column(Text, nullable=True)
     model_type = Column(Enum('local', 'cloud', name='model_type'), nullable=False)
-    agent_class = Column(Enum('master', 'public', 'tasked', name='agent_class_enum'), nullable=False, default='tasked')
+    agent_class = Column(Enum('master', 'public', 'tasked', 'private', name='agent_class_enum'), nullable=False, default='tasked')
     enabled = Column(Boolean, nullable=False, default=True)
     # 代理者是否為主代理（Router）
     is_router = Column(Boolean, nullable=False, default=False)

@@ -38,6 +38,7 @@ from src.models import (
     User,
 )
 from src.models.events import EventPart
+from src.services.access_control_service import access_control_service
 from src.services.chat_attachment_service import chat_attachment_service
 from src.services.chat_router import ChatRouter
 from src.services.embedding_service import embedding_service
@@ -143,12 +144,58 @@ def _require_chat_permission(current_user: User) -> None:
         raise forbidden_error()
 
 
-def _require_admin_permission(current_user: User) -> None:
+def _require_admin_permission(current_user: User, db: Session) -> None:
     """目的：集中管理端點權限檢查。
     為什麼：記憶治理 API 僅供管理者使用，避免一般使用者存取除錯與跨使用者操作。
     """
-    if str(getattr(current_user, 'role', '') or '') != 'admin':
+    if not check_permission(current_user, 'update_user', db=db):
         raise forbidden_error()
+
+
+def _build_agent_execute_permission_key(agent_id: str) -> str:
+    return f'entity.agent.{agent_id}.execute'
+
+
+def _build_agent_execute_permission_keys(*, agent: Agent) -> set[str]:
+    """目的：產生可辨識某代理者的 execute 權限鍵集合。
+    為什麼：歷史資料可能以 agent_id 或 agent_name 建鍵，需同時相容避免授權落空。
+    """
+    keys: set[str] = set()
+    agent_id = str(getattr(agent, 'id', '') or '').strip()
+    if agent_id:
+        keys.add(_build_agent_execute_permission_key(agent_id))
+    agent_name = str(getattr(agent, 'name', '') or '').strip()
+    if agent_name:
+        keys.add(f'entity.agent.{agent_name}.execute')
+    return keys
+
+
+def _resolve_user_private_agent_access_set(*, db: Session, current_user: User) -> set[str]:
+    """目的：計算使用者具實體 execute 權限的 private agent 權限鍵集合。
+    為什麼：private 代理需以授權白名單控制可見與可路由範圍。
+    """
+    try:
+        capability = access_control_service.resolve_effective_capability(db, current_user)
+        permission_keys = {str(key) for key in (capability.permissions or [])}
+    except Exception:
+        permission_keys = set()
+
+    private_agent_permissions: set[str] = set()
+    for permission_key in permission_keys:
+        if permission_key.startswith('entity.agent.') and permission_key.endswith('.execute'):
+            private_agent_permissions.add(permission_key)
+    return private_agent_permissions
+
+
+def _can_access_private_agent(*, agent: Agent, private_agent_ids: set[str]) -> bool:
+    """目的：判斷 private 類別代理是否在使用者授權清單中。
+    為什麼：避免使用者透過直接 API 呼叫繞過主路由授權策略。
+    """
+    agent_class = str(getattr(agent, 'agent_class', 'tasked') or 'tasked').strip().lower()
+    if agent_class != 'private':
+        return True
+    permission_keys = _build_agent_execute_permission_keys(agent=agent)
+    return any(key in private_agent_ids for key in permission_keys)
 
 
 def _validate_uuid_or_not_found(entity_name: str, raw_value: str) -> None:
@@ -1032,7 +1079,14 @@ def _pick_worker_by_memory_hybrid_score(
     return best_worker, f'{assignment_mode}_description_match'
 
 
-def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str, user_id: str | None = None) -> tuple[Agent | None, str]:
+def _pick_worker_agent(
+    *,
+    db: Session,
+    router_agent: Agent,
+    message: str,
+    user_id: str | None = None,
+    private_agent_ids: set[str] | None = None,
+) -> tuple[Agent | None, str]:
     """目的：以混合路由策略挑選工作代理者。
     為什麼：先用快路徑降低延遲，再以語意比對與模型裁決補齊準確率。
     """
@@ -1047,11 +1101,24 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str, user_i
         Agent.enabled == True,  # noqa: E712
         Agent.agent_class == 'public',
     ).all()
+    private_workers = db.query(Agent).filter(
+        Agent.id != router_agent.id,
+        Agent.enabled == True,  # noqa: E712
+        Agent.agent_class == 'private',
+    ).all()
+    allowed_private_agent_ids = set(private_agent_ids or set())
+    private_workers = [
+        worker
+        for worker in private_workers
+        if any(key in allowed_private_agent_ids for key in _build_agent_execute_permission_keys(agent=worker))
+    ]
 
     # 若使用者明確提到代理名稱，直接命中
-    explicit = _pick_explicit_named_worker(message=routing_message, workers=(public_workers + tasked_workers))
+    explicit = _pick_explicit_named_worker(message=routing_message, workers=(private_workers + public_workers + tasked_workers))
     if explicit is not None:
         worker_class = str(getattr(explicit, 'agent_class', '') or '')
+        if worker_class == 'private':
+            return explicit, 'private_explicit_mention'
         if worker_class == 'public':
             return explicit, 'public_explicit_mention'
         if worker_class == 'tasked':
@@ -1060,6 +1127,43 @@ def _pick_worker_agent(*, db: Session, router_agent: Agent, message: str, user_i
 
     assignment_mode = _resolve_router_assignment_mode()
     memory_mode = _resolve_memory_routing_mode()
+
+    if private_workers:
+        private_skill_names: list[str] = []
+        for worker in private_workers:
+            worker_skill_names = _extract_agent_skill_names(db=db, agent=worker)
+            private_skill_names.extend([str(name) for name in worker_skill_names if str(name or '').strip()])
+        private_intent_skill_name = _detect_intent_skill_name(
+            db=db,
+            message=routing_message,
+            candidate_skill_names=private_skill_names,
+        )
+        if private_intent_skill_name and (not _should_hint_intent_skill(db=db, message=routing_message, skill_name=private_intent_skill_name)):
+            private_intent_skill_name = None
+
+        if private_intent_skill_name and assignment_mode == 'skill_first':
+            for worker in private_workers:
+                names = _extract_agent_skill_names(db=db, agent=worker)
+                if any(str(name).strip().lower() == private_intent_skill_name for name in names):
+                    return worker, f'private_skill_hint_{private_intent_skill_name}'
+
+        if assignment_mode in {'hybrid', 'memory_first'}:
+            private_scored_worker, private_scored_reason = _pick_worker_by_memory_hybrid_score(
+                db=db,
+                workers=private_workers,
+                message=routing_message,
+                user_id=(str(user_id) if user_id else None),
+                matched_skill_name=private_intent_skill_name,
+                assignment_mode=assignment_mode,
+                memory_mode=memory_mode,
+            )
+            if private_scored_worker is not None:
+                return private_scored_worker, f'private_{private_scored_reason}'
+
+        private_worker, private_reason = _pick_worker_without_default(workers=private_workers, message=routing_message)
+        if private_worker is not None:
+            return private_worker, f'private_{private_reason}'
+        return private_workers[0], 'private_default_fallback'
 
     if assignment_mode == 'description_only':
         worker, reason = _pick_worker_without_default(workers=tasked_workers, message=routing_message)
@@ -1954,41 +2058,50 @@ def _build_chat_rag_context(
         return '', {'enabled': False, 'reason': 'empty_query', 'hits': 0, 'selected_rows': []}
 
     rag_config = agent.rag_config if isinstance(agent.rag_config, dict) else {}
+    rag_enabled = bool((rag_config or {}).get('enabled', False))
+    if not rag_enabled:
+        return '', {
+            'enabled': False,
+            'reason': 'rag_disabled',
+            'selected_dataset_ids': selected_dataset_ids,
+            'effective_dataset_ids': [],
+            'hits': 0,
+            'selected_rows': [],
+        }
+
     top_k_value = int((rag_config or {}).get('topK') or 5)
     top_k = min(20, max(1, top_k_value))
 
-    bound_global_ids = [str(item) for item in list((rag_config or {}).get('global_dataset_ids') or []) if item]
-    bound_private_ids = [str(item) for item in list((rag_config or {}).get('private_dataset_ids') or []) if item]
-    bound_dataset_ids = list(dict.fromkeys(bound_global_ids + bound_private_ids))
-
-    default_global_rows = db.query(RagDataset).filter(
-        RagDataset.scope == 'global',
-        RagDataset.enabled == True,  # noqa: E712
-        RagDataset.sensitivity == 'normal',
-    ).all()
-    default_global_ids = [str(row.id) for row in default_global_rows]
+    normalized_selected_dataset_ids = _normalize_selected_dataset_ids(selected_dataset_ids)
+    if not normalized_selected_dataset_ids:
+        return '', {
+            'enabled': False,
+            'reason': 'selected_dataset_ids_empty',
+            'selected_dataset_ids': [],
+            'effective_dataset_ids': [],
+            'hits': 0,
+            'selected_rows': [],
+        }
 
     _log.info(
         'chat.rag.selection_start',
         agent_id=str(getattr(agent, 'id', '') or ''),
-        selected_dataset_ids=selected_dataset_ids,
-        bound_dataset_ids=bound_dataset_ids,
-        default_global_count=len(default_global_ids),
+        selected_dataset_ids=normalized_selected_dataset_ids,
         top_k=top_k,
     )
 
-    candidate_dataset_ids = selected_dataset_ids if selected_dataset_ids else list(dict.fromkeys(bound_dataset_ids + default_global_ids))
+    candidate_dataset_ids = normalized_selected_dataset_ids
     if not candidate_dataset_ids:
         _log.info(
             'chat.rag.selection_end',
             reason='no_dataset_candidates',
-            selected_dataset_ids=selected_dataset_ids,
+            selected_dataset_ids=normalized_selected_dataset_ids,
             candidate_dataset_ids=[],
         )
         return '', {
             'enabled': False,
             'reason': 'no_dataset_candidates',
-            'selected_dataset_ids': selected_dataset_ids,
+            'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [],
             'hits': 0,
             'selected_rows': [],
@@ -2018,14 +2131,14 @@ def _build_chat_rag_context(
         _log.info(
             'chat.rag.selection_end',
             reason='no_accessible_datasets',
-            selected_dataset_ids=selected_dataset_ids,
+            selected_dataset_ids=normalized_selected_dataset_ids,
             candidate_dataset_ids=candidate_dataset_ids,
             effective_dataset_ids=[],
         )
         return '', {
             'enabled': False,
             'reason': 'no_accessible_datasets',
-            'selected_dataset_ids': selected_dataset_ids,
+            'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [],
             'hits': 0,
             'selected_rows': [],
@@ -2038,7 +2151,7 @@ def _build_chat_rag_context(
             'enabled': True,
             'reason': 'embedding_failed',
             'error': str(error),
-            'selected_dataset_ids': selected_dataset_ids,
+            'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [str(row.id) for row in effective_rows],
             'hits': 0,
             'selected_rows': [],
@@ -2074,14 +2187,14 @@ def _build_chat_rag_context(
         _log.info(
             'chat.rag.selection_end',
             reason='no_hits',
-            selected_dataset_ids=selected_dataset_ids,
+            selected_dataset_ids=normalized_selected_dataset_ids,
             effective_dataset_ids=[str(row.id) for row in effective_rows],
             merged_rows=0,
         )
         return '', {
             'enabled': True,
             'reason': 'no_hits',
-            'selected_dataset_ids': selected_dataset_ids,
+            'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [str(row.id) for row in effective_rows],
             'hits': 0,
             'selected_rows': [],
@@ -2124,7 +2237,7 @@ def _build_chat_rag_context(
         _log.info(
             'chat.rag.selection_end',
             reason='hits_trimmed_by_limit',
-            selected_dataset_ids=selected_dataset_ids,
+            selected_dataset_ids=normalized_selected_dataset_ids,
             effective_dataset_ids=[str(row.id) for row in effective_rows],
             merged_rows=len(merged_rows),
             selected_rows=0,
@@ -2132,7 +2245,7 @@ def _build_chat_rag_context(
         return '', {
             'enabled': True,
             'reason': 'hits_trimmed_by_limit',
-            'selected_dataset_ids': selected_dataset_ids,
+            'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [str(row.id) for row in effective_rows],
             'hits': 0,
             'selected_rows': [],
@@ -2141,7 +2254,7 @@ def _build_chat_rag_context(
     _log.info(
         'chat.rag.selection_end',
         reason='ok',
-        selected_dataset_ids=selected_dataset_ids,
+        selected_dataset_ids=normalized_selected_dataset_ids,
         effective_dataset_ids=[str(row.id) for row in effective_rows],
         merged_rows=len(merged_rows),
         selected_rows=len(selected_rows),
@@ -2149,7 +2262,7 @@ def _build_chat_rag_context(
     return '\n'.join(context_lines), {
         'enabled': True,
         'reason': 'ok',
-        'selected_dataset_ids': selected_dataset_ids,
+        'selected_dataset_ids': normalized_selected_dataset_ids,
         'effective_dataset_ids': [str(row.id) for row in effective_rows],
         'hits': len(context_lines) - 2,
         'selected_rows': selected_rows,
@@ -2572,6 +2685,9 @@ async def chat_stream(
         raise not_found_error('Agent', agent_id)
     if not bool(getattr(agent, 'enabled', True)):
         raise validation_error('代理者已停用')
+    private_agent_access_set = _resolve_user_private_agent_access_set(db=db, current_user=current_user)
+    if not _can_access_private_agent(agent=agent, private_agent_ids=private_agent_access_set):
+        raise forbidden_error('無權限使用此私有代理者')
 
     if not message or len(message.strip()) == 0:
         raise validation_error('Message cannot be empty')
@@ -2709,7 +2825,7 @@ async def chat_stream(
             'hits': int(len(memory_retrieve_result.snippets)),
             'elapsed_ms': int(memory_retrieve_result.elapsed_ms or 0),
             'error': str(memory_retrieve_result.error or ''),
-            'error_code': str(memory_retrieve_result.error_code or ''),
+            'error_code': str(getattr(memory_retrieve_result, 'error_code', '') or ''),
         },
     )
 
@@ -2807,13 +2923,15 @@ async def chat_stream(
                 return f'public_skill_hint_{normalized_tool_name}'
             if worker_class == 'tasked':
                 return f'tasked_skill_hint_{normalized_tool_name}'
+            if worker_class == 'private':
+                return f'private_skill_hint_{normalized_tool_name}'
             return f'skill_hint_{normalized_tool_name}'
 
         def _should_override_route_reason() -> bool:
             normalized_reason = str(route_reason or '').strip().lower()
             if not normalized_reason:
                 return False
-            hint_prefixes = ('public_skill_hint_', 'tasked_skill_hint_', 'skill_hint_', 'mcp_hint_')
+            hint_prefixes = ('public_skill_hint_', 'tasked_skill_hint_', 'private_skill_hint_', 'skill_hint_', 'mcp_hint_')
             return normalized_reason.startswith(hint_prefixes)
 
         def _build_route_decision_event_for_tool(tool_nm: str) -> str | None:
@@ -4520,10 +4638,16 @@ async def chat_entry_router(
         selected_dataset_ids=selected_dataset_ids,
         has_attachment_input=('[附加輸入]' in enriched_message),
     )
+    private_agent_access_set = _resolve_user_private_agent_access_set(db=db, current_user=current_user)
     forced_dataset_agent = _resolve_forced_agent_by_selected_datasets(
         db=db,
         selected_dataset_ids=selected_dataset_ids,
     )
+    if forced_dataset_agent is not None and not _can_access_private_agent(
+        agent=forced_dataset_agent,
+        private_agent_ids=private_agent_access_set,
+    ):
+        raise forbidden_error('無權限使用此私有代理者')
 
     requested_conversation_id = str((payload or {}).get('conversation_id') or '').strip()
     requested_conversation: Conversation | None = None
@@ -4543,11 +4667,15 @@ async def chat_entry_router(
         raise validation_error('尚未建立可用代理者')
 
     # ── 多代理協作路徑（三層判斷後交 Orchestrator 處理）──
-    workers = db.query(Agent).filter(
+    all_worker_rows = db.query(Agent).filter(
         Agent.id != router_agent.id,
         Agent.enabled == True,  # noqa: E712
-        Agent.agent_class.in_(['tasked', 'public']),
+        Agent.agent_class.in_(['tasked', 'public', 'private']),
     ).all()
+    workers: list[Agent] = []
+    for worker in all_worker_rows:
+        if _can_access_private_agent(agent=worker, private_agent_ids=private_agent_access_set):
+            workers.append(worker)
 
     #判斷：multi：進多代理 orchestrator，single：走單代理挑選 _pick_worker_agent
     routing = _classify_routing(message=enriched_message, workers=workers)
@@ -4625,6 +4753,7 @@ async def chat_entry_router(
                     router_agent=router_agent,
                     message=enriched_message,
                     user_id=str(current_user.id),
+                    private_agent_ids=private_agent_access_set,
                 )
                 if worker is None:
                     worker = router_agent
@@ -4693,6 +4822,7 @@ async def chat_entry_router(
         router_agent=router_agent,
         message=enriched_message,
         user_id=str(current_user.id),
+        private_agent_ids=private_agent_access_set,
     )
     is_fallback = False
     if worker is None:
@@ -4760,8 +4890,8 @@ async def chat_entry_router(
 
     # 若路由偵測到技能意圖，將技能名稱注入訊息讓 Worker LLM 知道要呼叫哪個技能
     # persist_message 保留原始訊息存 DB，避免系統提示內容顯示在聊天畫面
-    # 同時涵蓋 tasked_skill_hint_ 與 public_skill_hint_ 兩種路由原因
-    _HINT_PREFIXES = ('tasked_skill_hint_', 'public_skill_hint_')
+    # 同時涵蓋 tasked/public/private skill hint 三種路由原因
+    _HINT_PREFIXES = ('tasked_skill_hint_', 'public_skill_hint_', 'private_skill_hint_')
     llm_message = enriched_message
     for _prefix in _HINT_PREFIXES:
         if route_reason and route_reason.startswith(_prefix):
@@ -4920,19 +5050,20 @@ async def forget_my_long_term_memory(
 
 @router.get('/memory/health')
 async def get_memory_health(
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """目的：回傳記憶系統健康狀態供管理端監控。
     為什麼：記憶 provider 可能故障或降級，需有可觀測端點支援維運與除錯。
     """
-    _require_admin_permission(current_user)
+    _require_admin_permission(current_user, db)
     health = memory_service.health()
     return {
         'ok': bool(health.ok),
         'provider': str(health.provider or ''),
         'degraded': bool(health.degraded),
         'error': str(health.error or ''),
-        'error_code': str(health.error_code or ''),
+        'error_code': str(getattr(health, 'error_code', '') or ''),
         'read_enabled': bool(getattr(settings, 'AGENT_MEMORY_READ_ENABLED', True)),
         'write_enabled': bool(getattr(settings, 'AGENT_MEMORY_WRITE_ENABLED', True)),
     }
@@ -4941,12 +5072,13 @@ async def get_memory_health(
 @router.post('/memory/search')
 async def search_memory_for_debug(
     payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """目的：提供管理者記憶檢索除錯介面。
     為什麼：可快速驗證 scope 與檢索結果，縮短記憶策略調整迭代時間。
     """
-    _require_admin_permission(current_user)
+    _require_admin_permission(current_user, db)
     query = str((payload or {}).get('query') or '').strip()
     if not query:
         raise validation_error('query 為必填')
@@ -4965,7 +5097,7 @@ async def search_memory_for_debug(
         'provider': str(result.provider or ''),
         'elapsed_ms': int(result.elapsed_ms or 0),
         'error': str(result.error or ''),
-        'error_code': str(result.error_code or ''),
+        'error_code': str(getattr(result, 'error_code', '') or ''),
         'snippets': [
             {
                 'text': str(item.text or ''),
@@ -4989,7 +5121,7 @@ async def forget_user_memory_by_admin(
     """目的：提供管理者清除指定使用者長期記憶的治理端點。
     為什麼：處理隱私請求、資安事件或資料修正時，需要跨使用者的管理操作能力。
     """
-    _require_admin_permission(current_user)
+    _require_admin_permission(current_user, db)
     _validate_uuid_or_not_found('User', user_id)
     user_row = db.query(User).filter(User.id == user_id).first()
     if user_row is None:
@@ -5111,6 +5243,9 @@ async def get_conversations(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
+    private_agent_access_set = _resolve_user_private_agent_access_set(db=db, current_user=current_user)
+    if not _can_access_private_agent(agent=agent, private_agent_ids=private_agent_access_set):
+        raise forbidden_error('無權限使用此私有代理者')
 
     # Why: 與聊天端點共用同樣 schema 相容策略，避免列表與對話結果不一致。
     latest = _query_latest_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
@@ -5167,6 +5302,9 @@ async def create_conversation(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
+    private_agent_access_set = _resolve_user_private_agent_access_set(db=db, current_user=current_user)
+    if not _can_access_private_agent(agent=agent, private_agent_ids=private_agent_access_set):
+        raise forbidden_error('無權限使用此私有代理者')
 
     conv = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
 

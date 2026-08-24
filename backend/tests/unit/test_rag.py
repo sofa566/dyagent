@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 from src.api.routes import rag as rag_routes
-from src.models import Document, RagDataset
+from src.models import AccessGroup, AccessPermission, Document, GroupPermissionBinding, RagDataset
 
 
 class TestRAGUpload:
@@ -237,7 +237,7 @@ class TestRagPageNumbering:
 
         monkeypatch.setattr(rag_routes.qdrant_service, 'upsert_vectors', _fake_upsert)
 
-        ok = rag_routes._index_dataset_chunks(
+        ok, index_error = rag_routes._index_dataset_chunks(
             collection_name='dataset_test',
             dataset_id='dataset-1',
             filename='sample.pdf',
@@ -249,6 +249,7 @@ class TestRagPageNumbering:
         )
 
         assert ok is True
+        assert index_error is None
         assert len(captured_payloads) == 2
         assert captured_payloads[0]['page_number'] == 1
         assert captured_payloads[1]['page_number'] == 2
@@ -318,6 +319,60 @@ class TestRagDatasetDocumentDelete:
         assert response.status_code == 200
         assert response.text == 'anonymous open content'
 
+
+class TestRagDatasetPermissionCleanup:
+    def test_delete_global_dataset_removes_entity_execute_permission(self, client, db, admin_token, admin_user):
+        dataset_row = RagDataset(name='cleanup-global', scope='global', enabled=True, owner_user_id=admin_user.id)
+        db.add(dataset_row)
+        db.flush()
+
+        permission_key = f'entity.dataset.{dataset_row.id}.execute'
+        permission_row = AccessPermission(key=permission_key)
+        group_row = AccessGroup(code='cleanup_global_group', name='Cleanup Global Group', enabled=True)
+        db.add_all([permission_row, group_row])
+        db.flush()
+        permission_id = permission_row.id
+        db.add(GroupPermissionBinding(group_id=group_row.id, permission_id=permission_row.id))
+        db.commit()
+
+        response = client.delete(
+            f'/api/rag/datasets/{dataset_row.id}',
+            headers={'Authorization': f'Bearer {admin_token}'},
+        )
+
+        assert response.status_code == 200
+        assert db.query(AccessPermission).filter(AccessPermission.key == permission_key).first() is None
+        assert db.query(GroupPermissionBinding).filter(GroupPermissionBinding.permission_id == permission_id).count() == 0
+
+    def test_delete_agent_private_dataset_removes_entity_execute_permission(self, client, db, admin_token, admin_user, agent):
+        dataset_row = RagDataset(
+            name='cleanup-private',
+            scope='agent_private',
+            agent_id=agent.id,
+            enabled=True,
+            owner_user_id=admin_user.id,
+        )
+        db.add(dataset_row)
+        db.flush()
+
+        permission_key = f'entity.dataset.{dataset_row.id}.execute'
+        permission_row = AccessPermission(key=permission_key)
+        group_row = AccessGroup(code='cleanup_private_group', name='Cleanup Private Group', enabled=True)
+        db.add_all([permission_row, group_row])
+        db.flush()
+        permission_id = permission_row.id
+        db.add(GroupPermissionBinding(group_id=group_row.id, permission_id=permission_row.id))
+        db.commit()
+
+        response = client.delete(
+            f'/api/agents/{agent.id}/rag/datasets/{dataset_row.id}',
+            headers={'Authorization': f'Bearer {admin_token}'},
+        )
+
+        assert response.status_code == 200
+        assert db.query(AccessPermission).filter(AccessPermission.key == permission_key).first() is None
+        assert db.query(GroupPermissionBinding).filter(GroupPermissionBinding.permission_id == permission_id).count() == 0
+
     def test_open_dataset_document_preview_renders_docx_as_html(self, client, db, admin_user, monkeypatch):
         # 目的：驗證 docx 可透過 open-preview 直接瀏覽，不只下載。
         # 為什麼：瀏覽器通常不支援 docx inline，需轉成 HTML 供使用者快速驗證引用。
@@ -374,6 +429,42 @@ class TestRagDatasetDocumentDelete:
         assert len(called_fields) >= 1
         assert called_fields[0]['match_fields']['dataset_id'] == str(dataset_row.id)
         assert called_fields[0]['match_fields']['file_key'] == file_key
+
+    def test_delete_dataset_document_rejects_when_indexing(self, client, db, admin_token, admin_user):
+        # 目的：驗證索引進行中不可刪除文件。
+        # 為什麼：避免刪除與背景索引併發導致狀態競態與資料不一致。
+        dataset_row = RagDataset(name='delete-test-indexing', scope='global', enabled=True, owner_user_id=admin_user.id)
+        db.add(dataset_row)
+        db.commit()
+        db.refresh(dataset_row)
+
+        upload_dir = rag_routes.UPLOAD_ROOT / 'global' / str(dataset_row.id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        file_key = f'{uuid.uuid4()}_sample-indexing.txt'
+        target_file_path = upload_dir / file_key
+        target_file_path.write_text('indexing file', encoding='utf-8')
+
+        progress_file_path = rag_routes._dataset_progress_file_path(dataset_row=dataset_row, file_key=file_key)
+        rag_routes._write_progress_file(
+            progress_file_path=str(progress_file_path),
+            payload={
+                'status': 'indexing',
+                'stage': 'embedding_upsert',
+                'progress': 42,
+                'file_key': file_key,
+                'filename': 'sample-indexing.txt',
+            },
+        )
+
+        response = client.delete(
+            f'/api/rag/datasets/{dataset_row.id}/documents/{file_key}',
+            headers={'Authorization': f'Bearer {admin_token}'},
+        )
+
+        assert response.status_code == 400
+        error_detail = response.json().get('detail') or {}
+        assert '排隊或索引中' in str(error_detail.get('error') or '')
+        assert target_file_path.exists() is True
 
 
 class TestRagBackgroundProgressFailure:

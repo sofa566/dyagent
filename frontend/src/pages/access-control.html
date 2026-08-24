@@ -1,0 +1,1735 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>權限管理 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .tab-bar { display: inline-flex; border: 1px solid var(--border-color); border-radius: var(--radius); overflow: hidden; margin: 10px 0; }
+    .tab-btn { border: none; background: #fff; color: var(--text-secondary); padding: 8px 14px; cursor: pointer; }
+    .tab-btn.active { background: var(--primary-color); color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .grid-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+    .muted { color: var(--text-secondary); font-size: 0.9rem; }
+    .inline-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .checkbox-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 10px; margin-top: 6px; }
+    .binding-tree { background: #fff; }
+    .scrollable { max-height: 260px; overflow: auto; border: 1px solid var(--border-color); border-radius: 8px; padding: 8px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.86rem; }
+    .tree-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .tree { border: 1px solid var(--border-color); border-radius: var(--radius); padding: 10px; max-height: 320px; overflow: auto; background: #fff; }
+    .tree details { border: 1px solid #edf2f7; border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; }
+    .tree summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+    .tree summary::-webkit-details-marker { display: none; }
+    .tree-children { margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 10px; }
+    .tree-search { margin-bottom: 8px; }
+    .perm-chip { display: inline-block; background: #e2e8f0; color: #334155; border-radius: 999px; padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 0.78rem; }
+    #role-modal .modal-content { max-height: calc(100vh - 32px); overflow-y: auto; }
+    #role-modal .actions { position: sticky; bottom: 0; background: #fff; padding-top: 10px; }
+    #group-modal .modal-content { max-height: calc(100vh - 32px); overflow-y: auto; }
+    #group-modal .actions { position: sticky; bottom: 0; background: #fff; padding-top: 10px; }
+    .picker-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--border-color); border-radius: var(--radius); }
+    .access-list-table { width: 100%; table-layout: fixed; }
+    .access-list-table .col-code { width: 14%; }
+    .access-list-table .col-name { width: 16%; }
+    .access-list-table .col-enabled { width: 8%; }
+    .access-list-table .col-permissions { width: 42%; }
+    .access-list-table .col-actions { width: 20%; }
+    .permission-cell { white-space: normal; word-break: break-word; }
+    .permission-summary { color: var(--text-secondary); font-size: 0.86rem; line-height: 1.5; margin-bottom: 6px; }
+    .permission-summary strong { color: var(--text-primary); }
+    .btn-inline-view { padding: 4px 10px; font-size: 0.78rem; line-height: 1.2; }
+    .permission-viewer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius); background: #f8fafc; }
+    .permission-inline-viewer .treejs-node__disabled { color: var(--text-primary); cursor: default; }
+    .permission-inline-viewer .treejs-node__disabled .treejs-label { color: var(--text-primary); }
+    .permission-inline-viewer .treejs-node__disabled .treejs-switcher:before { border-top-color: rgba(30, 41, 59, 0.72); }
+    .permission-inline-viewer .treejs-node__disabled > .treejs-checkbox:before { border-color: #64748b !important; background-color: #ffffff !important; }
+    .permission-inline-viewer .treejs-node__disabled.treejs-node__checked > .treejs-checkbox:before { border-color: #2563eb !important; background-color: #2563eb !important; }
+    .permission-inline-viewer .treejs-node__disabled.treejs-node__checked > .treejs-checkbox:after { border-color: #ffffff; }
+    .permission-inline-viewer .treejs-node__disabled.treejs-node__halfchecked > .treejs-checkbox:before { border-color: #2563eb !important; background-color: #2563eb !important; }
+    .permission-inline-viewer .treejs-node__disabled.treejs-node__halfchecked > .treejs-checkbox:after { background-color: #ffffff; }
+    @media (max-width: 900px) { .permission-viewer-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/agent-list.html">代理者</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h2>權限管理</h2>
+    <p class="muted">以功能模組管理角色權限，並在同頁處理綁定配置。</p>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div class="tab-bar">
+      <button id="tab-roles" class="tab-btn active" type="button">角色管理</button>
+      <button id="tab-bindings" class="tab-btn" type="button">群組管理</button>
+      <button id="tab-capabilities" class="tab-btn" type="button">能力檢視</button>
+    </div>
+
+    <section id="panel-roles" class="tab-panel active">
+      <div class="toolbar">
+        <button id="btn-create-role" class="btn btn-primary" type="button">建立角色</button>
+        <button id="btn-refresh-roles" class="btn" type="button">重新整理</button>
+      </div>
+      <article class="card">
+        <h3>角色清單</h3>
+        <div id="roles-list">載入中...</div>
+      </article>
+    </section>
+
+    <section id="panel-bindings" class="tab-panel">
+      <article class="card">
+        <div class="toolbar">
+          <button id="btn-create-group" class="btn btn-primary" type="button">建立群組</button>
+          <button id="btn-refresh-groups" class="btn" type="button">重新整理群組</button>
+        </div>
+        <h3>群組列表</h3>
+        <div id="groups-list">載入中...</div>
+      </article>
+    </section>
+
+    <section id="panel-capabilities" class="tab-panel">
+      <section class="card">
+        <h3>目前登入者能力（含權限來源）</h3>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label for="capability-user-identifier">使用者代碼</label>
+          <input id="capability-user-identifier" type="text" placeholder="輸入使用者代碼（username / email / UUID）">
+        </div>
+        <div class="inline-row" style="margin-bottom:10px;">
+          <button id="capability-user-pick" class="btn" type="button">選取</button>
+          <button id="capability-user-load" class="btn btn-primary" type="button">查詢</button>
+          <button id="capability-self-load" class="btn" type="button">檢視我自己</button>
+        </div>
+        <pre id="my-capabilities" class="mono">載入中...</pre>
+      </section>
+    </section>
+  </main>
+
+  <div id="role-modal" class="modal">
+    <div class="modal-content" style="max-width:920px;">
+      <h3 id="role-modal-title">建立角色</h3>
+      <form id="role-form">
+        <input id="role-id" type="hidden">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="form-group">
+            <label for="role-code">角色代碼</label>
+            <input id="role-code" type="text" required placeholder="skill_manager">
+          </div>
+          <div class="form-group">
+            <label for="role-name">角色名稱</label>
+            <input id="role-name" type="text" required placeholder="技能管理者">
+          </div>
+        </div>
+        <div class="form-group">
+          <label><input id="role-enabled" type="checkbox" checked> 啟用</label>
+        </div>
+        <div class="form-group">
+          <label>權限樹狀（功能層 / 實體層）</label>
+          <div class="tree-grid">
+            <div>
+              <div class="muted" style="margin-bottom:4px;">功能樹（使用 execute 字眼）</div>
+              <input id="permission-search" class="tree-search" type="text" placeholder="搜尋功能權限，例如 read_agent">
+              <div id="permission-tree" class="tree"></div>
+            </div>
+            <div>
+              <div class="muted" style="margin-bottom:4px;">實體樹（使用 execute 字眼）</div>
+              <input id="entity-search" class="tree-search" type="text" placeholder="搜尋實體授權，例如 客服代理人.execute">
+              <div id="entity-tree" class="tree"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="manual-permissions">進階輸入（逗號或換行，選填）</label>
+          <textarea id="manual-permissions" rows="3" placeholder="custom.permission"></textarea>
+        </div>
+        <div class="form-group">
+          <label>已選權限</label>
+          <div id="selected-permissions" class="mono"></div>
+        </div>
+        <div class="actions">
+          <button id="role-modal-save" type="submit" class="btn btn-primary">建立</button>
+          <button id="role-modal-cancel" type="button" class="btn btn-secondary">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="group-modal" class="modal">
+    <div class="modal-content" style="max-width:920px;">
+      <h3 id="group-modal-title">建立群組</h3>
+      <form id="group-form">
+        <input id="group-id" type="hidden">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="form-group">
+            <label for="group-code">群組代碼</label>
+            <input id="group-code" type="text" placeholder="ops_group">
+          </div>
+          <div class="form-group">
+            <label for="group-name">群組名稱</label>
+            <input id="group-name" type="text" required placeholder="營運群組">
+          </div>
+        </div>
+        <div class="form-group">
+          <label><input id="group-enabled" type="checkbox" checked> 啟用</label>
+        </div>
+        <div class="form-group">
+          <label>權限樹狀（功能層 / 實體層）</label>
+          <div class="tree-grid">
+            <div>
+              <div class="muted" style="margin-bottom:4px;">功能樹</div>
+              <input id="group-permission-search" class="tree-search" type="text" placeholder="搜尋功能權限，例如 read_agent">
+              <div id="group-permission-tree" class="tree"></div>
+            </div>
+            <div>
+              <div class="muted" style="margin-bottom:4px;">實體樹</div>
+              <input id="group-entity-search" class="tree-search" type="text" placeholder="搜尋實體授權，例如 客服代理人.execute">
+              <div id="group-entity-permission-tree" class="tree"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="group-manual-permissions">進階輸入（逗號或換行，選填）</label>
+          <textarea id="group-manual-permissions" rows="3" placeholder="custom.permission"></textarea>
+        </div>
+        <div class="form-group">
+          <label>已選權限</label>
+          <div id="group-selected-permissions" class="mono"></div>
+        </div>
+        <div class="actions">
+          <button id="group-modal-save" type="submit" class="btn btn-primary">建立</button>
+          <button id="group-modal-cancel" type="button" class="btn btn-secondary">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="confirm-modal" class="modal">
+    <div class="modal-content">
+      <h3 id="confirm-modal-title">確認操作</h3>
+      <p id="confirm-modal-message"></p>
+      <div class="actions">
+        <button id="confirm-modal-ok" class="btn btn-danger" type="button">確認</button>
+        <button id="confirm-modal-cancel" class="btn btn-secondary" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="capability-user-picker-modal" class="modal">
+    <div class="modal-content" style="max-width:900px;">
+      <h3>選取使用者</h3>
+      <div class="form-group">
+        <label for="capability-user-picker-keyword">搜尋（名稱或 Email）</label>
+        <input id="capability-user-picker-keyword" type="text" placeholder="輸入關鍵字過濾">
+      </div>
+      <div class="picker-table-wrap">
+        <table style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr>
+              <th>使用者名稱</th>
+              <th>Email</th>
+              <th>主要角色</th>
+              <th>狀態</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="capability-user-picker-list"></tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button id="capability-user-picker-close" type="button" class="btn btn-secondary">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import Tree from '@widgetjs/tree';
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission, clearCapabilitiesCache } from '/main.js';
+
+    const PERMISSION_CATALOG = [
+      {
+        module: '系統管理',
+        nodes: [
+          { label: 'dashboard.read', key: 'dashboard.read' },
+          { label: 'logs.read', key: 'logs.read' },
+        ],
+      },
+      {
+        module: '使用者管理',
+        nodes: [
+          { label: 'create_user', key: 'create_user' },
+          { label: 'read_user', key: 'read_user' },
+          { label: 'update_user', key: 'update_user' },
+          { label: 'delete_user', key: 'delete_user' },
+        ],
+      },
+      {
+        module: '權限管理',
+        nodes: [
+          { label: 'role.create', key: 'role.create' },
+          { label: 'role.read', key: 'role.read' },
+          { label: 'role.update', key: 'role.update' },
+          { label: 'role.delete', key: 'role.delete' },
+          { label: 'group.create', key: 'group.create' },
+          { label: 'group.read', key: 'group.read' },
+          { label: 'group.update', key: 'group.update' },
+          { label: 'group.delete', key: 'group.delete' },
+        ],
+      },
+      {
+        module: '代理者',
+        nodes: [
+          { label: 'create_agent', key: 'create_agent' },
+          { label: 'read_agent', key: 'read_agent' },
+          { label: 'update_agent', key: 'update_agent' },
+          { label: 'delete_agent', key: 'delete_agent' },
+        ],
+      },
+      {
+        module: '技能管理',
+        nodes: [
+          { label: 'skills.create', key: 'skills.create' },
+          { label: 'skills.read', key: 'skills.read' },
+          { label: 'skills.update', key: 'skills.update' },
+          { label: 'skills.delete', key: 'skills.delete' },
+        ],
+      },
+      {
+        module: 'RAG 資料集',
+        nodes: [
+          { label: 'rag.create', key: 'rag.create' },
+          { label: 'rag.read', key: 'rag.read' },
+          { label: 'rag.update', key: 'rag.update' },
+          { label: 'rag.delete', key: 'rag.delete' },
+        ],
+      },
+      {
+        module: '聊天',
+        nodes: [
+          { label: 'chat', key: 'chat' },
+        ],
+      },
+      {
+        module: 'MCP / Functions',
+        nodes: [
+          { label: 'mcp.create', key: 'mcp.create' },
+          { label: 'mcp.read', key: 'mcp.read' },
+          { label: 'mcp.update', key: 'mcp.update' },
+          { label: 'mcp.delete', key: 'mcp.delete' },
+          { label: 'functions.create', key: 'functions.create' },
+          { label: 'functions.read', key: 'functions.read' },
+          { label: 'functions.update', key: 'functions.update' },
+          { label: 'functions.delete', key: 'functions.delete' },
+        ],
+      },
+    ];
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const state = {
+      roles: [],
+      groups: [],
+      permissions: [],
+      capabilityUsers: [],
+      roleEditingId: '',
+      groupEditingId: '',
+      roleSelectedPermissions: new Set(),
+      roleSelectedEntityPermissions: new Set(),
+      groupSelectedPermissions: new Set(),
+      groupSelectedEntityPermissions: new Set(),
+      permissionSearchText: '',
+      entitySearchText: '',
+      groupPermissionSearchText: '',
+      groupEntitySearchText: '',
+      groupVisibleFunctionPermissionKeys: [],
+      groupVisibleEntityPermissionKeys: [],
+      permissionTreeInstance: null,
+      entityTreeInstance: null,
+      groupPermissionTreeInstance: null,
+      groupEntityTreeInstance: null,
+      entityResources: {
+        agents: [],
+        privateDatasets: [],
+      },
+      accessControlPermissions: {
+        canCreateRole: false,
+        canReadRole: false,
+        canUpdateRole: false,
+        canDeleteRole: false,
+        canCreateGroup: false,
+        canReadGroup: false,
+        canUpdateGroup: false,
+        canDeleteGroup: false,
+      },
+      confirmAction: null,
+    };
+
+    const DEPRECATED_PERMISSION_KEYS = new Set([
+      'read_logs',
+    ]);
+
+    function isEntityPermissionKey(permissionKey) {
+      return String(permissionKey || '').startsWith('entity.');
+    }
+
+    function isDeprecatedPermissionKey(permissionKey) {
+      return DEPRECATED_PERMISSION_KEYS.has(String(permissionKey || ''));
+    }
+
+    function applyAccessControlUiPermissions() {
+      const roleCreateButton = document.getElementById('btn-create-role');
+      const groupCreateButton = document.getElementById('btn-create-group');
+      if (roleCreateButton) {
+        roleCreateButton.style.display = state.accessControlPermissions.canCreateRole ? '' : 'none';
+      }
+      if (groupCreateButton) {
+        groupCreateButton.style.display = state.accessControlPermissions.canCreateGroup ? '' : 'none';
+      }
+    }
+
+    function parsePermissionInput(rawText) {
+      return Array.from(
+        new Set(
+          String(rawText || '')
+            .split(/[\n,]+/g)
+            .map(item => item.trim())
+            .filter(Boolean),
+        ),
+      );
+    }
+
+    function escapeHtml(rawText) {
+      return String(rawText || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function getBindingGroupOrder(groupLabel) {
+      const groupOrder = {
+        '自訂角色': 10,
+        '系統角色': 20,
+        '啟用中群組': 10,
+        '停用群組': 20,
+        '其他': 99,
+      };
+      return groupOrder[String(groupLabel)] || 50;
+    }
+
+    function groupBindingItems(items) {
+      const groupedMap = new Map();
+      for (const item of items) {
+        const groupLabel = String(item.group || '其他');
+        if (!groupedMap.has(groupLabel)) {
+          groupedMap.set(groupLabel, {
+            items: [],
+            order: Number.isFinite(Number(item.group_order)) ? Number(item.group_order) : getBindingGroupOrder(groupLabel),
+          });
+        }
+        const groupedEntry = groupedMap.get(groupLabel);
+        groupedEntry.items.push(item);
+        if (Number.isFinite(Number(item.group_order))) {
+          groupedEntry.order = Math.min(groupedEntry.order, Number(item.group_order));
+        }
+      }
+      return Array.from(groupedMap.entries()).sort((left, right) => {
+        const orderGap = Number(left[1].order) - Number(right[1].order);
+        if (orderGap !== 0) {
+          return orderGap;
+        }
+        return left[0].localeCompare(right[0]);
+      }).map(([groupLabel, groupedEntry]) => [groupLabel, groupedEntry.items]);
+    }
+
+    function createBindingTree(containerId, items, checkedIds, onSelectionChange) {
+      const container = document.getElementById(containerId);
+      const checkedSet = new Set((Array.isArray(checkedIds) ? checkedIds : []).map(item => String(item)));
+      if (!items.length) {
+        container.innerHTML = '<span class="muted">目前沒有可選項目</span>';
+        return null;
+      }
+
+      const groupedItems = groupBindingItems(items);
+      const treeData = groupedItems.map(([groupLabel, groupEntries], groupIndex) => ({
+        id: `bind-group:${containerId}:${groupIndex}`,
+        text: String(groupLabel),
+        children: groupEntries.map((entry) => ({
+          id: `bind-item:${String(entry.id)}`,
+          text: String(entry.label),
+          attributes: { bindingId: String(entry.id) },
+        })),
+      }));
+      const selectedValues = Array.from(checkedSet).map(bindingId => `bind-item:${bindingId}`);
+
+      container.innerHTML = '';
+      const treeInstance = new Tree(`#${containerId}`, {
+        data: treeData,
+        values: selectedValues,
+        loaded: function loaded() {
+          if (typeof onSelectionChange === 'function') {
+            onSelectionChange(this);
+          }
+        },
+        onChange: function onChange() {
+          if (typeof onSelectionChange === 'function') {
+            onSelectionChange(this);
+          }
+        },
+      });
+      return treeInstance;
+    }
+
+    function getSelectedBindingValues(treeInstance) {
+      if (treeInstance) {
+        const selectedNodes = Array.isArray(treeInstance.selectedNodes) ? treeInstance.selectedNodes : [];
+        return selectedNodes
+          .map((node) => {
+            const attributeBindingId = node && node.attributes ? node.attributes.bindingId : '';
+            if (attributeBindingId) {
+              return String(attributeBindingId);
+            }
+            const nodeId = String((node && node.id) || '');
+            if (nodeId.startsWith('bind-item:')) {
+              return nodeId.slice(10);
+            }
+            return '';
+          })
+          .filter(Boolean);
+      }
+      return [];
+    }
+
+    function openModal(modalElement) {
+      modalElement.classList.add('active');
+    }
+
+    function closeModal(modalElement) {
+      modalElement.classList.remove('active');
+    }
+
+    function openConfirmModal({ title, message, onConfirm }) {
+      document.getElementById('confirm-modal-title').textContent = title;
+      document.getElementById('confirm-modal-message').textContent = message;
+      state.confirmAction = onConfirm;
+      openModal(document.getElementById('confirm-modal'));
+    }
+
+    function sanitizeCapabilityPayloadForDisplay(payload) {
+      const sourcePayload = payload && typeof payload === 'object' ? payload : {};
+      const entityNameMap = buildEntityNameMap();
+      const normalizedPayload = {
+        ...sourcePayload,
+      };
+
+      const permissions = Array.isArray(sourcePayload.permissions)
+        ? sourcePayload.permissions.map(permissionKey => formatPermissionKeyForDisplay(permissionKey, entityNameMap))
+        : [];
+      normalizedPayload.permissions = Array.from(new Set(permissions));
+
+      const rawPermissionSources = sourcePayload.permission_sources && typeof sourcePayload.permission_sources === 'object'
+        ? sourcePayload.permission_sources
+        : {};
+      const formattedPermissionSources = {};
+      Object.entries(rawPermissionSources).forEach(([permissionKey, sourceList]) => {
+        const displayPermissionKey = formatPermissionKeyForDisplay(permissionKey, entityNameMap);
+        const currentSourceList = Array.isArray(sourceList)
+          ? sourceList.map(sourceItem => String(sourceItem || '').trim()).filter(Boolean)
+          : [];
+        const mergedSourceList = [
+          ...(formattedPermissionSources[displayPermissionKey] || []),
+          ...currentSourceList,
+        ];
+        formattedPermissionSources[displayPermissionKey] = Array.from(new Set(mergedSourceList));
+      });
+      normalizedPayload.permission_sources = formattedPermissionSources;
+
+      return normalizedPayload;
+    }
+
+    function renderCapabilityPayload(payload) {
+      const normalizedPayload = sanitizeCapabilityPayloadForDisplay(payload);
+      document.getElementById('my-capabilities').textContent = JSON.stringify(normalizedPayload, null, 2);
+    }
+
+    function setActiveTab(tabName) {
+      const tabs = [
+        { buttonId: 'tab-roles', panelId: 'panel-roles', name: 'roles' },
+        { buttonId: 'tab-bindings', panelId: 'panel-bindings', name: 'bindings' },
+        { buttonId: 'tab-capabilities', panelId: 'panel-capabilities', name: 'capabilities' },
+      ];
+      for (const tab of tabs) {
+        document.getElementById(tab.buttonId).classList.toggle('active', tab.name === tabName);
+        document.getElementById(tab.panelId).classList.toggle('active', tab.name === tabName);
+      }
+    }
+
+    function buildPermissionModules() {
+      const usedKeys = new Set();
+      const modules = PERMISSION_CATALOG.map(item => {
+        const nodes = item.nodes.filter(node => {
+          usedKeys.add(node.key);
+          return true;
+        });
+        return { module: item.module, nodes };
+      });
+      const extraKeys = state.permissions.filter(key => (
+        !usedKeys.has(key)
+        && !isEntityPermissionKey(key)
+        && !isDeprecatedPermissionKey(key)
+      ));
+      if (extraKeys.length) {
+        modules.push({
+          module: '其他權限',
+          nodes: extraKeys.map(key => ({ label: key, key })),
+        });
+      }
+      return modules;
+    }
+
+    function buildEntityPermissionModules() {
+      const agentNodes = state.entityResources.agents.map(agent => ({
+        label: `${String(agent.name || '').trim() || '未命名代理者'}.execute`,
+        key: `entity.agent.${String(agent.id)}.execute`,
+      }));
+      const privateDatasetNodes = state.entityResources.privateDatasets.map(dataset => ({
+        label: `${String(dataset.name || '').trim() || '未命名資料集'}.execute`,
+        key: `entity.dataset.${String(dataset.id)}.execute`,
+      }));
+
+      const modules = [
+        { module: 'Agent 實體', nodes: agentNodes },
+        { module: '資料集實體（僅私有）', nodes: privateDatasetNodes },
+      ];
+      return modules;
+    }
+
+    async function loadEntityResources() {
+      const [agentsResult, privateDatasetsResult] = await Promise.allSettled([
+        api.get('/agents'),
+        api.get('/rag/datasets?scope=agent_private'),
+      ]);
+
+      const agents = agentsResult.status === 'fulfilled' && Array.isArray(agentsResult.value.agents)
+        ? agentsResult.value.agents.filter(agent => !!agent)
+        : [];
+      const privateDatasets = privateDatasetsResult.status === 'fulfilled' && Array.isArray(privateDatasetsResult.value.datasets)
+        ? privateDatasetsResult.value.datasets.filter(dataset => String(dataset.scope || '') === 'agent_private')
+        : [];
+
+      state.entityResources = {
+        agents,
+        privateDatasets,
+      };
+    }
+
+    function syncSelectedPermissionsFromTree(treeInstance) {
+      const nodes = Array.isArray(treeInstance && treeInstance.selectedNodes) ? treeInstance.selectedNodes : [];
+      const permissionKeys = nodes
+        .map((node) => {
+          const attrKey = node && node.attributes ? node.attributes.permissionKey : '';
+          if (attrKey) {
+            return String(attrKey);
+          }
+          const nodeId = String((node && node.id) || '');
+          if (nodeId.startsWith('perm:')) {
+            return nodeId.slice(5);
+          }
+          return '';
+        })
+        .filter(Boolean);
+      state.roleSelectedPermissions = new Set(permissionKeys);
+      updateSelectedPermissionView();
+    }
+
+    function syncSelectedEntityPermissionsFromTree(treeInstance) {
+      const nodes = Array.isArray(treeInstance && treeInstance.selectedNodes) ? treeInstance.selectedNodes : [];
+      const permissionKeys = nodes
+        .map((node) => {
+          const attrKey = node && node.attributes ? node.attributes.permissionKey : '';
+          if (attrKey) {
+            return String(attrKey);
+          }
+          const nodeId = String((node && node.id) || '');
+          if (nodeId.startsWith('entity-perm:')) {
+            return nodeId.slice(12);
+          }
+          return '';
+        })
+        .filter(Boolean);
+      state.roleSelectedEntityPermissions = new Set(permissionKeys);
+      updateSelectedPermissionView();
+    }
+
+    function updateSelectedPermissionView() {
+      const container = document.getElementById('selected-permissions');
+      const items = Array.from(new Set([
+        ...Array.from(state.roleSelectedPermissions),
+        ...Array.from(state.roleSelectedEntityPermissions),
+      ])).sort();
+      if (!items.length) {
+        container.innerHTML = '<span class="muted">尚未選擇任何權限</span>';
+        return;
+      }
+      const entityNameMap = buildEntityNameMap();
+      container.innerHTML = items
+        .map(key => `<span class="perm-chip">${escapeHtml(formatPermissionKeyForDisplay(key, entityNameMap))}</span>`)
+        .join('');
+    }
+
+    function renderPermissionTree() {
+      const container = document.getElementById('permission-tree');
+      const searchText = String(state.permissionSearchText || '').trim().toLowerCase();
+      const modules = buildPermissionModules();
+      const treeData = [];
+      modules.forEach((moduleItem, moduleIndex) => {
+        const filteredNodes = moduleItem.nodes.filter(node => {
+          const targetText = `${node.label} ${node.key}`.toLowerCase();
+          return !searchText || targetText.includes(searchText);
+        });
+        if (!filteredNodes.length) {
+          return;
+        }
+        treeData.push({
+          id: `module:${moduleIndex}`,
+          text: moduleItem.module,
+          children: filteredNodes.map(node => ({
+            id: `perm:${node.key}`,
+            text: `${node.label} (${node.key})`,
+            attributes: { permissionKey: node.key },
+            checked: state.roleSelectedPermissions.has(node.key),
+          })),
+        });
+      });
+
+      container.innerHTML = '';
+      if (!treeData.length) {
+        container.innerHTML = '<span class="muted">沒有符合搜尋條件的權限</span>';
+        state.permissionTreeInstance = null;
+        updateSelectedPermissionView();
+        return;
+      }
+
+      const selectedValues = Array.from(state.roleSelectedPermissions).map(key => `perm:${key}`);
+      state.permissionTreeInstance = new Tree('#permission-tree', {
+        data: treeData,
+        values: selectedValues,
+        closeDepth: 1,
+        loaded: function loaded() {
+          syncSelectedPermissionsFromTree(this);
+        },
+        onChange: function onChange() {
+          syncSelectedPermissionsFromTree(this);
+        },
+      });
+    }
+
+    function renderEntityPermissionTree() {
+      const container = document.getElementById('entity-tree');
+      const searchText = String(state.entitySearchText || '').trim().toLowerCase();
+      const modules = buildEntityPermissionModules();
+      const hasAnyEntityNode = modules.some(moduleItem => Array.isArray(moduleItem.nodes) && moduleItem.nodes.length > 0);
+
+      if (!searchText && !hasAnyEntityNode) {
+        container.innerHTML = `
+          <div class="muted" style="margin:4px 0;">Agent 實體</div>
+          <div class="muted" style="margin:4px 0;">資料集實體（僅私有）</div>
+        `;
+        state.entityTreeInstance = null;
+        updateSelectedPermissionView();
+        return;
+      }
+
+      const treeData = [];
+      modules.forEach((moduleItem, moduleIndex) => {
+        const filteredNodes = moduleItem.nodes.filter(node => {
+          const targetText = `${node.label} ${node.key}`.toLowerCase();
+          return !searchText || targetText.includes(searchText);
+        });
+        if (!filteredNodes.length) {
+          if (!searchText) {
+            treeData.push({
+              id: `entity-module:${moduleIndex}`,
+              text: moduleItem.module,
+              children: [],
+            });
+          }
+          return;
+        }
+        treeData.push({
+          id: `entity-module:${moduleIndex}`,
+          text: moduleItem.module,
+          children: filteredNodes.map(node => ({
+            id: `entity-perm:${node.key}`,
+            text: node.label,
+            attributes: { permissionKey: node.key },
+            checked: state.roleSelectedEntityPermissions.has(node.key),
+          })),
+        });
+      });
+
+      container.innerHTML = '';
+      if (!treeData.length) {
+        container.innerHTML = '<span class="muted">沒有符合搜尋條件的實體權限</span>';
+        state.entityTreeInstance = null;
+        updateSelectedPermissionView();
+        return;
+      }
+
+      const selectedValues = Array.from(state.roleSelectedEntityPermissions).map(key => `entity-perm:${key}`);
+      state.entityTreeInstance = new Tree('#entity-tree', {
+        data: treeData,
+        values: selectedValues,
+        closeDepth: 1,
+        loaded: function loaded() {
+          syncSelectedEntityPermissionsFromTree(this);
+        },
+        onChange: function onChange() {
+          syncSelectedEntityPermissionsFromTree(this);
+        },
+      });
+    }
+
+    function renderRoleList() {
+      const roleList = document.getElementById('roles-list');
+      if (!state.accessControlPermissions.canReadRole) {
+        roleList.innerHTML = '<p class="muted">你沒有角色讀取權限</p>';
+        return;
+      }
+      if (!state.roles.length) {
+        roleList.innerHTML = '<p>尚未建立角色</p>';
+        return;
+      }
+
+      roleList.innerHTML = `
+        <table class="access-list-table">
+          <colgroup>
+            <col class="col-code">
+            <col class="col-name">
+            <col class="col-enabled">
+            <col class="col-permissions">
+            <col class="col-actions">
+          </colgroup>
+          <thead>
+            <tr><th>代碼</th><th>名稱</th><th>啟用</th><th>權限</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            ${state.roles.map(role => `
+              <tr>
+                <td>${role.code}</td>
+                <td>${role.name}</td>
+                <td>${role.enabled ? '是' : '否'}</td>
+                <td class="permission-cell">${renderPermissionSummaryHtml(role.permissions || [])}<button class="btn btn-inline-view" data-role-view-permissions="${role.id}" type="button">檢視權限</button></td>
+                <td>${role.is_system ? '<span class="muted">系統保留</span>' : `${(state.accessControlPermissions.canUpdateRole || state.accessControlPermissions.canDeleteRole) ? `<div class="inline-row">${state.accessControlPermissions.canUpdateRole ? `<button class="btn" data-role-edit="${role.id}" type="button">編輯</button>` : ''}${state.accessControlPermissions.canDeleteRole ? `<button class="btn btn-danger" data-role-delete="${role.id}" type="button">刪除</button>` : ''}</div>` : '<span class="muted">唯讀</span>'}`}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function buildEntityNameMap() {
+      const entityNameMap = new Map();
+      for (const agent of state.entityResources.agents || []) {
+        entityNameMap.set(`agent:${String(agent.id)}`, String(agent.name || '').trim() || '未命名代理者');
+      }
+      for (const dataset of state.entityResources.privateDatasets || []) {
+        entityNameMap.set(`dataset:${String(dataset.id)}`, String(dataset.name || '').trim() || '未命名資料集');
+      }
+      return entityNameMap;
+    }
+
+    function formatPermissionKeyForDisplay(permissionKey, entityNameMap) {
+      if (String(permissionKey || '') === 'read_logs') {
+        return 'logs.read';
+      }
+      const matched = String(permissionKey || '').match(/^entity\.(agent|dataset|skill)\.([^.]+)\.execute$/);
+      if (!matched) {
+        return String(permissionKey || '');
+      }
+      const entityType = String(matched[1]);
+      const entityId = String(matched[2]);
+      const deletedTypeLabel = entityType === 'agent' ? '代理者' : entityType === 'dataset' ? '資料集' : '技能';
+      const entityName = entityNameMap.get(`${entityType}:${entityId}`) || `已刪除${deletedTypeLabel}`;
+      return `entity.${entityType}.${entityName}.execute`;
+    }
+
+    function formatPermissionKeysForDisplay(permissionKeys) {
+      const entityNameMap = buildEntityNameMap();
+      return (Array.isArray(permissionKeys) ? permissionKeys : [])
+        .map(permissionKey => formatPermissionKeyForDisplay(permissionKey, entityNameMap));
+    }
+
+    function renderPermissionKeysHtml(permissionKeys) {
+      const rawPermissionKeys = Array.isArray(permissionKeys) ? permissionKeys.map(item => String(item)) : [];
+      const displayPermissionKeys = formatPermissionKeysForDisplay(rawPermissionKeys);
+      if (!displayPermissionKeys.length) {
+        return '-';
+      }
+      return displayPermissionKeys
+        .map(displayPermissionKey => `<span class="perm-chip">${escapeHtml(displayPermissionKey)}</span>`)
+        .join(' ');
+    }
+
+    function renderPermissionSummaryHtml(permissionKeys) {
+      const displayPermissionKeys = formatPermissionKeysForDisplay(permissionKeys);
+      if (!displayPermissionKeys.length) {
+        return '<div class="permission-summary">共 <strong>0</strong> 項權限</div>';
+      }
+      const previewItems = displayPermissionKeys.slice(0, 3).map(item => escapeHtml(item));
+      const previewText = previewItems.join('、');
+      const remainCount = Math.max(0, displayPermissionKeys.length - previewItems.length);
+      const remainText = remainCount > 0 ? `，另有 ${remainCount} 項` : '';
+      return `<div class="permission-summary">共 <strong>${displayPermissionKeys.length}</strong> 項：${previewText}${remainText}</div>`;
+    }
+
+    function collectTreeLeafNodeIds(treeNodes) {
+      const leafNodeIds = [];
+      const walkNodes = (nodes) => {
+        for (const node of nodes || []) {
+          const childNodes = Array.isArray(node.children) ? node.children : [];
+          if (!childNodes.length) {
+            leafNodeIds.push(String(node.id));
+            continue;
+          }
+          walkNodes(childNodes);
+        }
+      };
+      walkNodes(treeNodes);
+      return leafNodeIds;
+    }
+
+    function buildViewerTreeDataFromModules(modules, selectedPermissionKeys, idPrefix, resolveNodeText) {
+      const selectedSet = new Set((selectedPermissionKeys || []).map(item => String(item)));
+      const treeData = [];
+      const existedKeySet = new Set();
+      modules.forEach((moduleItem, moduleIndex) => {
+        const children = [];
+        for (const nodeItem of (moduleItem.nodes || [])) {
+          const permissionKey = String(nodeItem.key || '');
+          existedKeySet.add(permissionKey);
+          if (!selectedSet.has(permissionKey)) {
+            continue;
+          }
+          children.push({
+            id: `${idPrefix}:${permissionKey}`,
+            text: resolveNodeText(nodeItem),
+            attributes: { permissionKey },
+          });
+        }
+        if (!children.length) {
+          return;
+        }
+        treeData.push({
+          id: `${idPrefix}:module:${moduleIndex}`,
+          text: String(moduleItem.module || ''),
+          children,
+        });
+      });
+
+      const entityNameMap = buildEntityNameMap();
+      const missingKeys = Array.from(selectedSet).filter(permissionKey => !existedKeySet.has(permissionKey));
+      if (missingKeys.length) {
+        treeData.push({
+          id: `${idPrefix}:module:missing`,
+          text: '其他（已指派）',
+          children: missingKeys.map((permissionKey) => ({
+            id: `${idPrefix}:${permissionKey}`,
+            text: formatPermissionKeyForDisplay(permissionKey, entityNameMap),
+            attributes: { permissionKey },
+          })),
+        });
+      }
+      return treeData;
+    }
+
+    function renderPermissionViewerTree(containerId, treeData, selectedValues) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+      if (!treeData.length) {
+        container.innerHTML = '<span class="muted">沒有可顯示的權限</span>';
+        return null;
+      }
+      const disabledValues = collectTreeLeafNodeIds(treeData);
+      return new Tree(`#${containerId}`, {
+        data: treeData,
+        values: selectedValues,
+        disables: disabledValues,
+        closeDepth: 1,
+      });
+    }
+
+    function renderInlinePermissionViewer(containerIdPrefix, permissionKeys) {
+      const allPermissionKeys = Array.isArray(permissionKeys) ? permissionKeys.map(item => String(item)) : [];
+      const functionPermissionKeys = allPermissionKeys.filter(permissionKey => !permissionKey.startsWith('entity.'));
+      const entityPermissionKeys = allPermissionKeys.filter(permissionKey => permissionKey.startsWith('entity.'));
+
+      const functionModules = buildPermissionModules();
+      const entityModules = buildEntityPermissionModules();
+      const functionTreeData = buildViewerTreeDataFromModules(
+        functionModules,
+        functionPermissionKeys,
+        'viewer-func',
+        nodeItem => `${String(nodeItem.label || nodeItem.key)} (${String(nodeItem.key)})`,
+      );
+      const entityTreeData = buildViewerTreeDataFromModules(
+        entityModules,
+        entityPermissionKeys,
+        'viewer-entity',
+        nodeItem => String(nodeItem.label || nodeItem.key),
+      );
+
+      renderPermissionViewerTree(
+        `${containerIdPrefix}-function-tree`,
+        functionTreeData,
+        functionTreeData.flatMap(moduleNode => (moduleNode.children || []).map(childNode => String(childNode.id))),
+      );
+      renderPermissionViewerTree(
+        `${containerIdPrefix}-entity-tree`,
+        entityTreeData,
+        entityTreeData.flatMap(moduleNode => (moduleNode.children || []).map(childNode => String(childNode.id))),
+      );
+    }
+
+    function toggleInlinePermissionViewer(buttonElement, permissionKeys, rowType, rowId) {
+      const permissionCell = buttonElement.closest('.permission-cell');
+      if (!permissionCell) {
+        return;
+      }
+      const existedViewer = permissionCell.querySelector('.permission-inline-viewer');
+      if (existedViewer) {
+        existedViewer.remove();
+        buttonElement.textContent = '檢視權限';
+        return;
+      }
+
+      const idSuffix = `${String(rowType)}-${String(rowId)}`;
+      const viewerContainerIdPrefix = `permission-inline-viewer-${idSuffix}`;
+      const viewerElement = document.createElement('div');
+      viewerElement.className = 'permission-inline-viewer';
+      viewerElement.innerHTML = `
+        <div class="permission-viewer-grid">
+          <div>
+            <div class="muted" style="margin-bottom:4px;">功能樹</div>
+            <div id="${viewerContainerIdPrefix}-function-tree" class="tree"></div>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:4px;">實體樹</div>
+            <div id="${viewerContainerIdPrefix}-entity-tree" class="tree"></div>
+          </div>
+        </div>
+      `;
+      permissionCell.appendChild(viewerElement);
+      renderInlinePermissionViewer(viewerContainerIdPrefix, permissionKeys);
+      buttonElement.textContent = '收合權限';
+    }
+
+    function getGroupPermissionKeys(group) {
+      // 目的：統一解析群組權限欄位格式。
+      // 為什麼：不同 API 版本可能回傳 permission_keys / permissionKeys / permissions。
+      if (Array.isArray(group.permission_keys)) {
+        return group.permission_keys.map(item => String(item));
+      }
+      if (Array.isArray(group.permissionKeys)) {
+        return group.permissionKeys.map(item => String(item));
+      }
+      if (Array.isArray(group.permissions)) {
+        return group.permissions.map(item => String(item));
+      }
+      return [];
+    }
+
+    function renderGroupsList() {
+      const groupsList = document.getElementById('groups-list');
+      if (!state.accessControlPermissions.canReadGroup) {
+        groupsList.innerHTML = '<p class="muted">你沒有群組讀取權限</p>';
+        return;
+      }
+      if (!state.groups.length) {
+        groupsList.innerHTML = '<p>尚未建立群組</p>';
+        return;
+      }
+
+      groupsList.innerHTML = `
+        <table class="access-list-table">
+          <colgroup>
+            <col class="col-code">
+            <col class="col-name">
+            <col class="col-enabled">
+            <col class="col-permissions">
+            <col class="col-actions">
+          </colgroup>
+          <thead>
+            <tr><th>代碼</th><th>名稱</th><th>啟用</th><th>權限</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            ${state.groups.map(group => `
+              <tr>
+                <td>${group.code}</td>
+                <td>${group.name}</td>
+                <td>${group.enabled ? '是' : '否'}</td>
+                <td class="permission-cell">${renderPermissionSummaryHtml(getGroupPermissionKeys(group))}<button class="btn btn-inline-view" data-group-view-permissions="${group.id}" type="button">檢視權限</button></td>
+                <td>
+                  ${(state.accessControlPermissions.canUpdateGroup || state.accessControlPermissions.canDeleteGroup) ? `<div class="inline-row">${state.accessControlPermissions.canUpdateGroup ? `<button class="btn" data-group-edit="${group.id}" type="button">編輯</button>` : ''}${state.accessControlPermissions.canDeleteGroup ? `<button class="btn btn-danger" data-group-delete="${group.id}" type="button">刪除</button>` : ''}</div>` : '<span class="muted">唯讀</span>'}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function buildPermissionBindingItems() {
+      const bindingItems = [];
+      const moduleList = buildPermissionModules();
+      moduleList.forEach((moduleItem, moduleOrder) => {
+        for (const nodeItem of moduleItem.nodes) {
+          const permissionKey = String(nodeItem.key);
+          if (permissionKey.startsWith('entity.')) {
+            continue;
+          }
+          bindingItems.push({
+            id: permissionKey,
+            label: String(nodeItem.label || nodeItem.key),
+            group: String(moduleItem.module),
+            group_order: moduleOrder,
+          });
+        }
+      });
+      return bindingItems;
+    }
+
+    function buildEntityPermissionBindingItems() {
+      const bindingItems = [];
+      const moduleList = buildEntityPermissionModules();
+      moduleList.forEach((moduleItem, moduleOrder) => {
+        for (const nodeItem of moduleItem.nodes) {
+          const permissionKey = String(nodeItem.key);
+          if (!permissionKey.startsWith('entity.')) {
+            continue;
+          }
+          bindingItems.push({
+            id: permissionKey,
+            label: String(nodeItem.label || nodeItem.key),
+            group: String(moduleItem.module),
+            group_order: moduleOrder,
+          });
+        }
+      });
+      return bindingItems;
+    }
+
+    function syncGroupSelectionsFromTree(treeInstance, prefix, targetSet, visiblePermissionKeys) {
+      const selectedValues = getSelectedBindingValues(treeInstance)
+        .filter(item => String(item).startsWith(prefix))
+        .map(item => String(item).slice(prefix.length));
+      const visibleKeysSet = new Set((Array.isArray(visiblePermissionKeys) ? visiblePermissionKeys : []).map(item => String(item)));
+      const hiddenSelectedValues = Array.from(targetSet).filter(item => !visibleKeysSet.has(String(item)));
+      targetSet.clear();
+      hiddenSelectedValues.forEach(value => targetSet.add(value));
+      selectedValues.forEach(value => targetSet.add(value));
+    }
+
+    function updateSelectedGroupPermissionView() {
+      const container = document.getElementById('group-selected-permissions');
+      const rawPermissionKeys = Array.from(new Set([
+        ...Array.from(state.groupSelectedPermissions),
+        ...Array.from(state.groupSelectedEntityPermissions),
+      ])).sort();
+      if (!rawPermissionKeys.length) {
+        container.innerHTML = '<span class="muted">尚未選擇任何權限</span>';
+        return;
+      }
+      container.innerHTML = renderPermissionKeysHtml(rawPermissionKeys);
+    }
+
+    async function loadReferenceData() {
+      const roleRequest = state.accessControlPermissions.canReadRole
+        ? api.get('/access/roles')
+        : Promise.resolve({ roles: [] });
+      const groupRequest = state.accessControlPermissions.canReadGroup
+        ? api.get('/access/groups')
+        : Promise.resolve({ groups: [] });
+      const permissionRequest = api.get('/access/permissions');
+
+      const [rolesResult, groupsResult, permissionsResult] = await Promise.all([
+        roleRequest,
+        groupRequest,
+        permissionRequest,
+      ]);
+
+      state.roles = Array.isArray(rolesResult.roles) ? rolesResult.roles : [];
+      state.groups = Array.isArray(groupsResult.groups) ? groupsResult.groups : [];
+      state.permissions = Array.isArray(permissionsResult.permissions) ? permissionsResult.permissions : [];
+
+      await loadEntityResources();
+
+      renderRoleList();
+      renderGroupsList();
+      await loadMyCapabilities();
+    }
+
+    async function loadMyCapabilities(identifier = '') {
+      const normalizedIdentifier = String(identifier || '').trim();
+      if (!normalizedIdentifier) {
+        const myCapabilities = await api.get('/me/capabilities');
+        renderCapabilityPayload(myCapabilities);
+        return;
+      }
+      const targetCapabilities = await api.get(`/access/users/capabilities?identifier=${encodeURIComponent(normalizedIdentifier)}`);
+      renderCapabilityPayload(targetCapabilities);
+    }
+
+    async function loadCapabilityUsers() {
+      const usersResponse = await api.get('/users');
+      const users = Array.isArray(usersResponse.users) ? usersResponse.users : [];
+      state.capabilityUsers = users
+        .slice()
+        .sort((leftUser, rightUser) => String(leftUser.username || '').localeCompare(String(rightUser.username || '')));
+    }
+
+    function renderCapabilityUserPicker(keyword = '') {
+      const keywordText = String(keyword || '').trim().toLowerCase();
+      const tableBody = document.getElementById('capability-user-picker-list');
+      const filteredUsers = state.capabilityUsers.filter((user) => {
+        const targetText = `${String(user.username || '')} ${String(user.email || '')}`.toLowerCase();
+        return !keywordText || targetText.includes(keywordText);
+      });
+      if (!filteredUsers.length) {
+        tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);">找不到符合條件的使用者</td></tr>';
+        return;
+      }
+      tableBody.innerHTML = filteredUsers.map((user) => {
+        const enabled = !!user.enabled;
+        const statusText = enabled ? '啟用' : '停用';
+        return `
+          <tr>
+            <td>${String(user.username || '-')}</td>
+            <td>${String(user.email || '-')}</td>
+            <td>${String(user.role || '-')}</td>
+            <td>${statusText}</td>
+            <td><button class="btn" data-action="pick-capability-user" data-identifier="${String(user.username || '')}" type="button">選取</button></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function openCapabilityUserPickerModal() {
+      if (!state.capabilityUsers.length) {
+        await loadCapabilityUsers();
+      }
+      document.getElementById('capability-user-picker-keyword').value = '';
+      renderCapabilityUserPicker('');
+      openModal(document.getElementById('capability-user-picker-modal'));
+    }
+
+    function renderGroupPermissionTrees() {
+      const functionSearchText = String(state.groupPermissionSearchText || '').trim().toLowerCase();
+      const entitySearchText = String(state.groupEntitySearchText || '').trim().toLowerCase();
+      const functionItems = buildPermissionBindingItems().filter((item) => {
+        const targetText = `${String(item.label)} ${String(item.id)}`.toLowerCase();
+        return !functionSearchText || targetText.includes(functionSearchText);
+      });
+      const entityItems = buildEntityPermissionBindingItems().filter((item) => {
+        const targetText = `${String(item.label)} ${String(item.id)}`.toLowerCase();
+        return !entitySearchText || targetText.includes(entitySearchText);
+      });
+      state.groupVisibleFunctionPermissionKeys = functionItems.map(item => String(item.id));
+      state.groupVisibleEntityPermissionKeys = entityItems.map(item => String(item.id));
+
+      state.groupPermissionTreeInstance = createBindingTree(
+        'group-permission-tree',
+        functionItems.map(item => ({ ...item, id: `func:${String(item.id)}` })),
+        Array.from(state.groupSelectedPermissions).map(value => `func:${String(value)}`),
+        (treeInstance) => {
+          syncGroupSelectionsFromTree(treeInstance, 'func:', state.groupSelectedPermissions, state.groupVisibleFunctionPermissionKeys);
+          updateSelectedGroupPermissionView();
+        },
+      );
+      state.groupEntityTreeInstance = createBindingTree(
+        'group-entity-permission-tree',
+        entityItems.map(item => ({ ...item, id: `entity:${String(item.id)}` })),
+        Array.from(state.groupSelectedEntityPermissions).map(value => `entity:${String(value)}`),
+        (treeInstance) => {
+          syncGroupSelectionsFromTree(treeInstance, 'entity:', state.groupSelectedEntityPermissions, state.groupVisibleEntityPermissionKeys);
+          updateSelectedGroupPermissionView();
+        },
+      );
+      if (!entityItems.length && !entitySearchText) {
+        const entityTreeContainer = document.getElementById('group-entity-permission-tree');
+        entityTreeContainer.innerHTML = `
+          <div class="muted" style="margin:4px 0;">Agent 實體</div>
+          <div class="muted" style="margin:4px 0;">資料集實體（僅私有）</div>
+        `;
+        state.groupEntityTreeInstance = null;
+      }
+      updateSelectedGroupPermissionView();
+    }
+
+    async function openCreateGroupModal() {
+      state.groupEditingId = '';
+      document.getElementById('group-form').reset();
+      document.getElementById('group-id').value = '';
+      document.getElementById('group-modal-title').textContent = '建立群組';
+      document.getElementById('group-modal-save').textContent = '建立';
+      document.getElementById('group-code').value = '';
+      document.getElementById('group-code').disabled = false;
+      document.getElementById('group-name').value = '';
+      document.getElementById('group-enabled').checked = true;
+      state.groupSelectedPermissions = new Set();
+      state.groupSelectedEntityPermissions = new Set();
+      state.groupPermissionSearchText = '';
+      state.groupEntitySearchText = '';
+      document.getElementById('group-permission-search').value = '';
+      document.getElementById('group-entity-search').value = '';
+      document.getElementById('group-manual-permissions').value = '';
+      renderGroupPermissionTrees();
+      openModal(document.getElementById('group-modal'));
+    }
+
+    async function openEditGroupModal(groupId) {
+      const group = state.groups.find(item => String(item.id) === String(groupId));
+      if (!group) {
+        showError('找不到群組');
+        return;
+      }
+      state.groupEditingId = String(group.id);
+      document.getElementById('group-id').value = String(group.id);
+      document.getElementById('group-modal-title').textContent = `編輯群組：${group.code}`;
+      document.getElementById('group-modal-save').textContent = '儲存';
+      document.getElementById('group-code').value = String(group.code || '');
+      document.getElementById('group-code').disabled = true;
+      document.getElementById('group-name').value = String(group.name || '');
+      document.getElementById('group-enabled').checked = !!group.enabled;
+
+      const groupPermissionPayload = await api.get(`/access/groups/${group.id}/permissions`);
+      const selectedPermissionKeys = Array.isArray(groupPermissionPayload.permission_keys) ? groupPermissionPayload.permission_keys : [];
+      state.groupSelectedPermissions = new Set(selectedPermissionKeys.filter(permissionKey => !String(permissionKey).startsWith('entity.')).map(permissionKey => String(permissionKey)));
+      state.groupSelectedEntityPermissions = new Set(selectedPermissionKeys.filter(permissionKey => String(permissionKey).startsWith('entity.')).map(permissionKey => String(permissionKey)));
+      state.groupPermissionSearchText = '';
+      state.groupEntitySearchText = '';
+      document.getElementById('group-permission-search').value = '';
+      document.getElementById('group-entity-search').value = '';
+      document.getElementById('group-manual-permissions').value = '';
+      renderGroupPermissionTrees();
+      openModal(document.getElementById('group-modal'));
+    }
+
+    function openCreateRoleModal() {
+      state.roleEditingId = '';
+      state.roleSelectedPermissions = new Set();
+      state.roleSelectedEntityPermissions = new Set();
+      state.permissionSearchText = '';
+      state.entitySearchText = '';
+      document.getElementById('role-form').reset();
+      document.getElementById('role-modal-title').textContent = '建立角色';
+      document.getElementById('role-modal-save').textContent = '建立';
+      document.getElementById('role-code').disabled = false;
+      renderPermissionTree();
+      renderEntityPermissionTree();
+      openModal(document.getElementById('role-modal'));
+    }
+
+    function openEditRoleModal(roleId) {
+      const role = state.roles.find(item => String(item.id) === String(roleId));
+      if (!role) {
+        showError('找不到角色');
+        return;
+      }
+
+      state.roleEditingId = String(role.id);
+      const allPermissions = Array.isArray(role.permissions) ? role.permissions : [];
+      state.roleSelectedEntityPermissions = new Set(allPermissions.filter(key => String(key).startsWith('entity.')));
+      state.roleSelectedPermissions = new Set(allPermissions.filter(key => !String(key).startsWith('entity.')));
+      state.permissionSearchText = '';
+      state.entitySearchText = '';
+      document.getElementById('role-id').value = String(role.id);
+      document.getElementById('role-code').value = String(role.code || '');
+      document.getElementById('role-name').value = String(role.name || '');
+      document.getElementById('role-enabled').checked = !!role.enabled;
+      document.getElementById('manual-permissions').value = '';
+      document.getElementById('permission-search').value = '';
+      document.getElementById('entity-search').value = '';
+      document.getElementById('role-modal-title').textContent = `編輯角色：${role.code}`;
+      document.getElementById('role-modal-save').textContent = '儲存';
+      document.getElementById('role-code').disabled = true;
+      renderPermissionTree();
+      renderEntityPermissionTree();
+      openModal(document.getElementById('role-modal'));
+    }
+
+    document.getElementById('tab-roles').addEventListener('click', () => setActiveTab('roles'));
+    document.getElementById('tab-bindings').addEventListener('click', () => setActiveTab('bindings'));
+    document.getElementById('tab-capabilities').addEventListener('click', async () => {
+      try {
+        setActiveTab('capabilities');
+        await loadMyCapabilities();
+      } catch (error) {
+        showError((error && error.message) || '載入能力檢視失敗');
+      }
+    });
+
+    document.getElementById('capability-user-load').addEventListener('click', async () => {
+      const identifier = document.getElementById('capability-user-identifier').value;
+      try {
+        await loadMyCapabilities(identifier);
+      } catch (error) {
+        showError((error && error.message) || '查詢使用者能力失敗');
+      }
+    });
+
+    document.getElementById('capability-self-load').addEventListener('click', async () => {
+      document.getElementById('capability-user-identifier').value = '';
+      try {
+        await loadMyCapabilities('');
+      } catch (error) {
+        showError((error && error.message) || '載入本人能力失敗');
+      }
+    });
+
+    document.getElementById('capability-user-identifier').addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      const identifier = document.getElementById('capability-user-identifier').value;
+      try {
+        await loadMyCapabilities(identifier);
+      } catch (error) {
+        showError((error && error.message) || '查詢使用者能力失敗');
+      }
+    });
+
+    document.getElementById('capability-user-pick').addEventListener('click', async () => {
+      try {
+        await openCapabilityUserPickerModal();
+      } catch (error) {
+        showError((error && error.message) || '載入使用者列表失敗');
+      }
+    });
+
+    document.getElementById('capability-user-picker-close').addEventListener('click', () => {
+      closeModal(document.getElementById('capability-user-picker-modal'));
+    });
+
+    document.getElementById('capability-user-picker-keyword').addEventListener('input', (event) => {
+      renderCapabilityUserPicker(event.target.value);
+    });
+
+    document.getElementById('capability-user-picker-list').addEventListener('click', async (event) => {
+      const action = event.target && event.target.dataset ? event.target.dataset.action : '';
+      if (action !== 'pick-capability-user') {
+        return;
+      }
+      const identifier = event.target.dataset ? String(event.target.dataset.identifier || '') : '';
+      document.getElementById('capability-user-identifier').value = identifier;
+      closeModal(document.getElementById('capability-user-picker-modal'));
+      try {
+        await loadMyCapabilities(identifier);
+      } catch (error) {
+        showError((error && error.message) || '查詢使用者能力失敗');
+      }
+    });
+
+    document.getElementById('btn-create-role').addEventListener('click', () => {
+      if (!state.accessControlPermissions.canCreateRole) {
+        showError('你沒有建立角色的權限');
+        return;
+      }
+      openCreateRoleModal();
+    });
+    document.getElementById('btn-refresh-roles').addEventListener('click', async () => {
+      await loadReferenceData();
+      showSuccess('已重新整理');
+    });
+
+    document.getElementById('btn-create-group').addEventListener('click', async () => {
+      if (!state.accessControlPermissions.canCreateGroup) {
+        showError('你沒有建立群組的權限');
+        return;
+      }
+      await openCreateGroupModal();
+    });
+
+    document.getElementById('btn-refresh-groups').addEventListener('click', async () => {
+      await loadReferenceData();
+      showSuccess('群組列表已重新整理');
+    });
+
+    document.getElementById('role-modal-cancel').addEventListener('click', () => {
+      closeModal(document.getElementById('role-modal'));
+    });
+
+    document.getElementById('group-modal-cancel').addEventListener('click', () => {
+      closeModal(document.getElementById('group-modal'));
+    });
+
+    document.getElementById('confirm-modal-cancel').addEventListener('click', () => {
+      state.confirmAction = null;
+      closeModal(document.getElementById('confirm-modal'));
+    });
+
+    document.getElementById('confirm-modal-ok').addEventListener('click', async () => {
+      const action = state.confirmAction;
+      state.confirmAction = null;
+      closeModal(document.getElementById('confirm-modal'));
+      if (!action) {
+        return;
+      }
+      await action();
+    });
+
+    document.getElementById('roles-list').addEventListener('click', (event) => {
+      const roleViewId = event.target && event.target.dataset ? event.target.dataset.roleViewPermissions : '';
+      if (roleViewId) {
+        const role = state.roles.find(item => String(item.id) === String(roleViewId));
+        if (!role) {
+          showError('找不到角色權限');
+          return;
+        }
+        toggleInlinePermissionViewer(event.target, role.permissions || [], 'role', role.id);
+        return;
+      }
+      const roleId = event.target && event.target.dataset ? event.target.dataset.roleEdit : '';
+      if (roleId) {
+        if (!state.accessControlPermissions.canUpdateRole) {
+          showError('你沒有編輯角色的權限');
+          return;
+        }
+        openEditRoleModal(roleId);
+        return;
+      }
+      const roleDeleteId = event.target && event.target.dataset ? event.target.dataset.roleDelete : '';
+      if (roleDeleteId) {
+        if (!state.accessControlPermissions.canDeleteRole) {
+          showError('你沒有刪除角色的權限');
+          return;
+        }
+        openConfirmModal({
+          title: '確認刪除角色',
+          message: '確定刪除此角色嗎？此操作會清除相關綁定。',
+          onConfirm: async () => {
+            await api.delete(`/access/roles/${roleDeleteId}`);
+            showSuccess('角色刪除成功');
+            await loadReferenceData();
+          },
+        });
+      }
+    });
+
+    document.getElementById('groups-list').addEventListener('click', async (event) => {
+      const groupViewId = event.target && event.target.dataset ? event.target.dataset.groupViewPermissions : '';
+      if (groupViewId) {
+        const group = state.groups.find(item => String(item.id) === String(groupViewId));
+        if (!group) {
+          showError('找不到群組權限');
+          return;
+        }
+        toggleInlinePermissionViewer(event.target, getGroupPermissionKeys(group), 'group', group.id);
+        return;
+      }
+      const groupEditId = event.target && event.target.dataset ? event.target.dataset.groupEdit : '';
+      if (groupEditId) {
+        if (!state.accessControlPermissions.canUpdateGroup) {
+          showError('你沒有編輯群組的權限');
+          return;
+        }
+        await openEditGroupModal(groupEditId);
+        return;
+      }
+      const groupDeleteId = event.target && event.target.dataset ? event.target.dataset.groupDelete : '';
+      if (groupDeleteId) {
+        if (!state.accessControlPermissions.canDeleteGroup) {
+          showError('你沒有刪除群組的權限');
+          return;
+        }
+        openConfirmModal({
+          title: '確認刪除群組',
+          message: '確定刪除此群組嗎？此操作會清除相關綁定。',
+          onConfirm: async () => {
+            await api.delete(`/access/groups/${groupDeleteId}`);
+            showSuccess('群組刪除成功');
+            await loadReferenceData();
+          },
+        });
+      }
+    });
+
+    document.getElementById('permission-search').addEventListener('input', (event) => {
+      state.permissionSearchText = String(event.target.value || '');
+      renderPermissionTree();
+    });
+
+    document.getElementById('entity-search').addEventListener('input', (event) => {
+      state.entitySearchText = String(event.target.value || '');
+      renderEntityPermissionTree();
+    });
+
+    document.getElementById('group-permission-search').addEventListener('input', (event) => {
+      if (state.groupPermissionTreeInstance) {
+        syncGroupSelectionsFromTree(state.groupPermissionTreeInstance, 'func:', state.groupSelectedPermissions, state.groupVisibleFunctionPermissionKeys);
+      }
+      state.groupPermissionSearchText = String(event.target.value || '');
+      renderGroupPermissionTrees();
+    });
+
+    document.getElementById('group-entity-search').addEventListener('input', (event) => {
+      if (state.groupEntityTreeInstance) {
+        syncGroupSelectionsFromTree(state.groupEntityTreeInstance, 'entity:', state.groupSelectedEntityPermissions, state.groupVisibleEntityPermissionKeys);
+      }
+      state.groupEntitySearchText = String(event.target.value || '');
+      renderGroupPermissionTrees();
+    });
+
+    document.getElementById('role-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (state.roleEditingId && !state.accessControlPermissions.canUpdateRole) {
+        showError('你沒有編輯角色的權限');
+        return;
+      }
+      if (!state.roleEditingId && !state.accessControlPermissions.canCreateRole) {
+        showError('你沒有建立角色的權限');
+        return;
+      }
+      if (state.permissionTreeInstance) {
+        syncSelectedPermissionsFromTree(state.permissionTreeInstance);
+      }
+      if (state.entityTreeInstance) {
+        syncSelectedEntityPermissionsFromTree(state.entityTreeInstance);
+      }
+      const roleCode = document.getElementById('role-code').value.trim();
+      const roleName = document.getElementById('role-name').value.trim();
+      const roleEnabled = document.getElementById('role-enabled').checked;
+      const manualPermissions = parsePermissionInput(document.getElementById('manual-permissions').value);
+      const mergedPermissions = Array.from(new Set([
+        ...Array.from(state.roleSelectedPermissions),
+        ...Array.from(state.roleSelectedEntityPermissions),
+        ...manualPermissions,
+      ])).sort();
+
+      if (!roleCode || !roleName) {
+        showError('角色代碼與名稱為必填');
+        return;
+      }
+
+      const payload = {
+        code: roleCode,
+        name: roleName,
+        enabled: roleEnabled,
+        permissions: mergedPermissions,
+      };
+
+      if (state.roleEditingId) {
+        await api.put(`/access/roles/${state.roleEditingId}`, payload);
+        showSuccess('角色更新成功');
+      } else {
+        await api.post('/access/roles', payload);
+        showSuccess('角色建立成功');
+      }
+
+      clearCapabilitiesCache();
+      closeModal(document.getElementById('role-modal'));
+      await loadReferenceData();
+    });
+
+    document.getElementById('group-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const groupId = String(document.getElementById('group-id').value || '').trim();
+      if (groupId && !state.accessControlPermissions.canUpdateGroup) {
+        showError('你沒有編輯群組的權限');
+        return;
+      }
+      if (!groupId && !state.accessControlPermissions.canCreateGroup) {
+        showError('你沒有建立群組的權限');
+        return;
+      }
+      const groupCode = String(document.getElementById('group-code').value || '').trim();
+      const groupName = String(document.getElementById('group-name').value || '').trim();
+      const groupEnabled = document.getElementById('group-enabled').checked;
+      const manualPermissions = parsePermissionInput(document.getElementById('group-manual-permissions').value);
+      if (state.groupPermissionTreeInstance) {
+        syncGroupSelectionsFromTree(state.groupPermissionTreeInstance, 'func:', state.groupSelectedPermissions, state.groupVisibleFunctionPermissionKeys);
+      }
+      if (state.groupEntityTreeInstance) {
+        syncGroupSelectionsFromTree(state.groupEntityTreeInstance, 'entity:', state.groupSelectedEntityPermissions, state.groupVisibleEntityPermissionKeys);
+      }
+      const permissionKeys = Array.from(new Set([
+        ...Array.from(state.groupSelectedPermissions),
+        ...Array.from(state.groupSelectedEntityPermissions),
+        ...manualPermissions,
+      ]));
+
+      if (!groupName) {
+        showError('群組名稱為必填');
+        return;
+      }
+
+      let targetGroupId = groupId;
+      if (groupId) {
+        await api.put(`/access/groups/${groupId}`, {
+          name: groupName,
+          enabled: groupEnabled,
+        });
+      } else {
+        const createdGroup = await api.post('/access/groups', {
+          code: groupCode,
+          name: groupName,
+          enabled: groupEnabled,
+        });
+        targetGroupId = String((createdGroup && createdGroup.id) || '');
+      }
+
+      if (!targetGroupId) {
+        showError('儲存群組失敗：缺少群組 ID');
+        return;
+      }
+
+      await api.post(`/access/groups/${targetGroupId}/permissions`, { permission_keys: permissionKeys });
+      clearCapabilitiesCache();
+      closeModal(document.getElementById('group-modal'));
+      showSuccess(groupId ? '群組更新成功' : '群組建立成功');
+      await loadReferenceData();
+    });
+
+    async function initializeAccessControlPage() {
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      state.accessControlPermissions = {
+        canCreateRole: hasAnyPermission(capabilities, ['role.create', 'update_user']),
+        canReadRole: hasAnyPermission(capabilities, ['role.read', 'update_user']),
+        canUpdateRole: hasAnyPermission(capabilities, ['role.update', 'update_user']),
+        canDeleteRole: hasAnyPermission(capabilities, ['role.delete', 'update_user']),
+        canCreateGroup: hasAnyPermission(capabilities, ['group.create', 'update_user']),
+        canReadGroup: hasAnyPermission(capabilities, ['group.read', 'update_user']),
+        canUpdateGroup: hasAnyPermission(capabilities, ['group.update', 'update_user']),
+        canDeleteGroup: hasAnyPermission(capabilities, ['group.delete', 'update_user']),
+      };
+      if (!hasAnyPermission(capabilities, ['update_user', 'role.read', 'group.read', 'role.update', 'group.update'])) {
+        showError('你沒有權限進入權限管理頁');
+        setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+        return;
+      }
+
+      applyAccessControlUiPermissions();
+      await loadReferenceData();
+      setActiveTab('roles');
+    }
+
+    initializeAccessControlPage().catch((error) => {
+      showError((error && error.message) || '載入權限管理資料失敗');
+    });
+  </script>
+</body>
+</html>

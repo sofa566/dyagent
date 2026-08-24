@@ -57,16 +57,29 @@
     </table>
   </main>
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
     if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    if (!hasPermission(capabilities, 'mcp.read')) {
       document.getElementById('error-message').textContent = '僅限管理者存取';
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
+    const canCreateMcp = hasPermission(capabilities, 'mcp.create');
+    const canUpdateMcp = hasPermission(capabilities, 'mcp.update');
+    const canDeleteMcp = hasPermission(capabilities, 'mcp.delete');
     const rows = document.getElementById('rows');
     const errorMessage = document.getElementById('error-message');
+    const newButton = document.getElementById('btn-new');
+    const importButton = document.getElementById('btn-import');
+    const importJsonInput = document.getElementById('mcpservers-json');
+
+    if (!canCreateMcp) {
+      newButton.style.display = 'none';
+      importButton.style.display = 'none';
+      importJsonInput.disabled = true;
+    }
 
     function clearError() {
       if (!errorMessage) return;
@@ -80,6 +93,12 @@
         clearError();
         const list = Array.isArray(res.mcps) ? res.mcps : [];
         rows.innerHTML = list.map(m => {
+          const editButton = canUpdateMcp
+            ? `<a class="btn" href="/pages/mcp-edit.html?id=${m.id}">編輯</a>`
+            : '<span class="muted">唯讀</span>';
+          const deleteButton = canDeleteMcp
+            ? `<button class="btn" data-del="${m.id}">刪除</button>`
+            : '';
           return `<tr>
             <td>${m.name}</td>
             <td>${m.enabled ? '啟用' : '停用'}</td>
@@ -87,11 +106,14 @@
             <td>${m.transport}</td>
             <td>${m.base_url || ''}</td>
             <td>
-              <a class="btn" href="/pages/mcp-edit.html?id=${m.id}">編輯</a>
-              <button class="btn" data-del="${m.id}">刪除</button>
+              ${editButton}
+              ${deleteButton}
             </td>
           </tr>`;
         }).join('');
+        if (!canUpdateMcp) {
+          return;
+        }
         // 並行測試健康狀態
         for (const m of list) {
           (async () => {
@@ -116,12 +138,16 @@
     rows.addEventListener('click', async (e) => {
       const id = e.target.getAttribute('data-del');
       if (id) {
+        if (!canDeleteMcp) {
+          showError('你沒有刪除 MCP 的權限');
+          return;
+        }
         const ok = window.confirm('確定刪除此 MCP 連線？');
         if (!ok) return;
         try { await api.delete(`/mcps/${id}`); load(); } catch (e) { showError(e.message || '刪除失敗'); }
       }
     });
-    document.getElementById('btn-new').addEventListener('click', ()=>{ window.location.href = '/pages/mcp-edit.html'; });
+    newButton.addEventListener('click', ()=>{ window.location.href = '/pages/mcp-edit.html'; });
     document.getElementById('btn-format-json').addEventListener('click', ()=>{
       const el = document.getElementById('mcpservers-json');
       const raw = (el.value || '').trim();
@@ -139,6 +165,10 @@
       clearError();
     });
     document.getElementById('btn-import').addEventListener('click', async ()=>{
+      if (!canCreateMcp) {
+        showError('你沒有建立 MCP 的權限');
+        return;
+      }
       const input = document.getElementById('mcpservers-json');
       const raw = input.value.trim();
       if (!raw) return;
@@ -154,6 +184,9 @@
       }catch(e){ showError(e.message||'匯入失敗'); }
     });
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

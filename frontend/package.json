@@ -21,6 +21,7 @@
     "vitest": "^1.2.2"
   },
   "dependencies": {
+    "@widgetjs/tree": "^1.8.3",
     "marked": "^17.0.5"
   }
 }

@@ -100,7 +100,10 @@
             <tr>
               <th>檔案名稱</th>
               <th style="width:100px;">大小</th>
+              <th style="width:120px;">索引狀態</th>
+              <th style="width:90px;">進度</th>
               <th style="width:160px;">上傳時間</th>
+              <th style="width:90px;">操作</th>
             </tr>
           </thead>
           <tbody id="upload-file-list"></tbody>
@@ -158,23 +161,31 @@
   </div>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
     // 認證檢查
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    if (!hasPermission(capabilities, 'rag.read')) {
       showError('僅限管理者存取');
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
+    const canCreateRag = hasPermission(capabilities, 'rag.create');
+    const canUpdateRag = hasPermission(capabilities, 'rag.update');
+    const canDeleteRag = hasPermission(capabilities, 'rag.delete');
 
     // DOM 元素
     const rows = document.getElementById('rows');
     const newBtn = document.getElementById('btn-new');
     const refreshBtn = document.getElementById('btn-refresh');
+
+    if (!canCreateRag) {
+      newBtn.style.display = 'none';
+    }
 
     // Modal 元素
     const datasetModal = document.getElementById('dataset-modal');
@@ -190,6 +201,10 @@
     let editingId = '';
 
     newBtn.addEventListener('click', () => {
+      if (!canCreateRag) {
+        showError('你沒有建立 RAG 資料集的權限');
+        return;
+      }
       editingId = '';
       document.getElementById('dataset-modal-title').textContent = '新建公有資料集';
       document.getElementById('dataset-modal-save').textContent = '建立';
@@ -204,6 +219,14 @@
 
     document.getElementById('dataset-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (editingId && !canUpdateRag) {
+        showError('你沒有編輯 RAG 資料集的權限');
+        return;
+      }
+      if (!editingId && !canCreateRag) {
+        showError('你沒有建立 RAG 資料集的權限');
+        return;
+      }
       const payload = {
         name: document.getElementById('modal-name').value.trim(),
         sensitivity: document.getElementById('modal-sensitivity').value,
@@ -231,6 +254,10 @@
     });
 
     function openEditModal(id) {
+      if (!canUpdateRag) {
+        showError('你沒有編輯 RAG 資料集的權限');
+        return;
+      }
       const list = window.__globalDatasets || [];
       const found = list.find((item) => String(item.id) === String(id));
       if (!found) {
@@ -250,7 +277,26 @@
 
     // ========== 上傳/文件列表 Modal ==========
     let currentUploadDatasetId = '';
+    let uploadPollingTimer = null;
     const uploadFileInput = document.getElementById('upload-file-input');
+    const uploadFileList = document.getElementById('upload-file-list');
+
+    function stopUploadPolling() {
+      if (uploadPollingTimer) {
+        clearTimeout(uploadPollingTimer);
+        uploadPollingTimer = null;
+      }
+    }
+
+    function scheduleUploadPolling() {
+      stopUploadPolling();
+      uploadPollingTimer = setTimeout(async () => {
+        if (!currentUploadDatasetId) {
+          return;
+        }
+        await loadDocuments(currentUploadDatasetId);
+      }, 2000);
+    }
 
     async function openUploadModal(datasetId, datasetName) {
       currentUploadDatasetId = datasetId;
@@ -266,31 +312,89 @@
       try {
         const res = await api.get(`/rag/datasets/${encodeURIComponent(datasetId)}/documents`);
         const docs = res.documents || [];
+        const hasIndexingJob = docs.some((item) => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase()));
         if (docs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
         } else {
           tbody.innerHTML = docs.map(doc => `
             <tr>
               <td>${escapeHtml(doc.filename)}</td>
               <td>${formatBytes(doc.size_bytes)}</td>
+              <td>${escapeHtml(formatIndexStatusLabel(doc.status, doc.stage))}</td>
+              <td>${typeof doc.progress === 'number' ? `${Math.max(0, Math.min(100, Number(doc.progress)))}%` : '-'}</td>
               <td>${formatDate(doc.uploaded_at)}</td>
+              <td>
+                  ${canDeleteRag ? `<button
+                  class="btn btn-danger"
+                  type="button"
+                  data-delete-file="${escapeHtml(doc.file_key || '')}"
+                  data-file-name="${escapeHtml(doc.filename || '')}"
+                  ${['queued', 'indexing'].includes(String(doc.status || '').toLowerCase()) ? 'disabled title="索引中不可刪除"' : ''}
+                  style="padding:4px 8px;font-size:0.85rem;"
+                >刪除</button>` : '<span class="muted">唯讀</span>'}
+              </td>
             </tr>
           `).join('');
         }
-        summary.textContent = `共 ${docs.length} 個檔案`;
+        const readyCount = docs.filter((item) => String(item.status || '').toLowerCase() === 'ready').length;
+        const failedCount = docs.filter((item) => String(item.status || '').toLowerCase() === 'failed').length;
+        const queuedCount = docs.filter((item) => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase())).length;
+        summary.textContent = `共 ${docs.length} 個檔案（完成 ${readyCount}、索引中 ${queuedCount}、失敗 ${failedCount}）`;
+        if (hasIndexingJob) {
+          scheduleUploadPolling();
+        } else {
+          stopUploadPolling();
+        }
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
+        stopUploadPolling();
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
         summary.textContent = '';
         showError(err.message || '載入文件列表失敗');
       }
     }
 
+    uploadFileList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) {
+        return;
+      }
+      const fileKey = String(target.getAttribute('data-delete-file') || '').trim();
+      if (!fileKey || !currentUploadDatasetId) {
+        return;
+      }
+      if (!canDeleteRag) {
+        showError('你沒有刪除資料集文件的權限');
+        return;
+      }
+      const fileName = String(target.getAttribute('data-file-name') || '').trim() || fileKey;
+      const confirmed = window.confirm(`確定刪除文件「${fileName}」嗎？`);
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        await api.delete(`/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/documents/${encodeURIComponent(fileKey)}`);
+        showSuccess(`已刪除文件：${fileName}`);
+        await loadDocuments(currentUploadDatasetId);
+      } catch (error) {
+        showError((error && error.message) || '刪除文件失敗');
+      }
+    });
+
     document.getElementById('upload-btn').addEventListener('click', () => {
+      if (!canCreateRag) {
+        showError('你沒有上傳文件的權限');
+        return;
+      }
       uploadFileInput.value = '';
       uploadFileInput.click();
     });
 
     uploadFileInput.addEventListener('change', async () => {
+      if (!canCreateRag) {
+        showError('你沒有上傳文件的權限');
+        return;
+      }
       const files = uploadFileInput.files;
       if (!files || files.length === 0) return;
 
@@ -317,8 +421,12 @@
           }
 
           const data = await response.json();
-          if (data.status !== 'ready') {
+          if (data.status === 'failed') {
             showError(`${file.name}: ${data.message || '索引失敗'}`);
+          } else if (data.status === 'ready') {
+            showSuccess(`${file.name}: 文件已索引完成`);
+          } else {
+            showSuccess(`${file.name}: ${data.message || '文件已上傳，索引中'}`);
           }
         } catch (err) {
           showError(`${file.name}: ${err.message}`);
@@ -331,6 +439,8 @@
     });
 
     document.getElementById('upload-modal-close').addEventListener('click', () => {
+      stopUploadPolling();
+      currentUploadDatasetId = '';
       closeModal(uploadModal);
     });
 
@@ -417,6 +527,10 @@
     }
 
     document.getElementById('delete-confirm').addEventListener('click', async () => {
+      if (!canDeleteRag) {
+        showError('你沒有刪除資料集的權限');
+        return;
+      }
       if (!deleteTargetId) return;
       try {
         await api.delete(`/rag/datasets/${encodeURIComponent(deleteTargetId)}`);
@@ -448,8 +562,8 @@
             <td style="white-space:nowrap;">
               <button class="btn" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
               <button class="btn" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
-              <button class="btn" data-edit="${item.id}">編輯</button>
-              <button class="btn btn-danger" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>
+              ${canUpdateRag ? `<button class="btn" data-edit="${item.id}">編輯</button>` : ''}
+              ${canDeleteRag ? `<button class="btn btn-danger" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
             </td>
           </tr>
         `).join('');
@@ -501,8 +615,22 @@
       return new Date(isoString).toLocaleString('zh-TW');
     }
 
+    function formatIndexStatusLabel(status, stage) {
+      const normalizedStatus = String(status || '').trim().toLowerCase();
+      const normalizedStage = String(stage || '').trim();
+      if (normalizedStatus === 'ready') return '完成';
+      if (normalizedStatus === 'failed') return '失敗';
+      if (normalizedStatus === 'queued') return '排隊中';
+      if (normalizedStatus === 'indexing') return normalizedStage ? `索引中（${normalizedStage}）` : '索引中';
+      if (normalizedStatus === 'uploaded') return '已上傳';
+      return normalizedStatus || '-';
+    }
+
     // 初始載入
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

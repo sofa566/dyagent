@@ -19,8 +19,11 @@ async def get_logs(
     limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-):
-    if not check_permission(current_user, 'read_logs'):
+): 
+    if not (
+        check_permission(current_user, 'logs.read', db=db)
+        or check_permission(current_user, 'read_logs', db=db)
+    ):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -62,8 +65,11 @@ async def get_log(
     log_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-):
-    if not check_permission(current_user, 'read_logs'):
+): 
+    if not (
+        check_permission(current_user, 'logs.read', db=db)
+        or check_permission(current_user, 'read_logs', db=db)
+    ):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 

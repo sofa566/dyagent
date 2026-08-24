@@ -91,26 +91,35 @@
     </table>
   </main>
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
     if (!auth.isAuthenticated()) { window.location.href = '/pages/login.html'; }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    if (!hasPermission(capabilities, 'skills.read')) {
       document.getElementById('error-message').textContent = '僅限管理者存取';
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
+    const canCreateSkill = hasPermission(capabilities, 'skills.create');
+    const canUpdateSkill = hasPermission(capabilities, 'skills.update');
+    const canDeleteSkill = hasPermission(capabilities, 'skills.delete');
 
     const $ = (id) => document.getElementById(id);
     const rows = $('rows');
     const importModal = $('import-modal');
     let parsedZip = null;
 
+    if (!canCreateSkill) {
+      $('btn-new').style.display = 'none';
+      $('btn-import-zip').style.display = 'none';
+    }
+
     async function load() {
       try {
         const res = await api.get('/skills');
         const list = Array.isArray(res.skills) ? res.skills : [];
         if (list.length === 0) {
-          rows.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2rem;">尚無技能，請點擊「新增技能」或「匯入 ZIP」</td></tr>';
+          rows.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:2rem;">尚無技能${canCreateSkill ? '，請點擊「新增技能」或「匯入 ZIP」' : ''}</td></tr>`;
         } else {
           rows.innerHTML = list.map(s => {
             // 技能格式 badge
@@ -134,8 +143,8 @@
               <td>${s.type || 'webhook'}</td>
               <td>${s.description || ''}</td>
               <td>
-                <a class="btn" href="/pages/skill-edit.html?id=${s.id}">編輯</a>
-                <button class="btn" data-del="${s.id}">刪除</button>
+                ${canUpdateSkill ? `<a class="btn" href="/pages/skill-edit.html?id=${s.id}">編輯</a>` : '<span class="muted">唯讀</span>'}
+                ${canDeleteSkill ? `<button class="btn" data-del="${s.id}">刪除</button>` : ''}
               </td>
             </tr>`;
           }).join('');
@@ -146,6 +155,10 @@
     rows.addEventListener('click', async (e) => {
       const id = e.target.getAttribute('data-del');
       if (id) {
+        if (!canDeleteSkill) {
+          showError('你沒有刪除技能的權限');
+          return;
+        }
         const ok = window.confirm('確定刪除此技能？');
         if (!ok) return;
         try { await api.delete(`/skills/${id}`); load(); } catch (e) { showError(e.message || '刪除失敗'); }
@@ -179,6 +192,10 @@
     }
 
     async function parseZip() {
+      if (!canCreateSkill) {
+        showError('你沒有建立技能的權限');
+        return;
+      }
       const file = $('zip-file').files?.[0];
       if (!file) {
         showError('請選擇 ZIP 檔案');
@@ -230,6 +247,10 @@
     }
 
     async function confirmImport() {
+      if (!canCreateSkill) {
+        showError('你沒有建立技能的權限');
+        return;
+      }
       const file = $('zip-file').files?.[0];
       if (!file || !parsedZip) {
         showError('請先解析 ZIP 檔案');
@@ -270,6 +291,9 @@
 
     // 初始載入
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

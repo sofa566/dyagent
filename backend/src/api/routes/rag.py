@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from src.api.errors import forbidden_error, not_found_error
@@ -26,6 +26,7 @@ from src.core.logging import get_logger
 from src.middleware.auth import decode_token, get_current_user, security
 from src.middleware.rbac import check_permission
 from src.models import Agent, Document, RagDataset, User
+from src.services.access_control_service import access_control_service
 from src.services.embedding_service import embedding_service
 from src.services.qdrant_service import qdrant_service
 from src.services.rag_vectorizer import iter_chunk_text, iter_chunk_text_with_pages
@@ -90,6 +91,23 @@ def _dataset_upload_dir(dataset_row: RagDataset) -> Path:
     if dataset_row.scope == 'agent_private':
         return UPLOAD_ROOT / 'private' / str(dataset_row.id)
     return UPLOAD_ROOT / 'global' / str(dataset_row.id)
+
+
+def _has_any_permission(*, current_user: User, db: Session, permission_keys: list[str]) -> bool:
+    return any(check_permission(current_user, permission_key, db=db) for permission_key in (permission_keys or []))
+
+
+def _build_dataset_execute_permission_keys(*, dataset: RagDataset) -> set[str]:
+    # 目的：產生資料集可對應的 execute 權限鍵集合。
+    # 為什麼：刪除資料集時需同步清理既有 id/name 形式的歷史權限鍵。
+    permission_keys: set[str] = set()
+    dataset_id = str(getattr(dataset, 'id', '') or '').strip()
+    if dataset_id:
+        permission_keys.add(f'entity.dataset.{dataset_id}.execute')
+    dataset_name = str(getattr(dataset, 'name', '') or '').strip()
+    if dataset_name:
+        permission_keys.add(f'entity.dataset.{dataset_name}.execute')
+    return permission_keys
 
 
 def _dataset_progress_dir_by_dataset_id(dataset_id: str) -> Path:
@@ -192,6 +210,13 @@ def _iter_progress_files() -> Iterator[Path]:
         if candidate.parent.name != INDEX_PROGRESS_DIR_NAME:
             continue
         yield candidate
+
+
+def _embed_texts_for_indexing(texts: list[str]) -> list[list[float]]:
+    try:
+        return embedding_service.embed_texts(texts, allow_fallback=False)
+    except TypeError:
+        return embedding_service.embed_texts(texts)
 
 
 def _count_active_index_jobs() -> int:
@@ -424,14 +449,15 @@ def _resolve_dataset_document_context(
             if not is_public_readable:
                 raise forbidden_error('Authentication required')
         else:
-            can_chat = check_permission(current_user, 'chat')
-            can_read_agent = check_permission(current_user, 'read_agent')
-            if not (current_user.role == 'admin' or (is_public_readable and (can_chat or can_read_agent))):
+            can_chat = check_permission(current_user, 'chat', db=db)
+            can_read_agent = check_permission(current_user, 'read_agent', db=db)
+            can_read_rag = check_permission(current_user, 'rag.read', db=db)
+            if not (can_read_rag or (is_public_readable and (can_chat or can_read_agent))):
                 raise forbidden_error()
     elif row.scope == 'agent_private':
         if current_user is None:
             raise forbidden_error('Authentication required')
-        if not check_permission(current_user, 'read_agent'):
+        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.read', 'read_agent']):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -907,7 +933,7 @@ def _index_document_chunks(
         if not texts:
             return True, ready, 0, None
 
-        vectors = embedding_service.embed_texts(texts, allow_fallback=False)
+        vectors = _embed_texts_for_indexing(texts)
         if len(vectors) != len(texts):
             return False, ready, 0, f'embedding_count_mismatch:expected={len(texts)}:actual={len(vectors)}'
         if not vectors:
@@ -1009,7 +1035,7 @@ def _index_dataset_chunks(
         if not texts:
             return True, ready, 0, None
 
-        vectors = embedding_service.embed_texts(texts, allow_fallback=False)
+        vectors = _embed_texts_for_indexing(texts)
         if len(vectors) != len(texts):
             return False, ready, 0, f'embedding_count_mismatch:expected={len(texts)}:actual={len(vectors)}'
         if not vectors:
@@ -1679,7 +1705,7 @@ async def upload_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         raise forbidden_error()
 
     # Validate UUID to avoid DB binding errors
@@ -1757,6 +1783,7 @@ async def upload_document(
     status = 'uploaded'
     last_error = None
     if file_size_bytes > MAX_SYNC_INDEX_FILE_BYTES:
+        last_error = extract_error
         progress_file_path = str(_dataset_progress_dir_by_dataset_id(str(agent_id)) / f'{file_key}.json')
         _write_progress_file(
             progress_file_path=progress_file_path,
@@ -1782,10 +1809,8 @@ async def upload_document(
                 },
             )
             _dispatch_index_jobs_safely()
-            latest_progress_payload = _read_progress_file(progress_file_path=progress_file_path)
-            latest_status = str(latest_progress_payload.get('status') or '').strip().lower()
-            status = latest_status if latest_status in {'queued', 'indexing'} else 'queued'
-            last_error = None
+            _read_progress_file(progress_file_path=progress_file_path)
+            status = 'indexing'
         except Exception as error:
             status = 'failed'
             last_error = f'background_index_queue_failed:{error.__class__.__name__}'
@@ -1837,7 +1862,7 @@ async def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not check_permission(current_user, 'read_agent', db=db):
         raise forbidden_error()
 
     # Validate UUID to avoid DB binding errors
@@ -1877,7 +1902,7 @@ async def delete_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         raise forbidden_error()
 
     # Validate UUIDs
@@ -1936,12 +1961,12 @@ async def upload_dataset_document(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
-    # 權限檢查：公有資料集需要 admin，私有資料集需要 read_agent 權限
+    # 權限檢查：公有資料集需要 rag.create，私有資料集接受 rag.create 或 update_agent。
     if row.scope == 'global':
-        if current_user.role != 'admin':
+        if not check_permission(current_user, 'rag.create', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not check_permission(current_user, 'update_agent'):
+        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.create', 'update_agent']):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -2023,10 +2048,8 @@ async def upload_dataset_document(
                 },
             )
             _dispatch_index_jobs_safely()
-            latest_progress_payload = _read_progress_file(progress_file_path=progress_file_path)
-            latest_status = str(latest_progress_payload.get('status') or '').strip().lower()
-            status = latest_status if latest_status in {'queued', 'indexing'} else 'queued'
-            extract_error = None
+            _read_progress_file(progress_file_path=progress_file_path)
+            status = 'indexing'
         except Exception as error:
             status = 'failed'
             extract_error = f'background_index_queue_failed:{error.__class__.__name__}'
@@ -2113,7 +2136,7 @@ async def list_rag_datasets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not check_permission(current_user, 'rag.read', db=db):
         raise forbidden_error()
 
     q = db.query(RagDataset)
@@ -2133,13 +2156,14 @@ async def list_selectable_rag_datasets(
 ):
     # 目的：提供聊天介面可選資料集清單。
     # 為什麼：一般聊天使用者沒有 read_agent 權限，直接呼叫 /rag/datasets 會 403。
-    can_chat = check_permission(current_user, 'chat')
-    can_read_agent = check_permission(current_user, 'read_agent')
-    if not can_chat and not can_read_agent:
+    can_chat = check_permission(current_user, 'chat', db=db)
+    can_read_rag = check_permission(current_user, 'rag.read', db=db)
+    can_read_agent = check_permission(current_user, 'read_agent', db=db)
+    if not can_chat and not can_read_agent and not can_read_rag:
         raise forbidden_error()
 
     if not agent_id:
-        if not can_read_agent:
+        if not can_read_agent and not can_read_rag:
             return {'datasets': []}
         rows = db.query(RagDataset).filter(
             RagDataset.scope == 'global',
@@ -2205,7 +2229,7 @@ async def create_global_rag_dataset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != 'admin':
+    if not check_permission(current_user, 'rag.create', db=db):
         raise forbidden_error()
 
     name = str((payload or {}).get('name') or '').strip()
@@ -2240,7 +2264,7 @@ async def update_global_rag_dataset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != 'admin':
+    if not check_permission(current_user, 'rag.update', db=db):
         raise forbidden_error()
 
     try:
@@ -2284,7 +2308,7 @@ async def delete_global_rag_dataset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != 'admin':
+    if not check_permission(current_user, 'rag.delete', db=db):
         raise forbidden_error()
 
     try:
@@ -2296,7 +2320,9 @@ async def delete_global_rag_dataset(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
+    permission_keys_to_remove = _build_dataset_execute_permission_keys(dataset=row)
     db.delete(row)
+    access_control_service.remove_permission_keys(db, sorted(permission_keys_to_remove))
     db.commit()
     return {'ok': True, 'id': dataset_id}
 
@@ -2318,12 +2344,12 @@ async def list_dataset_documents(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
-    # 權限檢查：公有資料集需要 admin，私有資料集需要 read_agent 權限
+    # 權限檢查：公有資料集需要 rag.read，私有資料集接受 rag.read 或 read_agent。
     if row.scope == 'global':
-        if current_user.role != 'admin':
+        if not check_permission(current_user, 'rag.read', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not check_permission(current_user, 'read_agent'):
+        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.read', 'read_agent']):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -2487,10 +2513,10 @@ async def delete_dataset_document(
         raise not_found_error('RagDataset', dataset_id)
 
     if row.scope == 'global':
-        if current_user.role != 'admin':
+        if not check_permission(current_user, 'rag.delete', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not check_permission(current_user, 'read_agent'):
+        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.delete', 'update_agent']):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -2500,6 +2526,13 @@ async def delete_dataset_document(
     if not target_path.exists() or not target_path.is_file():
         raise not_found_error('Document', normalized_file_key)
 
+    progress_file = _dataset_progress_file_path(dataset_row=row, file_key=normalized_file_key)
+    progress_payload = _read_progress_file(progress_file_path=str(progress_file))
+    normalized_status = str(progress_payload.get('status') or '').strip().lower()
+    if normalized_status in {'queued', 'indexing'}:
+        from src.api.errors import validation_error
+        raise validation_error('文件仍在排隊或索引中，請待狀態完成後再刪除')
+
     file_deleted = False
     try:
         os.remove(target_path)
@@ -2508,7 +2541,6 @@ async def delete_dataset_document(
         file_deleted = False
 
     try:
-        progress_file = _dataset_progress_file_path(dataset_row=row, file_key=normalized_file_key)
         if progress_file.exists() and progress_file.is_file():
             os.remove(progress_file)
     except Exception:
@@ -2568,17 +2600,31 @@ async def search_dataset(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
-    # 權限檢查：公有資料集需要 admin，私有資料集需要 read_agent 權限
+    # 權限檢查：公有資料集需要 rag.read，私有資料集接受 rag.read 或 read_agent。
     if row.scope == 'global':
-        if current_user.role != 'admin':
+        if not check_permission(current_user, 'rag.read', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not check_permission(current_user, 'read_agent'):
+        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.read', 'read_agent']):
             raise forbidden_error()
     else:
         raise forbidden_error()
 
     collection = _dataset_collection_name(row)
+    vector_size = qdrant_service.get_collection_vector_size(collection_name=collection)
+    if vector_size is None:
+        elapsed_ms = int((time.time() - start) * 1000)
+        return {
+            'ok': True,
+            'dataset_id': str(row.id),
+            'collection': collection,
+            'query': query,
+            'elapsed_ms': elapsed_ms,
+            'results': [],
+            'total_found': 0,
+            'warning': 'collection_not_ready',
+            'message': '索引集合尚未建立，請先確認檔案索引完成',
+        }
 
     try:
         query_vector = embedding_service.embed_one(query)

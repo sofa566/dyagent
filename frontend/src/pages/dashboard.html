@@ -6,6 +6,11 @@
   <title>儀表板 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
   <style>
+    .tab-bar { display: inline-flex; border: 1px solid var(--border-color); border-radius: var(--radius); overflow: hidden; margin: 8px 0 14px; }
+    .tab-btn { border: none; background: #fff; color: var(--text-secondary); padding: 8px 14px; cursor: pointer; }
+    .tab-btn.active { background: var(--primary-color); color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
     .stat { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; background: #fff; }
     .stat .label { color: var(--text-secondary); font-size: 0.85rem; }
@@ -19,6 +24,9 @@
     table.metrics th, table.metrics td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
     table.metrics th { color: var(--text-secondary); font-weight: 600; }
     table.metrics th.num, table.metrics td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    table.logs { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    table.logs th, table.logs td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
+    table.logs th { color: var(--text-secondary); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -35,63 +43,85 @@
       </div>
     </nav>
     <main class="container">
-      <h2>系統監控儀表板</h2>
-      <div id="user-info" class="card">
-        <p>歡迎使用 dyagent</p>
+      <h2>系統監控中心</h2>
+
+      <div class="tab-bar" id="dashboard-tab-bar">
+        <button id="tab-monitor" class="tab-btn active" type="button">系統監控儀表板</button>
+        <button id="tab-logs" class="tab-btn" type="button">系統日誌</button>
       </div>
 
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <strong>即時狀態</strong>
-          <div class="mono" id="updated-at">更新中...</div>
+      <section id="monitor-panel" class="tab-panel active">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <strong>即時狀態</strong>
+            <div class="mono" id="updated-at">更新中...</div>
+          </div>
+          <div id="services" class="stats-grid"></div>
         </div>
-        <div id="services" class="stats-grid"></div>
-      </div>
 
-      <div class="card">
-        <h3 class="section-title">系統資源</h3>
-        <div id="resources" class="stats-grid"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">系統資源</h3>
+          <div id="resources" class="stats-grid"></div>
+        </div>
 
-      <div class="card">
-        <h3 class="section-title">代理者 / 使用者 / 流量</h3>
-        <div id="core-stats" class="stats-grid"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">代理者 / 使用者 / 流量</h3>
+          <div id="core-stats" class="stats-grid"></div>
+        </div>
 
-      <div class="card">
-        <h3 class="section-title">LLM / ReAct 使用狀態（近 24 小時）</h3>
-        <div id="llm-stats" class="stats-grid"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">LLM / ReAct 使用狀態（近 24 小時）</h3>
+          <div id="llm-stats" class="stats-grid"></div>
+        </div>
 
-      <div class="card">
-        <h3 class="section-title">代理者 Token / Cost（近 24 小時）</h3>
-        <div id="agent-llm-breakdown" class="table-wrap"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">代理者 Token / Cost（近 24 小時）</h3>
+          <div id="agent-llm-breakdown" class="table-wrap"></div>
+        </div>
 
-      <div class="actions">
-        <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
-        <a href="/pages/chat.html" class="btn btn-primary">前往聊天</a>
-        <button id="refresh-btn" class="btn btn-secondary" type="button">立即刷新</button>
-      </div>
+        <div class="actions">
+          <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
+          <a href="/pages/chat.html" class="btn btn-primary">前往聊天</a>
+          <button id="refresh-btn" class="btn btn-secondary" type="button">立即刷新</button>
+        </div>
+      </section>
+
+      <section id="logs-panel" class="tab-panel">
+        <div class="card">
+          <div class="form-group">
+            <label for="level-filter">日誌級別：</label>
+            <select id="level-filter">
+              <option value="">全部</option>
+              <option value="debug">Debug</option>
+              <option value="info">Info</option>
+              <option value="warning">Warning</option>
+              <option value="error">Error</option>
+            </select>
+          </div>
+        </div>
+        <div id="logs-list" class="card"><p>載入中...</p></div>
+      </section>
     </main>
   </div>
   <script type="module">
-    import { api, auth } from '/main.js';
+    import { api, auth, getCapabilities, hasAnyPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
 
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
-      window.location.href = '/pages/chat.html';
-    }
+    let logsLoaded = false;
+    let hasMonitorPermission = false;
+    let hasLogsPermission = false;
 
-    if (user && user.role === 'admin') {
-      document.getElementById('user-info').innerHTML = `
-        <p>歡迎，<strong>${user.username}</strong>！</p>
-        <span class="badge badge-admin">admin</span>
-      `;
+    function setActiveTab(tabName) {
+      document.getElementById('tab-monitor').classList.toggle('active', tabName === 'monitor');
+      document.getElementById('tab-logs').classList.toggle('active', tabName === 'logs');
+      document.getElementById('monitor-panel').classList.toggle('active', tabName === 'monitor');
+      document.getElementById('logs-panel').classList.toggle('active', tabName === 'logs');
+      if (tabName === 'logs' && hasLogsPermission && !logsLoaded) {
+        loadLogs();
+      }
     }
 
     function mkStat(label, value) {
@@ -247,8 +277,88 @@
       }
     }
 
-    document.getElementById('refresh-btn').addEventListener('click', refreshWithGuard);
-    runRealtimeOrFallback();
+    async function loadLogs(level = '') {
+      try {
+        let url = '/logs?limit=50';
+        if (level) {
+          url += `&level=${level}`;
+        }
+        const response = await api.get(url);
+        const container = document.getElementById('logs-list');
+
+        if (!Array.isArray(response.logs) || response.logs.length === 0) {
+          container.innerHTML = '<p>尚無日誌記錄</p>';
+          logsLoaded = true;
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="table-wrap">
+            <table class="logs">
+              <thead>
+                <tr>
+                  <th>時間</th>
+                  <th>級別</th>
+                  <th>動作</th>
+                  <th>資源類型</th>
+                  <th>使用者 ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${response.logs.map(log => `
+                  <tr>
+                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td>${log.level}</td>
+                    <td>${log.action}</td>
+                    <td>${log.resource_type || '-'}</td>
+                    <td>${log.user_id ? `${String(log.user_id).substring(0, 8)}...` : '-'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+        logsLoaded = true;
+      } catch (e) {
+        document.getElementById('logs-list').innerHTML = `<p>載入失敗：${(e && e.message) || 'unknown'}</p>`;
+      }
+    }
+
+    async function initializeDashboardPage() {
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      hasMonitorPermission = hasAnyPermission(capabilities, ['dashboard.read']);
+      hasLogsPermission = hasAnyPermission(capabilities, ['logs.read']);
+      if (!hasMonitorPermission && !hasLogsPermission) {
+        window.location.href = '/pages/chat.html';
+        return;
+      }
+
+      const monitorTab = document.getElementById('tab-monitor');
+      const logsTab = document.getElementById('tab-logs');
+
+      if (!hasMonitorPermission) {
+        monitorTab.style.display = 'none';
+        document.getElementById('monitor-panel').classList.remove('active');
+      } else {
+        monitorTab.addEventListener('click', () => setActiveTab('monitor'));
+        document.getElementById('refresh-btn').addEventListener('click', refreshWithGuard);
+        runRealtimeOrFallback();
+      }
+
+      if (!hasLogsPermission) {
+        logsTab.style.display = 'none';
+        document.getElementById('logs-panel').classList.remove('active');
+      } else {
+        logsTab.addEventListener('click', () => setActiveTab('logs'));
+        document.getElementById('level-filter').addEventListener('change', (event) => {
+          loadLogs(event.target.value);
+        });
+      }
+
+      setActiveTab(hasMonitorPermission ? 'monitor' : 'logs');
+    }
+
+    initializeDashboardPage();
 
     // 登出事件由 /main.js 統一掛載，並提供確認視窗
   </script>

@@ -2,7 +2,7 @@
 
 **Feature Branch**: `006-users-roles`  
 **Created**: 2026-07-30  
-**Status**: Draft  
+**Status**: In Progress  
 **Input**: User description: "補齊使用者、群組、角色的建立/編輯；採 B 模式（User 與 Group 皆可多對多掛載 Role）；登入後介面即時顯示可執行功能，無權限功能不可見。"
 
 ## 使用者情境與測試（必要）
@@ -113,3 +113,14 @@
 
 - 本功能採 **B 模式**：`User ↔ Role`、`Group ↔ Role` 皆為多對多，且 `User ↔ Group` 亦為多對多。
 - 「看不到功能」屬前端體驗策略；真正授權必須由後端權限檢查保證。
+
+## UI 驗收腳本（手動）
+
+1. 以管理者登入後，進入「權限管理」頁。
+2. 建立角色 `skill_manager`，權限填入 `skills.read`、`skills.update`。
+3. 建立群組 `ops_group`。
+4. 將 `skill_manager` 綁定到 `ops_group`。
+5. 將測試使用者加入 `ops_group`，並重新整理該使用者頁面。
+6. 驗證導覽列出現技能管理入口，且可進入相應頁面。
+7. 移除 `skills.update` 後，重新整理同一帳號頁面，驗證編輯能力入口消失。
+8. 以該使用者直接呼叫無權限更新 API，驗證回應 403。

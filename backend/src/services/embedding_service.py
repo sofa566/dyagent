@@ -42,6 +42,25 @@ class EmbeddingService:
         vectors = self.embed_texts([text])
         return vectors[0] if vectors else text_to_vector(str(text or ''))
 
+    def preflight_for_bulk_index(self) -> tuple[bool, str | None]:
+        # 目的：在大量索引前先檢查目前 embedding provider 是否可用。
+        # 為什麼：避免文件上傳成功後才在索引末段失敗，造成使用者等待與重試成本。
+        provider = str(settings.EMBEDDING_PROVIDER or 'deterministic').strip().lower()
+        probe_texts = ['embedding preflight']
+
+        if provider == 'deterministic':
+            return True, None
+        if provider == 'sentence_transformers':
+            vectors = self._embed_by_sentence_transformers(probe_texts)
+            return (True, None) if vectors else (False, 'embedding_provider_unavailable:sentence_transformers')
+        if provider == 'ollama':
+            vectors = self._embed_by_ollama(probe_texts)
+            return (True, None) if vectors else (False, 'embedding_provider_unavailable:ollama')
+        if provider == 'vllm':
+            vectors = self._embed_by_vllm(probe_texts)
+            return (True, None) if vectors else (False, 'embedding_provider_unavailable:vllm')
+        return False, f'embedding_provider_unknown:{provider}'
+
     def _embed_by_sentence_transformers(self, texts: List[str]) -> List[list[float]]:
         try:
             if self._st_model is None:

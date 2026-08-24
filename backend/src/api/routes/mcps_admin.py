@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.models import MCPConnection, User
 from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_role, Role
+from src.middleware.rbac import require_permission
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.mcp_client import MCPClient
@@ -92,7 +92,7 @@ def _to_dict(m: MCPConnection) -> dict[str, Any]:
 
 
 @router.get('/mcps')
-@require_role([Role.ADMIN])
+@require_permission('mcp.read')
 async def list_mcps(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -107,7 +107,7 @@ async def list_selectable_mcps(
     current_user: User = Depends(get_current_user),
 ):
     """提供可被代理者綁定的 MCP 清單（admin / agent_admin 可用）。"""
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     rows = db.query(MCPConnection).filter(MCPConnection.enabled == True).order_by(MCPConnection.created_at.desc()).all()  # noqa: E712
@@ -115,7 +115,7 @@ async def list_selectable_mcps(
 
 
 @router.post('/mcps')
-@require_role([Role.ADMIN])
+@require_permission('mcp.create')
 async def create_mcp(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -148,7 +148,7 @@ async def create_mcp(
 
 
 @router.get('/mcps/{mcp_id}')
-@require_role([Role.ADMIN])
+@require_permission('mcp.read')
 async def get_mcp(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -161,7 +161,7 @@ async def get_mcp(
 
 
 @router.put('/mcps/{mcp_id}')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def update_mcp(
     mcp_id: str,
     payload: dict[str, Any] = Body(...),
@@ -188,7 +188,7 @@ async def update_mcp(
 
 
 @router.post('/mcps/{mcp_id}/test')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def test_mcp(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -246,7 +246,7 @@ async def test_mcp(
 
 
 @router.get('/mcps/{mcp_id}/tests')
-@require_role([Role.ADMIN])
+@require_permission('mcp.read')
 async def list_mcp_tests(
     mcp_id: str,
     limit: int = 20,
@@ -263,7 +263,7 @@ async def list_mcp_tests(
 
 
 @router.delete('/mcps/{mcp_id}/tests')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def delete_mcp_tests(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -276,7 +276,7 @@ async def delete_mcp_tests(
 
 
 @router.post('/mcps/{mcp_id}/discover-schema')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def discover_mcp_schema(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -302,7 +302,7 @@ async def discover_mcp_schema(
 
 
 @router.post('/mcps/discover-schema-preview')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def discover_mcp_schema_preview(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -325,7 +325,7 @@ async def discover_mcp_schema_preview(
 
 
 @router.delete('/mcps/{mcp_id}')
-@require_role([Role.ADMIN])
+@require_permission('mcp.delete')
 async def delete_mcp(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -340,7 +340,7 @@ async def delete_mcp(
 
 
 @router.post('/mcps/import-mcpservers')
-@require_role([Role.ADMIN])
+@require_permission('mcp.create')
 async def import_mcpservers(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),

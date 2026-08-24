@@ -272,21 +272,50 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    const canReadMcp = hasPermission(capabilities, 'mcp.read');
+    const canCreateMcp = hasPermission(capabilities, 'mcp.create');
+    const canUpdateMcp = hasPermission(capabilities, 'mcp.update');
+
+    const u = new URL(window.location.href);
+    const id = u.searchParams.get('id');
+    const isEditMode = !!id;
+    if ((isEditMode && !canReadMcp) || (!isEditMode && !canCreateMcp)) {
       showError('僅限管理者存取');
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
-
-    const u = new URL(window.location.href);
-    const id = u.searchParams.get('id');
+    const canSaveMcp = isEditMode ? canUpdateMcp : canCreateMcp;
+    const canOperateMcp = isEditMode && canUpdateMcp;
     const $ = (sel) => document.getElementById(sel);
+
+    if (!canSaveMcp) {
+      const saveButton = $('save');
+      if (saveButton) {
+        saveButton.disabled = true;
+      }
+      const discoverButton = $('discover-schema');
+      if (discoverButton) {
+        discoverButton.disabled = true;
+      }
+      const testButton = $('test');
+      if (testButton) {
+        testButton.disabled = true;
+      }
+      const clearHistoryButton = $('btn-clear-history');
+      if (clearHistoryButton) {
+        clearHistoryButton.disabled = true;
+      }
+      document.querySelectorAll('input, textarea, select').forEach((element) => {
+        element.disabled = true;
+      });
+    }
 
     // ========== 分頁切換 ==========
     function setActiveTab(mode) {
@@ -385,6 +414,10 @@
     }
 
     async function save() {
+      if (!canSaveMcp) {
+        showError('你沒有儲存 MCP 的權限');
+        return;
+      }
       try {
         const transport = $('transport').value;
         const commandValue = $('command').value.trim();
@@ -433,6 +466,10 @@
 
     // ========== 自動載入 Schema ==========
     $('discover-schema').addEventListener('click', async () => {
+      if (!canSaveMcp) {
+        showError('你沒有更新 MCP 的權限');
+        return;
+      }
       try {
         const payload = {
           name: $('name').value.trim(),
@@ -491,6 +528,10 @@
 
     // ========== 測試連線 ==========
     $('test').addEventListener('click', async () => {
+      if (!canOperateMcp) {
+        showError('你沒有測試 MCP 的權限');
+        return;
+      }
       try {
         if (!id) {
           showError('請先儲存後再測試');
@@ -544,6 +585,10 @@
 
     // ========== 清除歷史記錄 ==========
     $('btn-clear-history').addEventListener('click', async () => {
+      if (!canOperateMcp) {
+        showError('你沒有清除 MCP 測試紀錄的權限');
+        return;
+      }
       if (!id) {
         showError('尚未儲存，無法清除');
         return;
@@ -953,6 +998,9 @@
 
     // ========== 初始化 ==========
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

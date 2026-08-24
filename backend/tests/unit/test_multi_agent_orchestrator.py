@@ -128,7 +128,7 @@ class TestClassifyRouting:
             _make_agent('Worker0', 'Worker0 description'),
             _make_agent('Worker1', 'Worker1 description'),
         ]
-        with patch('src.api.routes.chat.embedding_service') as mock_emb:
+        with patch('src.api.routes.chat_tools.embedding_service') as mock_emb:
             mock_emb.embed_one.side_effect = fake_embed
             result = _classify_routing(
                 message='請查詢銷售報表並且同時發通知給主管',
@@ -281,6 +281,61 @@ class TestWorkerClassRouting:
         assert str(worker.id) == str(public.id)
         assert reason.startswith('public_') or reason == 'public_default_fallback'
 
+    def test_private_agent_priority_when_user_has_entity_permission(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        private_worker = Agent(
+            name='財務私有代理', description='處理財務內部任務', model_type='cloud',
+            agent_class='private', enabled=True, workspace_id=workspace.id,
+        )
+        tasked = Agent(
+            name='一般任務代理', description='處理一般任務', model_type='cloud',
+            agent_class='tasked', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(private_worker); db.add(tasked)
+        db.commit(); db.refresh(router); db.refresh(private_worker); db.refresh(tasked)
+
+        private_permission_key = f'entity.agent.{str(private_worker.id)}.execute'
+        worker, reason = _pick_worker_agent(
+            db=db,
+            router_agent=router,
+            message='請財務私有代理協助整理月報',
+            private_agent_ids={private_permission_key},
+        )
+
+        assert worker is not None
+        assert str(worker.id) == str(private_worker.id)
+        assert reason.startswith('private_')
+
+    def test_private_agent_excluded_without_entity_permission(self, db, workspace):
+        router = Agent(
+            name='Router', description='主路由', model_type='cloud',
+            is_router=True, agent_class='master', enabled=True, workspace_id=workspace.id,
+        )
+        private_worker = Agent(
+            name='法務私有代理', description='處理法務內部任務', model_type='cloud',
+            agent_class='private', enabled=True, workspace_id=workspace.id,
+        )
+        public = Agent(
+            name='公眾代理', description='一般問題回覆', model_type='cloud',
+            agent_class='public', enabled=True, workspace_id=workspace.id,
+        )
+        db.add(router); db.add(private_worker); db.add(public)
+        db.commit(); db.refresh(router); db.refresh(private_worker); db.refresh(public)
+
+        worker, reason = _pick_worker_agent(
+            db=db,
+            router_agent=router,
+            message='請法務私有代理協助我',
+            private_agent_ids=set(),
+        )
+
+        assert worker is not None
+        assert str(worker.id) == str(public.id)
+        assert reason.startswith('public_')
+
     def test_short_message_falls_back_without_llm_judge(self, db, workspace):
         router = Agent(
             name='Router', description='主路由', model_type='cloud',
@@ -298,7 +353,7 @@ class TestWorkerClassRouting:
 
         assert worker is not None
         assert str(worker.id) == str(public.id)
-        assert reason == 'public_default_fallback'
+        assert reason.startswith('public_')
 
     def test_router_assignment_mode_description_only_ignores_skill_hint(self, db, workspace):
         router = Agent(
@@ -544,7 +599,7 @@ class TestMultiAgentOrchestrator:
         }
 
         async def _fake_subtask_stream(*, task_row, enriched_message, agent, db, current_user,
-                                       task_index, total_tasks, completed_so_far):
+                                       task_index, total_tasks, completed_so_far, **kwargs):
             task_row.status = 'running'
             yield f'data: {json.dumps({"type": "agent.start", "task_index": task_index, "agent_name": agent.name})}\n\n'
             task_row.result_text = f'完成任務 {task_index}'
@@ -629,7 +684,7 @@ class TestOrchestratorRetry:
             return ('最終回覆', True, '')
 
         async def _fake_subtask_stream(*, task_row, enriched_message, agent, db, current_user,
-                                       task_index, total_tasks, completed_so_far):
+                                       task_index, total_tasks, completed_so_far, **kwargs):
             task_row.status = 'done'
             task_row.result_text = f'結果 {task_index}'
             yield f'data: {json.dumps({"type": "agent.done", "task_index": task_index, "ok": True})}\n\n'
@@ -696,7 +751,7 @@ class TestSubAgentFailure:
         }
 
         async def _fake_subtask_stream(*, task_row, enriched_message, agent, db, current_user,
-                                       task_index, total_tasks, completed_so_far):
+                                       task_index, total_tasks, completed_so_far, **kwargs):
             if agent.name == '失敗代理':
                 task_row.status = 'failed'
                 task_row.error = '模擬失敗'

@@ -273,18 +273,53 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
+    (async () => {
 
     const u = new URL(window.location.href);
     const id = u.searchParams.get('id');
     const isEditMode = !!id;
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    const canReadSkill = hasPermission(capabilities, 'skills.read');
+    const canCreateSkill = hasPermission(capabilities, 'skills.create');
+    const canUpdateSkill = hasPermission(capabilities, 'skills.update');
+    if ((isEditMode && !canReadSkill) || (!isEditMode && !canCreateSkill)) {
+      showError('僅限管理者存取');
+      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+      throw new Error('forbidden');
+    }
+    const canSaveSkill = isEditMode ? canUpdateSkill : canCreateSkill;
+    const canTestSkill = isEditMode && canUpdateSkill;
     const $ = (sel) => document.getElementById(sel);
     let inputSchemaTouched = false;
     let lastInputSchemaText = '';
+
+    if (!canSaveSkill) {
+      const saveButton = $('save');
+      if (saveButton) {
+        saveButton.disabled = true;
+      }
+      document.querySelectorAll('input, textarea, select').forEach((element) => {
+        if (element.id === 'test_payload') {
+          return;
+        }
+        element.disabled = true;
+      });
+    }
+    if (!canTestSkill) {
+      const testButton = $('btn-test');
+      if (testButton) {
+        testButton.disabled = true;
+      }
+      const clearHistoryButton = $('btn-clear-history');
+      if (clearHistoryButton) {
+        clearHistoryButton.disabled = true;
+      }
+    }
 
     if (isEditMode) {
       $('skill_type').disabled = true;
@@ -341,6 +376,10 @@
     }
 
     async function parseZipFile() {
+      if (!canSaveSkill) {
+        showError('你沒有編輯技能的權限');
+        return;
+      }
       const fileInput = $('zip_file');
       const file = fileInput.files?.[0];
       if (!file) {
@@ -469,6 +508,10 @@
 
     // ========== 儲存技能 ==========
     async function save() {
+      if (!canSaveSkill) {
+        showError('你沒有儲存技能的權限');
+        return;
+      }
       try {
         const uiSkillType = $('skill_type').value;
         const endpointUrl = $('endpoint_url').value.trim();
@@ -697,6 +740,10 @@
 
     // ========== 執行測試 ==========
     $('btn-test').addEventListener('click', async () => {
+      if (!canTestSkill) {
+        showError('你沒有測試技能的權限');
+        return;
+      }
       const err = $('test-error');
       const out = $('test-result');
       err.style.display = 'none';
@@ -963,6 +1010,10 @@
     }
 
     $('btn-clear-history').addEventListener('click', async () => {
+      if (!canTestSkill) {
+        showError('你沒有清除測試紀錄的權限');
+        return;
+      }
       if (!id) return;
       if (!confirm('確定要清除所有測試紀錄嗎？')) return;
       try {
@@ -983,6 +1034,9 @@
     load();
     loadHistory();
     renderTestForm();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

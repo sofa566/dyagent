@@ -9,6 +9,7 @@ from src.core.database import Base, get_db
 from src.api.main import app
 from src.models import User, Agent, Workspace
 from src.middleware.auth import get_password_hash, create_access_token
+from src.services.access_control_service import access_control_service
 
 
 SQLALCHEMY_DATABASE_URL = 'sqlite:///:memory:'
@@ -52,9 +53,10 @@ def admin_user(db):
         username='admin',
         email='admin@test.com',
         password_hash=get_password_hash('admin123'),
-        role='admin',
     )
     db.add(user)
+    db.flush()
+    access_control_service.sync_user_system_role_binding(db, user, 'admin')
     db.commit()
     db.refresh(user)
     return user
@@ -66,7 +68,6 @@ def regular_user(db):
         username='user',
         email='user@test.com',
         password_hash=get_password_hash('user123'),
-        role='user',
     )
     db.add(user)
     db.commit()

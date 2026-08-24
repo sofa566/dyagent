@@ -20,6 +20,7 @@ export default defineConfig({
         chat: resolve(__dirname, 'src/pages/chat.html'),
         dashboard: resolve(__dirname, 'src/pages/dashboard.html'),
         users: resolve(__dirname, 'src/pages/users.html'),
+        'access-control': resolve(__dirname, 'src/pages/access-control.html'),
         'user-edit': resolve(__dirname, 'src/pages/user-edit.html'),
         mcps: resolve(__dirname, 'src/pages/mcps.html'),
         'mcp-edit': resolve(__dirname, 'src/pages/mcp-edit.html'),

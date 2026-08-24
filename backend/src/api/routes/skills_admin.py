@@ -13,7 +13,7 @@ import os
 from src.core.database import get_db
 from src.models import SkillEntry, SkillInteraction, User, Log, Agent
 from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_role, Role
+from src.middleware.rbac import require_permission
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.skill_executor import execute_skill
@@ -94,7 +94,7 @@ def _to_dict(s: SkillEntry) -> dict[str, Any]:
 
 
 @router.get('/skills')
-@require_role([Role.ADMIN])
+@require_permission('skills.read')
 async def list_skills(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -109,7 +109,7 @@ async def list_selectable_skills(
     current_user: User = Depends(get_current_user),
 ):
     """提供可被代理者綁定的 Skill 清單（admin / agent_admin 可用）。"""
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     rows = db.query(SkillEntry).filter(SkillEntry.enabled == True).order_by(SkillEntry.created_at.desc()).all()  # noqa: E712
@@ -298,7 +298,7 @@ def _run_command(command: str, payload: dict[str, Any], timeout_ms: int) -> dict
 
 
 @router.post('/skills/import-claude-skill-zip')
-@require_role([Role.ADMIN])
+@require_permission('skills.create')
 async def import_claude_skill_zip(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -329,7 +329,7 @@ async def import_claude_skill_zip(
 
 
 @router.post('/skills/import-claude-skill-zip/create')
-@require_role([Role.ADMIN])
+@require_permission('skills.create')
 async def create_from_claude_skill_zip(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -392,7 +392,7 @@ async def create_from_claude_skill_zip(
 
 
 @router.post('/skills')
-@require_role([Role.ADMIN])
+@require_permission('skills.create')
 async def create_skill(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -480,7 +480,7 @@ async def create_skill(
 
 
 @router.get('/skills/{skill_id}')
-@require_role([Role.ADMIN])
+@require_permission('skills.read')
 async def get_skill(
     skill_id: str,
     db: Session = Depends(get_db),
@@ -493,7 +493,7 @@ async def get_skill(
 
 
 @router.put('/skills/{skill_id}')
-@require_role([Role.ADMIN])
+@require_permission('skills.update')
 async def update_skill(
     skill_id: str,
     payload: dict[str, Any] = Body(...),
@@ -564,7 +564,7 @@ async def update_skill(
 
 
 @router.post('/skills/{skill_id}/test')
-@require_role([Role.ADMIN])
+@require_permission('skills.update')
 async def test_skill(
     skill_id: str,
     payload: dict[str, Any] = Body(default={}),
@@ -885,7 +885,7 @@ async def test_skill(
 
 
 @router.get('/skills/{skill_id}/tests')
-@require_role([Role.ADMIN])
+@require_permission('skills.read')
 async def list_skill_tests(
     skill_id: str,
     limit: int = 20,
@@ -902,7 +902,7 @@ async def list_skill_tests(
 
 
 @router.delete('/skills/{skill_id}/tests')
-@require_role([Role.ADMIN])
+@require_permission('skills.update')
 async def clear_skill_tests(
     skill_id: str,
     db: Session = Depends(get_db),
@@ -922,7 +922,7 @@ async def clear_skill_tests(
 
 
 @router.post('/skills/{skill_id}/upload-zip')
-@require_role([Role.ADMIN])
+@require_permission('skills.update')
 async def upload_skill_zip(
     skill_id: str,
     file: UploadFile = File(...),
@@ -968,7 +968,7 @@ async def upload_skill_zip(
 
 
 @router.delete('/skills/{skill_id}/zip')
-@require_role([Role.ADMIN])
+@require_permission('skills.update')
 async def clear_skill_zip(
     skill_id: str,
     db: Session = Depends(get_db),
@@ -987,7 +987,7 @@ async def clear_skill_zip(
 
 
 @router.delete('/skills/{skill_id}')
-@require_role([Role.ADMIN])
+@require_permission('skills.delete')
 async def delete_skill(
     skill_id: str,
     db: Session = Depends(get_db),

@@ -351,17 +351,21 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    if (!hasPermission(capabilities, 'functions.read')) {
       showError('僅限管理者存取');
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
+    const canCreateFunction = hasPermission(capabilities, 'functions.create');
+    const canUpdateFunction = hasPermission(capabilities, 'functions.update');
+    const canDeleteFunction = hasPermission(capabilities, 'functions.delete');
 
     const $ = (id) => document.getElementById(id);
 
@@ -384,6 +388,10 @@
     const applyPresetBtn = $('btn-apply-preset');
     const saveBtn = $('btn-save');
     const cancelBtn = $('btn-cancel');
+
+    if (!canCreateFunction) {
+      newBtn.style.display = 'none';
+    }
 
     // OpenAI 格式欄位
     const formatTypeSelect = $('format-type');
@@ -501,7 +509,7 @@
         const res = await api.get('/functions');
         const list = Array.isArray(res.functions) ? res.functions : [];
         if (list.length === 0) {
-          rows.innerHTML = '<tr class="empty-row"><td colspan="6">尚無 Function Profile，請點擊「新建」建立</td></tr>';
+          rows.innerHTML = `<tr class="empty-row"><td colspan="6">尚無 Function Profile${canCreateFunction ? '，請點擊「新建」建立' : ''}</td></tr>`;
         } else {
           rows.innerHTML = list.map((item) => {
             // 判斷格式類型
@@ -531,11 +539,11 @@
                 : '<span class="badge badge-secondary">停用</span>'}</td>
               <td>${escapeHtml(item.description) || '<span class="muted">-</span>'}</td>
               <td class="actions-cell">
-                <button class="btn" data-edit="${item.id}">編輯</button>
-                <button class="btn" data-del="${item.id}">刪除</button>
-              </td>
-            </tr>
-          `;}).join('');
+                 ${canUpdateFunction ? `<button class="btn" data-edit="${item.id}">編輯</button>` : '<span class="muted">唯讀</span>'}
+                 ${canDeleteFunction ? `<button class="btn" data-del="${item.id}">刪除</button>` : ''}
+               </td>
+             </tr>
+           `;}).join('');
         }
         window.__functionProfiles = list;
       } catch (e) {
@@ -597,6 +605,14 @@
     }
 
     async function saveForm() {
+      if (editingId && !canUpdateFunction) {
+        showError('你沒有編輯 Functions 的權限');
+        return;
+      }
+      if (!editingId && !canCreateFunction) {
+        showError('你沒有建立 Functions 的權限');
+        return;
+      }
       const isOpenai = formatTypeSelect.value === 'openai';
 
       const payload = {
@@ -668,10 +684,18 @@
       const editId = e.target.getAttribute('data-edit');
       const delId = e.target.getAttribute('data-del');
       if (editId) {
+        if (!canUpdateFunction) {
+          showError('你沒有編輯 Functions 的權限');
+          return;
+        }
         fillFormById(editId);
         return;
       }
       if (delId) {
+        if (!canDeleteFunction) {
+          showError('你沒有刪除 Functions 的權限');
+          return;
+        }
         const ok = window.confirm('確定刪除此 Function Profile？');
         if (!ok) return;
         try {
@@ -685,6 +709,10 @@
     });
 
     newBtn.addEventListener('click', () => {
+      if (!canCreateFunction) {
+        showError('你沒有建立 Functions 的權限');
+        return;
+      }
       resetForm();
       openModal(false);
     });
@@ -718,6 +746,9 @@
 
     // 初始載入
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>
