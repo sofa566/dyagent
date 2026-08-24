@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RAG 資料集管理</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .tab-bar { display: inline-flex; border: 1px solid var(--border-color); border-radius: var(--radius); overflow: hidden; margin: 8px 0 12px; }
+    .tab-btn { border: none; background: #fff; color: var(--text-secondary); padding: 8px 14px; cursor: pointer; }
+    .tab-btn.active { background: var(--primary-color); color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+  </style>
 </head>
 <body>
   <nav class="navbar">
@@ -18,37 +25,56 @@
   </nav>
 
   <main class="container">
-    <h2>RAG 公有資料集管理</h2>
+    <h2>RAG 資料集管理</h2>
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
 
     <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
       <button id="btn-new" class="btn btn-primary" type="button">新建資料集</button>
       <button id="btn-refresh" class="btn" type="button">重新整理</button>
-      <span style="color:var(--text-secondary);">此頁僅管理 scope=global 的 RAG 資料集。</span>
+      <span style="color:var(--text-secondary);">聊天使用資料集需由使用者明確指定，實際可用範圍由 `entity.dataset.*` 權限決定。</span>
     </div>
 
-    <section class="card">
-      <h3>資料集清單</h3>
-      <div style="margin-bottom:8px;color:var(--text-secondary);">
-        每筆資料集可直接上傳文件，文件會被切塊與向量化寫入該資料集索引。
-      </div>
+    <div class="tab-bar">
+      <button id="tab-global" class="tab-btn active" type="button">公有資料集</button>
+      <button id="tab-private" class="tab-btn" type="button">私有資料集</button>
+    </div>
+
+    <section id="panel-global" class="tab-panel active card">
+      <h3>公有資料集清單</h3>
+      <div style="margin-bottom:8px;color:var(--text-secondary);">管理 scope=global 資料集。</div>
       <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
         <table class="table" style="margin:0;">
           <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
             <tr><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
           </thead>
-          <tbody id="rows"></tbody>
+          <tbody id="rows-global"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="panel-private" class="tab-panel card">
+      <h3>私有資料集清單</h3>
+      <div style="margin-bottom:8px;color:var(--text-secondary);">管理 scope=agent_private 資料集（需指定代理者）。</div>
+      <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
+        <table class="table" style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr><th>代理者</th><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
+          </thead>
+          <tbody id="rows-private"></tbody>
         </table>
       </div>
     </section>
   </main>
 
-  <!-- Modal：新建/編輯資料集 -->
   <div id="dataset-modal" class="modal">
-    <div class="modal-content" style="max-width:550px;">
-      <h3 id="dataset-modal-title">新建公有資料集</h3>
+    <div class="modal-content" style="max-width:560px;">
+      <h3 id="dataset-modal-title">新建資料集</h3>
       <form id="dataset-form">
+        <div class="form-group" id="modal-agent-group" style="display:none;">
+          <label for="modal-agent-id">所屬代理者 <span style="color:var(--error-color);">*</span></label>
+          <select id="modal-agent-id"></select>
+        </div>
         <div class="form-group">
           <label for="modal-name">資料集名稱 <span style="color:var(--error-color);">*</span></label>
           <input id="modal-name" type="text" placeholder="例如：company-kb" required>
@@ -85,7 +111,6 @@
     </div>
   </div>
 
-  <!-- Modal：上傳/文件列表 -->
   <div id="upload-modal" class="modal">
     <div class="modal-content" style="max-width:700px;">
       <h3>文件管理 - <span id="upload-modal-name"></span></h3>
@@ -116,7 +141,6 @@
     </div>
   </div>
 
-  <!-- Modal：查詢測試 -->
   <div id="search-modal" class="modal">
     <div class="modal-content" style="max-width:800px;">
       <h3>查詢測試 - <span id="search-modal-name"></span></h3>
@@ -131,24 +155,17 @@
       <div style="border:1px solid var(--border-color);border-radius:var(--radius);max-height:350px;overflow-y:auto;">
         <table class="table" style="margin:0;">
           <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
-            <tr>
-              <th style="width:70px;">分數</th>
-              <th style="width:140px;">來源檔案</th>
-              <th>片段內容</th>
-            </tr>
+            <tr><th style="width:70px;">分數</th><th style="width:140px;">來源檔案</th><th>片段內容</th></tr>
           </thead>
           <tbody id="search-results">
             <tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="actions">
-        <button type="button" class="btn btn-secondary" id="search-modal-close">關閉</button>
-      </div>
+      <div class="actions"><button type="button" class="btn btn-secondary" id="search-modal-close">關閉</button></div>
     </div>
   </div>
 
-  <!-- Modal：刪除確認 -->
   <div id="delete-modal" class="modal">
     <div class="modal-content">
       <h3>確認刪除</h3>
@@ -163,396 +180,465 @@
   <script type="module">
     import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
-    // 認證檢查
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
+
     (async () => {
-    const capabilities = await getCapabilities({ forceRefresh: true });
-    if (!hasPermission(capabilities, 'rag.read')) {
-      showError('僅限管理者存取');
-      setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
-      throw new Error('forbidden');
-    }
-    const canCreateRag = hasPermission(capabilities, 'rag.create');
-    const canUpdateRag = hasPermission(capabilities, 'rag.update');
-    const canDeleteRag = hasPermission(capabilities, 'rag.delete');
-
-    // DOM 元素
-    const rows = document.getElementById('rows');
-    const newBtn = document.getElementById('btn-new');
-    const refreshBtn = document.getElementById('btn-refresh');
-
-    if (!canCreateRag) {
-      newBtn.style.display = 'none';
-    }
-
-    // Modal 元素
-    const datasetModal = document.getElementById('dataset-modal');
-    const uploadModal = document.getElementById('upload-modal');
-    const searchModal = document.getElementById('search-modal');
-    const deleteModal = document.getElementById('delete-modal');
-
-    // Modal 開關
-    function openModal(el) { el.classList.add('active'); }
-    function closeModal(el) { el.classList.remove('active'); }
-
-    // ========== 資料集表單 Modal ==========
-    let editingId = '';
-
-    newBtn.addEventListener('click', () => {
-      if (!canCreateRag) {
-        showError('你沒有建立 RAG 資料集的權限');
-        return;
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      if (!hasPermission(capabilities, 'rag.read')) {
+        showError('僅限管理者存取');
+        setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+        throw new Error('forbidden');
       }
-      editingId = '';
-      document.getElementById('dataset-modal-title').textContent = '新建公有資料集';
-      document.getElementById('dataset-modal-save').textContent = '建立';
-      document.getElementById('dataset-form').reset();
-      document.getElementById('modal-enabled').checked = true;
-      openModal(datasetModal);
-    });
 
-    document.getElementById('dataset-modal-cancel').addEventListener('click', () => {
-      closeModal(datasetModal);
-    });
+      const canCreateRag = hasPermission(capabilities, 'rag.create');
+      const canUpdateRag = hasPermission(capabilities, 'rag.update');
+      const canDeleteRag = hasPermission(capabilities, 'rag.delete');
+      const canUpdateAgent = hasPermission(capabilities, 'update_agent');
 
-    document.getElementById('dataset-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (editingId && !canUpdateRag) {
-        showError('你沒有編輯 RAG 資料集的權限');
-        return;
-      }
-      if (!editingId && !canCreateRag) {
-        showError('你沒有建立 RAG 資料集的權限');
-        return;
-      }
-      const payload = {
-        name: document.getElementById('modal-name').value.trim(),
-        sensitivity: document.getElementById('modal-sensitivity').value,
-        enabled: document.getElementById('modal-enabled').checked,
-        vector_backend: document.getElementById('modal-vector-backend').value.trim(),
-        index_name: document.getElementById('modal-index-name').value.trim(),
+      const rowsGlobal = document.getElementById('rows-global');
+      const rowsPrivate = document.getElementById('rows-private');
+      const newBtn = document.getElementById('btn-new');
+      const refreshBtn = document.getElementById('btn-refresh');
+      const privateTabButton = document.getElementById('tab-private');
+
+      const datasetModal = document.getElementById('dataset-modal');
+      const uploadModal = document.getElementById('upload-modal');
+      const searchModal = document.getElementById('search-modal');
+      const deleteModal = document.getElementById('delete-modal');
+
+      const state = {
+        activeScope: 'global',
+        editingId: '',
+        editingScope: 'global',
+        editingAgentId: '',
+        deleteTargetId: '',
+        deleteTargetScope: 'global',
+        deleteTargetAgentId: '',
+        globalDatasets: [],
+        privateDatasets: [],
+        agents: [],
+        agentNameMap: new Map(),
       };
-      if (!payload.name) {
-        showError('資料集名稱為必填');
-        return;
+
+      if (!canCreateRag && !canUpdateAgent) {
+        newBtn.style.display = 'none';
       }
-      try {
-        if (editingId) {
-          await api.put(`/rag/datasets/${encodeURIComponent(editingId)}`, payload);
-          showSuccess('已更新資料集');
-        } else {
-          await api.post('/rag/datasets', payload);
-          showSuccess('已建立資料集');
+      if (!canUpdateAgent) {
+        privateTabButton.style.display = 'none';
+      }
+
+      function openModal(el) { el.classList.add('active'); }
+      function closeModal(el) { el.classList.remove('active'); }
+
+      function setActiveTab(scope) {
+        state.activeScope = scope === 'private' ? 'private' : 'global';
+        document.getElementById('tab-global').classList.toggle('active', state.activeScope === 'global');
+        document.getElementById('tab-private').classList.toggle('active', state.activeScope === 'private');
+        document.getElementById('panel-global').classList.toggle('active', state.activeScope === 'global');
+        document.getElementById('panel-private').classList.toggle('active', state.activeScope === 'private');
+      }
+
+      function fillAgentSelect(selectedAgentId = '', disabled = false) {
+        const agentSelect = document.getElementById('modal-agent-id');
+        const options = state.agents.map(agent => (`
+          <option value="${escapeHtml(String(agent.id || ''))}">${escapeHtml(String(agent.name || '未命名代理者'))}</option>
+        `)).join('');
+        agentSelect.innerHTML = options;
+        if (selectedAgentId) {
+          agentSelect.value = String(selectedAgentId);
         }
-        closeModal(datasetModal);
-        await load();
-      } catch (err) {
-        showError(err.message || '儲存失敗');
+        agentSelect.disabled = disabled;
       }
-    });
 
-    function openEditModal(id) {
-      if (!canUpdateRag) {
-        showError('你沒有編輯 RAG 資料集的權限');
-        return;
+      async function loadAgents() {
+        try {
+          const response = await api.get('/agents');
+          const agents = Array.isArray(response.agents) ? response.agents : [];
+          state.agents = agents;
+          state.agentNameMap = new Map(agents.map(agent => [String(agent.id), String(agent.name || '未命名代理者')]));
+        } catch {
+          state.agents = [];
+          state.agentNameMap = new Map();
+        }
       }
-      const list = window.__globalDatasets || [];
-      const found = list.find((item) => String(item.id) === String(id));
-      if (!found) {
-        showError('找不到資料集');
-        return;
-      }
-      editingId = String(found.id);
-      document.getElementById('dataset-modal-title').textContent = '編輯公有資料集';
-      document.getElementById('dataset-modal-save').textContent = '儲存';
-      document.getElementById('modal-name').value = found.name || '';
-      document.getElementById('modal-sensitivity').value = found.sensitivity || 'normal';
-      document.getElementById('modal-enabled').checked = !!found.enabled;
-      document.getElementById('modal-vector-backend').value = found.vector_backend || '';
-      document.getElementById('modal-index-name').value = found.index_name || '';
-      openModal(datasetModal);
-    }
 
-    // ========== 上傳/文件列表 Modal ==========
-    let currentUploadDatasetId = '';
-    let uploadPollingTimer = null;
-    const uploadFileInput = document.getElementById('upload-file-input');
-    const uploadFileList = document.getElementById('upload-file-list');
-
-    function stopUploadPolling() {
-      if (uploadPollingTimer) {
-        clearTimeout(uploadPollingTimer);
-        uploadPollingTimer = null;
-      }
-    }
-
-    function scheduleUploadPolling() {
-      stopUploadPolling();
-      uploadPollingTimer = setTimeout(async () => {
-        if (!currentUploadDatasetId) {
+      function openCreateModal() {
+        const targetScope = state.activeScope;
+        if (targetScope === 'global' && !canCreateRag) {
+          showError('你沒有建立公有資料集的權限');
           return;
         }
-        await loadDocuments(currentUploadDatasetId);
-      }, 2000);
-    }
-
-    async function openUploadModal(datasetId, datasetName) {
-      currentUploadDatasetId = datasetId;
-      document.getElementById('upload-modal-name').textContent = datasetName;
-      document.getElementById('upload-status').textContent = '';
-      await loadDocuments(datasetId);
-      openModal(uploadModal);
-    }
-
-    async function loadDocuments(datasetId) {
-      const tbody = document.getElementById('upload-file-list');
-      const summary = document.getElementById('upload-summary');
-      try {
-        const res = await api.get(`/rag/datasets/${encodeURIComponent(datasetId)}/documents`);
-        const docs = res.documents || [];
-        const hasIndexingJob = docs.some((item) => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase()));
-        if (docs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
-        } else {
-          tbody.innerHTML = docs.map(doc => `
-            <tr>
-              <td>${escapeHtml(doc.filename)}</td>
-              <td>${formatBytes(doc.size_bytes)}</td>
-              <td>${escapeHtml(formatIndexStatusLabel(doc.status, doc.stage))}</td>
-              <td>${typeof doc.progress === 'number' ? `${Math.max(0, Math.min(100, Number(doc.progress)))}%` : '-'}</td>
-              <td>${formatDate(doc.uploaded_at)}</td>
-              <td>
-                  ${canDeleteRag ? `<button
-                  class="btn btn-danger"
-                  type="button"
-                  data-delete-file="${escapeHtml(doc.file_key || '')}"
-                  data-file-name="${escapeHtml(doc.filename || '')}"
-                  ${['queued', 'indexing'].includes(String(doc.status || '').toLowerCase()) ? 'disabled title="索引中不可刪除"' : ''}
-                  style="padding:4px 8px;font-size:0.85rem;"
-                >刪除</button>` : '<span class="muted">唯讀</span>'}
-              </td>
-            </tr>
-          `).join('');
+        if (targetScope === 'private' && !canUpdateAgent) {
+          showError('你沒有建立私有資料集的權限');
+          return;
         }
-        const readyCount = docs.filter((item) => String(item.status || '').toLowerCase() === 'ready').length;
-        const failedCount = docs.filter((item) => String(item.status || '').toLowerCase() === 'failed').length;
-        const queuedCount = docs.filter((item) => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase())).length;
-        summary.textContent = `共 ${docs.length} 個檔案（完成 ${readyCount}、索引中 ${queuedCount}、失敗 ${failedCount}）`;
-        if (hasIndexingJob) {
-          scheduleUploadPolling();
+
+        state.editingId = '';
+        state.editingScope = targetScope;
+        state.editingAgentId = '';
+        document.getElementById('dataset-form').reset();
+        document.getElementById('modal-enabled').checked = true;
+
+        const modalAgentGroup = document.getElementById('modal-agent-group');
+        if (targetScope === 'private') {
+          modalAgentGroup.style.display = '';
+          fillAgentSelect('', false);
+          document.getElementById('dataset-modal-title').textContent = '新建私有資料集';
         } else {
-          stopUploadPolling();
+          modalAgentGroup.style.display = 'none';
+          document.getElementById('dataset-modal-title').textContent = '新建公有資料集';
         }
-      } catch (err) {
-        stopUploadPolling();
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
-        summary.textContent = '';
-        showError(err.message || '載入文件列表失敗');
-      }
-    }
-
-    uploadFileList.addEventListener('click', async (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLButtonElement)) {
-        return;
-      }
-      const fileKey = String(target.getAttribute('data-delete-file') || '').trim();
-      if (!fileKey || !currentUploadDatasetId) {
-        return;
-      }
-      if (!canDeleteRag) {
-        showError('你沒有刪除資料集文件的權限');
-        return;
-      }
-      const fileName = String(target.getAttribute('data-file-name') || '').trim() || fileKey;
-      const confirmed = window.confirm(`確定刪除文件「${fileName}」嗎？`);
-      if (!confirmed) {
-        return;
+        document.getElementById('dataset-modal-save').textContent = '建立';
+        openModal(datasetModal);
       }
 
-      try {
-        await api.delete(`/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/documents/${encodeURIComponent(fileKey)}`);
-        showSuccess(`已刪除文件：${fileName}`);
-        await loadDocuments(currentUploadDatasetId);
-      } catch (error) {
-        showError((error && error.message) || '刪除文件失敗');
+      function openEditModal(scope, datasetId) {
+        const normalizedScope = scope === 'private' ? 'private' : 'global';
+        if (normalizedScope === 'global' && !canUpdateRag) {
+          showError('你沒有編輯公有資料集的權限');
+          return;
+        }
+        if (normalizedScope === 'private' && !canUpdateAgent) {
+          showError('你沒有編輯私有資料集的權限');
+          return;
+        }
+
+        const datasetList = normalizedScope === 'private' ? state.privateDatasets : state.globalDatasets;
+        const found = datasetList.find(item => String(item.id) === String(datasetId));
+        if (!found) {
+          showError('找不到資料集');
+          return;
+        }
+
+        state.editingId = String(found.id);
+        state.editingScope = normalizedScope;
+        state.editingAgentId = String(found.agent_id || '');
+
+        document.getElementById('modal-name').value = found.name || '';
+        document.getElementById('modal-sensitivity').value = found.sensitivity || 'normal';
+        document.getElementById('modal-enabled').checked = !!found.enabled;
+        document.getElementById('modal-vector-backend').value = found.vector_backend || '';
+        document.getElementById('modal-index-name').value = found.index_name || '';
+
+        const modalAgentGroup = document.getElementById('modal-agent-group');
+        if (normalizedScope === 'private') {
+          modalAgentGroup.style.display = '';
+          fillAgentSelect(state.editingAgentId, true);
+          document.getElementById('dataset-modal-title').textContent = '編輯私有資料集';
+        } else {
+          modalAgentGroup.style.display = 'none';
+          document.getElementById('dataset-modal-title').textContent = '編輯公有資料集';
+        }
+
+        document.getElementById('dataset-modal-save').textContent = '儲存';
+        openModal(datasetModal);
       }
-    });
 
-    document.getElementById('upload-btn').addEventListener('click', () => {
-      if (!canCreateRag) {
-        showError('你沒有上傳文件的權限');
-        return;
-      }
-      uploadFileInput.value = '';
-      uploadFileInput.click();
-    });
+      document.getElementById('dataset-modal-cancel').addEventListener('click', () => {
+        closeModal(datasetModal);
+      });
 
-    uploadFileInput.addEventListener('change', async () => {
-      if (!canCreateRag) {
-        showError('你沒有上傳文件的權限');
-        return;
-      }
-      const files = uploadFileInput.files;
-      if (!files || files.length === 0) return;
-
-      const statusEl = document.getElementById('upload-status');
-      const token = localStorage.getItem('auth_token') || '';
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        statusEl.textContent = `上傳中 (${i + 1}/${files.length}): ${file.name}`;
-
-        const formData = new FormData();
-        formData.append('file', file);
+      document.getElementById('dataset-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const payload = {
+          name: document.getElementById('modal-name').value.trim(),
+          sensitivity: document.getElementById('modal-sensitivity').value,
+          enabled: document.getElementById('modal-enabled').checked,
+          vector_backend: document.getElementById('modal-vector-backend').value.trim(),
+          index_name: document.getElementById('modal-index-name').value.trim(),
+        };
+        if (!payload.name) {
+          showError('資料集名稱為必填');
+          return;
+        }
 
         try {
-          const response = await fetch(`/api/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/upload`, {
-            method: 'POST',
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            body: formData,
-          });
-
-          if (!response.ok) {
-            const err = await response.json().catch(() => ({}));
-            throw new Error(err.error || err.detail || `HTTP ${response.status}`);
-          }
-
-          const data = await response.json();
-          if (data.status === 'failed') {
-            showError(`${file.name}: ${data.message || '索引失敗'}`);
-          } else if (data.status === 'ready') {
-            showSuccess(`${file.name}: 文件已索引完成`);
+          if (state.editingScope === 'private') {
+            const agentId = state.editingId
+              ? state.editingAgentId
+              : String(document.getElementById('modal-agent-id').value || '').trim();
+            if (!agentId) {
+              showError('私有資料集必須指定代理者');
+              return;
+            }
+            if (state.editingId) {
+              await api.put(`/agents/${encodeURIComponent(agentId)}/rag/datasets/${encodeURIComponent(state.editingId)}`, payload);
+              showSuccess('已更新私有資料集');
+            } else {
+              await api.post(`/agents/${encodeURIComponent(agentId)}/rag/datasets`, payload);
+              showSuccess('已建立私有資料集');
+            }
           } else {
-            showSuccess(`${file.name}: ${data.message || '文件已上傳，索引中'}`);
+            if (state.editingId) {
+              await api.put(`/rag/datasets/${encodeURIComponent(state.editingId)}`, payload);
+              showSuccess('已更新公有資料集');
+            } else {
+              await api.post('/rag/datasets', payload);
+              showSuccess('已建立公有資料集');
+            }
           }
-        } catch (err) {
-          showError(`${file.name}: ${err.message}`);
+          closeModal(datasetModal);
+          await loadAllDatasets();
+        } catch (error) {
+          showError((error && error.message) || '儲存失敗');
+        }
+      });
+
+      let currentUploadDatasetId = '';
+      let uploadPollingTimer = null;
+      const uploadFileInput = document.getElementById('upload-file-input');
+      const uploadFileList = document.getElementById('upload-file-list');
+
+      function stopUploadPolling() {
+        if (uploadPollingTimer) {
+          clearTimeout(uploadPollingTimer);
+          uploadPollingTimer = null;
         }
       }
 
-      statusEl.textContent = '上傳完成';
-      uploadFileInput.value = '';
-      await loadDocuments(currentUploadDatasetId);
-    });
-
-    document.getElementById('upload-modal-close').addEventListener('click', () => {
-      stopUploadPolling();
-      currentUploadDatasetId = '';
-      closeModal(uploadModal);
-    });
-
-    // ========== 查詢測試 Modal ==========
-    let currentSearchDatasetId = '';
-
-    function openSearchModal(datasetId, datasetName) {
-      currentSearchDatasetId = datasetId;
-      document.getElementById('search-modal-name').textContent = datasetName;
-      document.getElementById('search-query').value = '';
-      document.getElementById('search-status').style.display = 'none';
-      document.getElementById('search-results').innerHTML =
-        '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>';
-      openModal(searchModal);
-    }
-
-    document.getElementById('search-btn').addEventListener('click', async () => {
-      const query = document.getElementById('search-query').value.trim();
-      if (!query) {
-        showError('請輸入查詢字串');
-        return;
+      function scheduleUploadPolling() {
+        stopUploadPolling();
+        uploadPollingTimer = setTimeout(async () => {
+          if (!currentUploadDatasetId) return;
+          await loadDocuments(currentUploadDatasetId);
+        }, 2000);
       }
 
-      const statusEl = document.getElementById('search-status');
-      const resultsEl = document.getElementById('search-results');
+      async function openUploadModal(datasetId, datasetName) {
+        currentUploadDatasetId = datasetId;
+        document.getElementById('upload-modal-name').textContent = datasetName;
+        document.getElementById('upload-status').textContent = '';
+        await loadDocuments(datasetId);
+        openModal(uploadModal);
+      }
 
-      statusEl.style.display = 'block';
-      statusEl.className = 'search-status-loading';
-      statusEl.textContent = '搜尋中...';
-      resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;">搜尋中...</td></tr>';
+      async function loadDocuments(datasetId) {
+        const tbody = document.getElementById('upload-file-list');
+        const summary = document.getElementById('upload-summary');
+        try {
+          const response = await api.get(`/rag/datasets/${encodeURIComponent(datasetId)}/documents`);
+          const docs = response.documents || [];
+          const hasIndexingJob = docs.some(item => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase()));
+          if (!docs.length) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
+          } else {
+            tbody.innerHTML = docs.map(doc => `
+              <tr>
+                <td>${escapeHtml(doc.filename)}</td>
+                <td>${formatBytes(doc.size_bytes)}</td>
+                <td>${escapeHtml(formatIndexStatusLabel(doc.status, doc.stage))}</td>
+                <td>${typeof doc.progress === 'number' ? `${Math.max(0, Math.min(100, Number(doc.progress)))}%` : '-'}</td>
+                <td>${formatDate(doc.uploaded_at)}</td>
+                <td>
+                  ${canDeleteRag ? `<button
+                    class="btn btn-danger"
+                    type="button"
+                    data-delete-file="${escapeHtml(doc.file_key || '')}"
+                    data-file-name="${escapeHtml(doc.filename || '')}"
+                    ${['queued', 'indexing'].includes(String(doc.status || '').toLowerCase()) ? 'disabled title="索引中不可刪除"' : ''}
+                    style="padding:4px 8px;font-size:0.85rem;"
+                  >刪除</button>` : '<span class="muted">唯讀</span>'}
+                </td>
+              </tr>
+            `).join('');
+          }
+          const readyCount = docs.filter(item => String(item.status || '').toLowerCase() === 'ready').length;
+          const failedCount = docs.filter(item => String(item.status || '').toLowerCase() === 'failed').length;
+          const queuedCount = docs.filter(item => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase())).length;
+          summary.textContent = `共 ${docs.length} 個檔案（完成 ${readyCount}、索引中 ${queuedCount}、失敗 ${failedCount}）`;
+          if (hasIndexingJob) {
+            scheduleUploadPolling();
+          } else {
+            stopUploadPolling();
+          }
+        } catch (error) {
+          stopUploadPolling();
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
+          summary.textContent = '';
+          showError((error && error.message) || '載入文件列表失敗');
+        }
+      }
 
-      try {
-        const res = await api.post(`/rag/datasets/${encodeURIComponent(currentSearchDatasetId)}/search`, {
-          query: query,
-          limit: 10
-        });
-
-        if (res.ok === false) {
-          statusEl.className = 'search-status-error';
-          statusEl.textContent = `搜尋失敗：${res.error || res.message}（耗時 ${res.elapsed_ms} ms）`;
-          resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+      uploadFileList.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement)) return;
+        const fileKey = String(target.getAttribute('data-delete-file') || '').trim();
+        if (!fileKey || !currentUploadDatasetId) return;
+        if (!canDeleteRag) {
+          showError('你沒有刪除資料集文件的權限');
           return;
         }
-
-        statusEl.className = 'search-status-success';
-        statusEl.textContent = `搜尋成功 | 耗時：${res.elapsed_ms} ms | 找到 ${res.total_found} 筆結果`;
-
-        if (res.results && res.results.length > 0) {
-          resultsEl.innerHTML = res.results.map(r => `
-            <tr>
-              <td>${(r.score * 100).toFixed(1)}%</td>
-              <td title="${escapeHtml(r.payload?.filename || '')}">${escapeHtml(r.payload?.filename || '-')}</td>
-              <td title="${escapeHtml(r.payload?.snippet || '')}">${escapeHtml((r.payload?.snippet || '').substring(0, 200))}${(r.payload?.snippet || '').length > 200 ? '...' : ''}</td>
-            </tr>
-          `).join('');
-        } else {
-          resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">無符合的結果</td></tr>';
+        const fileName = String(target.getAttribute('data-file-name') || '').trim() || fileKey;
+        const confirmed = window.confirm(`確定刪除文件「${fileName}」嗎？`);
+        if (!confirmed) return;
+        try {
+          await api.delete(`/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/documents/${encodeURIComponent(fileKey)}`);
+          showSuccess(`已刪除文件：${fileName}`);
+          await loadDocuments(currentUploadDatasetId);
+        } catch (error) {
+          showError((error && error.message) || '刪除文件失敗');
         }
-      } catch (err) {
-        statusEl.className = 'search-status-error';
-        statusEl.textContent = `搜尋失敗：${err.message}`;
-        resultsEl.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+      });
+
+      document.getElementById('upload-btn').addEventListener('click', () => {
+        if (!canCreateRag) {
+          showError('你沒有上傳文件的權限');
+          return;
+        }
+        uploadFileInput.value = '';
+        uploadFileInput.click();
+      });
+
+      uploadFileInput.addEventListener('change', async () => {
+        if (!canCreateRag) {
+          showError('你沒有上傳文件的權限');
+          return;
+        }
+        const files = uploadFileInput.files;
+        if (!files || !files.length) return;
+        const statusElement = document.getElementById('upload-status');
+        const token = localStorage.getItem('auth_token') || '';
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          statusElement.textContent = `上傳中 (${index + 1}/${files.length}): ${file.name}`;
+          const formData = new FormData();
+          formData.append('file', file);
+          try {
+            const response = await fetch(`/api/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/upload`, {
+              method: 'POST',
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+              body: formData,
+            });
+            if (!response.ok) {
+              const errorPayload = await response.json().catch(() => ({}));
+              throw new Error(errorPayload.error || errorPayload.detail || `HTTP ${response.status}`);
+            }
+            const payload = await response.json();
+            if (payload.status === 'failed') {
+              showError(`${file.name}: ${payload.message || '索引失敗'}`);
+            } else if (payload.status === 'ready') {
+              showSuccess(`${file.name}: 文件已索引完成`);
+            } else {
+              showSuccess(`${file.name}: ${payload.message || '文件已上傳，索引中'}`);
+            }
+          } catch (error) {
+            showError(`${file.name}: ${(error && error.message) || '上傳失敗'}`);
+          }
+        }
+        statusElement.textContent = '上傳完成';
+        uploadFileInput.value = '';
+        await loadDocuments(currentUploadDatasetId);
+      });
+
+      document.getElementById('upload-modal-close').addEventListener('click', () => {
+        stopUploadPolling();
+        currentUploadDatasetId = '';
+        closeModal(uploadModal);
+      });
+
+      let currentSearchDatasetId = '';
+      function openSearchModal(datasetId, datasetName) {
+        currentSearchDatasetId = datasetId;
+        document.getElementById('search-modal-name').textContent = datasetName;
+        document.getElementById('search-query').value = '';
+        document.getElementById('search-status').style.display = 'none';
+        document.getElementById('search-results').innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">請輸入查詢字串並點擊搜尋</td></tr>';
+        openModal(searchModal);
       }
-    });
 
-    // Enter 鍵觸發搜尋
-    document.getElementById('search-query').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        document.getElementById('search-btn').click();
+      document.getElementById('search-btn').addEventListener('click', async () => {
+        const query = document.getElementById('search-query').value.trim();
+        if (!query) {
+          showError('請輸入查詢字串');
+          return;
+        }
+        const statusElement = document.getElementById('search-status');
+        const resultsElement = document.getElementById('search-results');
+        statusElement.style.display = 'block';
+        statusElement.className = 'search-status-loading';
+        statusElement.textContent = '搜尋中...';
+        resultsElement.innerHTML = '<tr><td colspan="3" style="text-align:center;">搜尋中...</td></tr>';
+        try {
+          const response = await api.post(`/rag/datasets/${encodeURIComponent(currentSearchDatasetId)}/search`, { query, limit: 10 });
+          if (response.ok === false) {
+            statusElement.className = 'search-status-error';
+            statusElement.textContent = `搜尋失敗：${response.error || response.message}（耗時 ${response.elapsed_ms} ms）`;
+            resultsElement.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+            return;
+          }
+          statusElement.className = 'search-status-success';
+          statusElement.textContent = `搜尋成功 | 耗時：${response.elapsed_ms} ms | 找到 ${response.total_found} 筆結果`;
+          if (response.results && response.results.length > 0) {
+            resultsElement.innerHTML = response.results.map(resultItem => `
+              <tr>
+                <td>${(resultItem.score * 100).toFixed(1)}%</td>
+                <td title="${escapeHtml(resultItem.payload?.filename || '')}">${escapeHtml(resultItem.payload?.filename || '-')}</td>
+                <td title="${escapeHtml(resultItem.payload?.snippet || '')}">${escapeHtml((resultItem.payload?.snippet || '').substring(0, 200))}${(resultItem.payload?.snippet || '').length > 200 ? '...' : ''}</td>
+              </tr>
+            `).join('');
+          } else {
+            resultsElement.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">無符合的結果</td></tr>';
+          }
+        } catch (error) {
+          statusElement.className = 'search-status-error';
+          statusElement.textContent = `搜尋失敗：${(error && error.message) || '未知錯誤'}`;
+          resultsElement.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">搜尋失敗</td></tr>';
+        }
+      });
+
+      document.getElementById('search-query').addEventListener('keypress', (event) => {
+        if (event.key === 'Enter') {
+          document.getElementById('search-btn').click();
+        }
+      });
+
+      document.getElementById('search-modal-close').addEventListener('click', () => {
+        closeModal(searchModal);
+      });
+
+      function openDeleteModal(scope, datasetId, datasetName, agentId = '') {
+        state.deleteTargetScope = scope === 'private' ? 'private' : 'global';
+        state.deleteTargetId = datasetId;
+        state.deleteTargetAgentId = agentId;
+        document.getElementById('delete-modal-name').textContent = datasetName;
+        openModal(deleteModal);
       }
-    });
 
-    document.getElementById('search-modal-close').addEventListener('click', () => {
-      closeModal(searchModal);
-    });
+      document.getElementById('delete-confirm').addEventListener('click', async () => {
+        if (!state.deleteTargetId) return;
+        try {
+          if (state.deleteTargetScope === 'private') {
+            if (!canUpdateAgent) {
+              showError('你沒有刪除私有資料集的權限');
+              return;
+            }
+            await api.delete(`/agents/${encodeURIComponent(state.deleteTargetAgentId)}/rag/datasets/${encodeURIComponent(state.deleteTargetId)}`);
+            showSuccess('已刪除私有資料集');
+          } else {
+            if (!canDeleteRag) {
+              showError('你沒有刪除公有資料集的權限');
+              return;
+            }
+            await api.delete(`/rag/datasets/${encodeURIComponent(state.deleteTargetId)}`);
+            showSuccess('已刪除公有資料集');
+          }
+          closeModal(deleteModal);
+          await loadAllDatasets();
+        } catch (error) {
+          showError((error && error.message) || '刪除失敗');
+        }
+      });
 
-    // ========== 刪除確認 Modal ==========
-    let deleteTargetId = '';
-
-    function openDeleteModal(datasetId, datasetName) {
-      deleteTargetId = datasetId;
-      document.getElementById('delete-modal-name').textContent = datasetName;
-      openModal(deleteModal);
-    }
-
-    document.getElementById('delete-confirm').addEventListener('click', async () => {
-      if (!canDeleteRag) {
-        showError('你沒有刪除資料集的權限');
-        return;
-      }
-      if (!deleteTargetId) return;
-      try {
-        await api.delete(`/rag/datasets/${encodeURIComponent(deleteTargetId)}`);
-        showSuccess('已刪除資料集');
+      document.getElementById('delete-cancel').addEventListener('click', () => {
         closeModal(deleteModal);
-        await load();
-      } catch (err) {
-        showError(err.message || '刪除失敗');
-      }
-    });
+      });
 
-    document.getElementById('delete-cancel').addEventListener('click', () => {
-      closeModal(deleteModal);
-    });
-
-    // ========== 列表載入與事件委派 ==========
-    async function load() {
-      try {
-        const res = await api.get('/rag/datasets?scope=global');
-        const list = Array.isArray(res.datasets) ? res.datasets : [];
-        window.__globalDatasets = list;
-        rows.innerHTML = list.map((item) => `
+      async function loadGlobalDatasets() {
+        const response = await api.get('/rag/datasets?scope=global');
+        state.globalDatasets = Array.isArray(response.datasets) ? response.datasets : [];
+        rowsGlobal.innerHTML = state.globalDatasets.map(item => `
           <tr>
             <td>${escapeHtml(item.name || '')}</td>
             <td>${escapeHtml(item.sensitivity || 'normal')}</td>
@@ -560,42 +646,93 @@
             <td>${escapeHtml(item.vector_backend || '')}</td>
             <td>${escapeHtml(item.index_name || '')}</td>
             <td style="white-space:nowrap;">
-              <button class="btn" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
-              <button class="btn" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
-              ${canUpdateRag ? `<button class="btn" data-edit="${item.id}">編輯</button>` : ''}
-              ${canDeleteRag ? `<button class="btn btn-danger" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
+              <button class="btn" data-scope="global" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
+              <button class="btn" data-scope="global" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
+              ${canUpdateRag ? `<button class="btn" data-scope="global" data-edit="${item.id}">編輯</button>` : ''}
+              ${canDeleteRag ? `<button class="btn btn-danger" data-scope="global" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
             </td>
           </tr>
         `).join('');
-      } catch (err) {
-        showError(err.message || '載入失敗');
       }
-    }
 
-    rows.addEventListener('click', (e) => {
-      const target = e.target;
-      if (target.tagName !== 'BUTTON') return;
-
-      const uploadId = target.getAttribute('data-upload');
-      const searchId = target.getAttribute('data-search');
-      const editId = target.getAttribute('data-edit');
-      const delId = target.getAttribute('data-del');
-      const name = target.getAttribute('data-name') || '';
-
-      if (uploadId) {
-        openUploadModal(uploadId, name);
-      } else if (searchId) {
-        openSearchModal(searchId, name);
-      } else if (editId) {
-        openEditModal(editId);
-      } else if (delId) {
-        openDeleteModal(delId, name);
+      async function loadPrivateDatasets() {
+        const response = await api.get('/rag/datasets?scope=agent_private');
+        state.privateDatasets = Array.isArray(response.datasets) ? response.datasets : [];
+        rowsPrivate.innerHTML = state.privateDatasets.map(item => {
+          const agentId = String(item.agent_id || '');
+          const agentName = state.agentNameMap.get(agentId) || agentId || '-';
+          return `
+            <tr>
+              <td>${escapeHtml(agentName)}</td>
+              <td>${escapeHtml(item.name || '')}</td>
+              <td>${escapeHtml(item.sensitivity || 'normal')}</td>
+              <td>${item.enabled ? '啟用' : '停用'}</td>
+              <td>${escapeHtml(item.vector_backend || '')}</td>
+              <td>${escapeHtml(item.index_name || '')}</td>
+              <td style="white-space:nowrap;">
+                <button class="btn" data-scope="private" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
+                <button class="btn" data-scope="private" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
+                ${canUpdateAgent ? `<button class="btn" data-scope="private" data-edit="${item.id}">編輯</button>` : ''}
+                ${canUpdateAgent ? `<button class="btn btn-danger" data-scope="private" data-del="${item.id}" data-agent-id="${escapeHtml(agentId)}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
+              </td>
+            </tr>
+          `;
+        }).join('');
       }
+
+      async function loadAllDatasets() {
+        try {
+          await loadAgents();
+          await Promise.all([loadGlobalDatasets(), loadPrivateDatasets()]);
+        } catch (error) {
+          showError((error && error.message) || '載入失敗');
+        }
+      }
+
+      function bindRowActions(tableBodyElement) {
+        tableBodyElement.addEventListener('click', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLButtonElement)) return;
+          const scope = String(target.getAttribute('data-scope') || 'global');
+          const uploadId = target.getAttribute('data-upload');
+          const searchId = target.getAttribute('data-search');
+          const editId = target.getAttribute('data-edit');
+          const delId = target.getAttribute('data-del');
+          const datasetName = target.getAttribute('data-name') || '';
+          const agentId = target.getAttribute('data-agent-id') || '';
+
+          if (uploadId) {
+            openUploadModal(uploadId, datasetName);
+            return;
+          }
+          if (searchId) {
+            openSearchModal(searchId, datasetName);
+            return;
+          }
+          if (editId) {
+            openEditModal(scope, editId);
+            return;
+          }
+          if (delId) {
+            openDeleteModal(scope, delId, datasetName, agentId);
+          }
+        });
+      }
+
+      document.getElementById('tab-global').addEventListener('click', () => setActiveTab('global'));
+      document.getElementById('tab-private').addEventListener('click', () => setActiveTab('private'));
+      newBtn.addEventListener('click', openCreateModal);
+      refreshBtn.addEventListener('click', loadAllDatasets);
+
+      bindRowActions(rowsGlobal);
+      bindRowActions(rowsPrivate);
+
+      await loadAllDatasets();
+      setActiveTab('global');
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
     });
 
-    refreshBtn.addEventListener('click', load);
-
-    // ========== 輔助函式 ==========
     function escapeHtml(text) {
       const div = document.createElement('div');
       div.textContent = text || '';
@@ -604,10 +741,10 @@
 
     function formatBytes(bytes) {
       if (!bytes || bytes === 0) return '0 B';
-      const k = 1024;
+      const K = 1024;
       const sizes = ['B', 'KB', 'MB', 'GB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+      const index = Math.floor(Math.log(bytes) / Math.log(K));
+      return `${parseFloat((bytes / Math.pow(K, index)).toFixed(1))} ${sizes[index]}`;
     }
 
     function formatDate(isoString) {
@@ -625,12 +762,6 @@
       if (normalizedStatus === 'uploaded') return '已上傳';
       return normalizedStatus || '-';
     }
-
-    // 初始載入
-    load();
-    })().catch((error) => {
-      showError((error && error.message) || '初始化失敗');
-    });
   </script>
 </body>
 </html>
