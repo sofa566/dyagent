@@ -89,6 +89,7 @@ async def _build_overview(db: Session) -> dict:
     now = datetime.now()
     since_15m = now - timedelta(minutes=15)
     since_24h = now - timedelta(hours=24)
+    since_7d = now - timedelta(days=7)
 
     users_total = db.query(func.count(User.id)).scalar() or 0
     agents_total = db.query(func.count(Agent.id)).scalar() or 0
@@ -280,6 +281,29 @@ async def _build_overview(db: Session) -> dict:
         reverse=True,
     )
 
+    tool_policy_rows_7d = db.query(ToolExecutionAudit).filter(ToolExecutionAudit.created_at >= since_7d).all()
+    tool_policy_total_7d = len(tool_policy_rows_7d)
+    tool_policy_denied_7d = sum(1 for row in tool_policy_rows_7d if str(getattr(row, 'status', '') or '') == 'denied')
+    tool_policy_dangerous_7d = sum(1 for row in tool_policy_rows_7d if str(getattr(row, 'risk_level', '') or '') == 'dangerous')
+    tool_policy_restricted_7d = sum(1 for row in tool_policy_rows_7d if str(getattr(row, 'risk_level', '') or '') == 'restricted')
+    tool_policy_denied_rate_7d = round((tool_policy_denied_7d / tool_policy_total_7d) * 100.0, 2) if tool_policy_total_7d > 0 else 0.0
+    tool_policy_high_risk_rate_7d = round(((tool_policy_dangerous_7d + tool_policy_restricted_7d) / tool_policy_total_7d) * 100.0, 2) if tool_policy_total_7d > 0 else 0.0
+
+    tool_counter_map: dict[str, int] = {}
+    for row in tool_policy_rows_7d:
+        risk_level = str(getattr(row, 'risk_level', '') or '')
+        if risk_level not in {'dangerous', 'restricted'}:
+            continue
+        tool_name = str(getattr(row, 'tool_name', '') or '').strip() or '<unknown>'
+        tool_counter_map[tool_name] = int(tool_counter_map.get(tool_name) or 0) + 1
+    tool_policy_top_risk_tools = [
+        {
+            'tool_name': tool_name,
+            'count': count,
+        }
+        for tool_name, count in sorted(tool_counter_map.items(), key=lambda item: int(item[1]), reverse=True)[:5]
+    ]
+
     load1, load5, load15 = (0.0, 0.0, 0.0)
     try:
         load1, load5, load15 = os.getloadavg()
@@ -355,6 +379,16 @@ async def _build_overview(db: Session) -> dict:
             "tool_success_24h": int(tool_success),
             "tool_error_24h": int(tool_error),
             "agent_breakdown_24h": agent_llm_breakdown_24h,
+        },
+        "tool_policy": {
+            "window_days": 7,
+            "total_7d": int(tool_policy_total_7d),
+            "denied_7d": int(tool_policy_denied_7d),
+            "dangerous_7d": int(tool_policy_dangerous_7d),
+            "restricted_7d": int(tool_policy_restricted_7d),
+            "denied_rate_7d": float(tool_policy_denied_rate_7d),
+            "high_risk_rate_7d": float(tool_policy_high_risk_rate_7d),
+            "top_risk_tools_7d": tool_policy_top_risk_tools,
         },
     }
 

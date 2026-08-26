@@ -146,6 +146,7 @@
     let hasMonitorPermission = false;
     let hasLogsPermission = false;
     let hasLoadedToolAudits = false;
+    let latestToolPolicyOverview = null;
 
     function setActiveTab(tabName) {
       document.getElementById('tab-monitor').classList.toggle('active', tabName === 'monitor');
@@ -173,6 +174,7 @@
       const users = data.users || {};
       const traffic = data.traffic || {};
       const llm = data.llm || {};
+      latestToolPolicyOverview = (data && typeof data.tool_policy === 'object' && data.tool_policy) ? data.tool_policy : null;
       const llmBreakdown = Array.isArray(llm.agent_breakdown_24h) ? llm.agent_breakdown_24h : [];
 
       document.getElementById('updated-at').textContent =
@@ -271,7 +273,20 @@
         .replace(/'/g, '&#39;');
     }
 
-    function buildAuditSummaryRows(rows) {
+    function buildAuditSummaryRows(rows, toolPolicyOverview) {
+      const overview = (toolPolicyOverview && typeof toolPolicyOverview === 'object') ? toolPolicyOverview : null;
+      if (overview) {
+        const deniedRate = Number(overview.denied_rate_7d || 0);
+        const highRiskRate = Number(overview.high_risk_rate_7d || 0);
+        const dangerousCount = Number(overview.dangerous_7d || 0);
+        const restrictedCount = Number(overview.restricted_7d || 0);
+        return [
+          mkStat('稽核筆數', Number(overview.total_7d || 0)),
+          mkStat('拒絕率', `${deniedRate.toFixed(1)}%`),
+          mkStat('高風險占比', `${highRiskRate.toFixed(1)}%`),
+          mkStat('dangerous / restricted', `${dangerousCount} / ${restrictedCount}`),
+        ];
+      }
       const totalCount = rows.length;
       const deniedCount = rows.filter((row) => String(row.status || '') === 'denied').length;
       const dangerousCount = rows.filter((row) => String(row.risk_level || '') === 'dangerous').length;
@@ -286,8 +301,19 @@
       ];
     }
 
-    function renderTopRiskTools(rows) {
+    function renderTopRiskTools(rows, toolPolicyOverview) {
       const container = document.getElementById('tool-policy-top-risk-tools');
+      const overview = (toolPolicyOverview && typeof toolPolicyOverview === 'object') ? toolPolicyOverview : null;
+      if (overview && Array.isArray(overview.top_risk_tools_7d)) {
+        const topItemsFromOverview = overview.top_risk_tools_7d
+          .filter((item) => item && typeof item === 'object')
+          .map((item, index) => `${index + 1}. ${String(item.tool_name || '<unknown>')}（${Number(item.count || 0)}）`)
+          .slice(0, 5);
+        if (topItemsFromOverview.length > 0) {
+          container.textContent = `高風險工具 Top 5：${topItemsFromOverview.join('、')}`;
+          return;
+        }
+      }
       const riskRows = rows.filter((row) => {
         const risk = String(row.risk_level || '');
         return risk === 'dangerous' || risk === 'restricted';
@@ -312,8 +338,8 @@
       const summaryContainer = document.getElementById('tool-policy-audit-summary');
       const container = document.getElementById('tool-policy-audits');
       const rows = Array.isArray(payload.items) ? payload.items : [];
-      summaryContainer.innerHTML = buildAuditSummaryRows(rows).join('');
-      renderTopRiskTools(rows);
+      summaryContainer.innerHTML = buildAuditSummaryRows(rows, latestToolPolicyOverview).join('');
+      renderTopRiskTools(rows, latestToolPolicyOverview);
       if (!rows.length) {
         container.innerHTML = '<div class="mono">目前無符合條件的工具稽核紀錄</div>';
         return;
