@@ -17,10 +17,12 @@ from src.middleware.rbac import require_permission
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.skill_executor import execute_skill
+from src.services.tool_policy_service import ToolPolicyService
 from src.services.llm_client import LLMClient
 
 
 router = APIRouter()
+tool_policy_service = ToolPolicyService()
 
 
 def _build_master_agent_llm_overrides(db: Session) -> dict[str, Any]:
@@ -88,6 +90,7 @@ def _to_dict(s: SkillEntry) -> dict[str, Any]:
         'prompt_template': s.prompt_template or '',
         'has_zip': has_zip,  # 不回傳整個 ZIP，僅回傳是否存在
         'references': s.references,
+        'execution_policy': tool_policy_service.normalize_policy(s.execution_policy if isinstance(s.execution_policy, dict) else {}),
         'created_at': s.created_at.isoformat() if s.created_at else None,
         'updated_at': s.updated_at.isoformat() if s.updated_at else None,
     }
@@ -472,6 +475,7 @@ async def create_skill(
         skill_type=skill_type,
         prompt_template=prompt_template,
         references=references if isinstance(references, list) else None,
+        execution_policy=tool_policy_service.normalize_policy((payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}),
     )
     db.add(s)
     db.commit()
@@ -519,6 +523,10 @@ async def update_skill(
             if k == 'skill_type' and val not in ('prompt', 'executable', 'hybrid', 'webhook', None):
                 val = 'executable'
             setattr(row, k, val)
+    if 'execution_policy' in (payload or {}):
+        row.execution_policy = tool_policy_service.normalize_policy(
+            (payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}
+        )
     prompt_text = str(getattr(row, 'prompt_template', '') or '').strip()
     has_claude_prompt_or_zip = bool(prompt_text) or bool(getattr(row, 'zip_bundle', None))
     requires_executable = _requires_executable(skill_type=str(row.skill_type or 'executable'), prompt_template=prompt_text, has_zip_bundle=bool(getattr(row, 'zip_bundle', None)))

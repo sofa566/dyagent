@@ -63,6 +63,10 @@ LEGACY_PERMISSION_KEYS = [
     'rag.read',
     'rag.update',
     'rag.delete',
+    'private.rag.create',
+    'private.rag.read',
+    'private.rag.update',
+    'private.rag.delete',
 ]
 
 

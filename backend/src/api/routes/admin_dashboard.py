@@ -5,8 +5,9 @@ import asyncio
 import json
 import os
 import shutil
+import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, text, and_
 from sqlalchemy.orm import Session
@@ -14,12 +15,42 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import require_permission
-from src.models import Agent, Conversation, Message, User, LlmTurn
+from src.models import Agent, Conversation, Message, User, LlmTurn, ToolExecutionAudit
 from src.models.events import EventPart
 from src.services.qdrant_service import qdrant_service
 from src.services.redis_service import redis_service
 
 router = APIRouter()
+
+
+def _serialize_tool_execution_audit(row: ToolExecutionAudit) -> dict[str, object]:
+    # 目的：將工具策略稽核 ORM 轉為 API payload。
+    # 為什麼：儀表板/營運查詢需要穩定欄位，避免前端自行推斷資料結構。
+    try:
+        cost_estimate = float(row.cost_estimate) if row.cost_estimate is not None else None
+    except Exception:
+        cost_estimate = None
+    return {
+        'id': str(row.id),
+        'user_id': str(row.user_id) if row.user_id else None,
+        'agent_id': str(row.agent_id) if row.agent_id else None,
+        'conversation_id': str(row.conversation_id) if row.conversation_id else None,
+        'tool_name': str(row.tool_name or ''),
+        'tool_type': str(row.tool_type or ''),
+        'risk_level': str(row.risk_level or ''),
+        'cost_class': str(row.cost_class or ''),
+        'allowlist_passed': bool(row.allowlist_passed),
+        'confirmation_required': bool(row.confirmation_required),
+        'confirmation_passed': bool(row.confirmation_passed),
+        'quota_passed': bool(row.quota_passed),
+        'status': str(row.status or ''),
+        'deny_reason': str(row.deny_reason or '') or None,
+        'payload_keys': list(row.payload_keys or []),
+        'cost_estimate': cost_estimate,
+        'latency_ms': int(row.latency_ms) if row.latency_ms is not None else None,
+        'details': row.details if isinstance(row.details, dict) else {},
+        'created_at': row.created_at.isoformat() if row.created_at else None,
+    }
 
 
 def _read_mem_info() -> dict[str, int | float | None]:
@@ -358,3 +389,59 @@ async def admin_dashboard_stream(
                 await asyncio.sleep(2.0)
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@router.get('/admin/tool-execution-audits')
+@require_permission('dashboard.read')
+async def list_tool_execution_audits(
+    tool_name: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    risk_level: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    days: int = Query(default=7, ge=1, le=90),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 目的：提供工具策略稽核查詢 API。
+    # 為什麼：策略層上線後需快速檢視拒絕原因、風險分布與成本訊號。
+    query = db.query(ToolExecutionAudit)
+    since_at = datetime.now() - timedelta(days=int(days))
+    query = query.filter(ToolExecutionAudit.created_at >= since_at)
+
+    normalized_tool_name = str(tool_name or '').strip()
+    if normalized_tool_name:
+        query = query.filter(ToolExecutionAudit.tool_name == normalized_tool_name)
+
+    normalized_status = str(status or '').strip()
+    if normalized_status:
+        query = query.filter(ToolExecutionAudit.status == normalized_status)
+
+    normalized_risk_level = str(risk_level or '').strip()
+    if normalized_risk_level:
+        query = query.filter(ToolExecutionAudit.risk_level == normalized_risk_level)
+
+    normalized_user_id = str(user_id or '').strip()
+    if normalized_user_id:
+        try:
+            user_uuid = uuid.UUID(normalized_user_id)
+            query = query.filter(ToolExecutionAudit.user_id == user_uuid)
+        except Exception:
+            return {
+                'items': [],
+                'total': 0,
+                'limit': int(limit),
+                'offset': int(offset),
+                'days': int(days),
+            }
+
+    total_count = query.count()
+    rows = query.order_by(ToolExecutionAudit.created_at.desc()).offset(int(offset)).limit(int(limit)).all()
+    return {
+        'items': [_serialize_tool_execution_audit(row) for row in rows],
+        'total': int(total_count),
+        'limit': int(limit),
+        'offset': int(offset),
+        'days': int(days),
+    }

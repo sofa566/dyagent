@@ -63,6 +63,10 @@ LEGACY_ROLE_PERMISSIONS = {
         'rag.read',
         'rag.update',
         'rag.delete',
+        'private.rag.create',
+        'private.rag.read',
+        'private.rag.update',
+        'private.rag.delete',
     },
     'agent_admin': {
         'read_agent',

@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # 格式：{"provider:model": {"input_per_1k": 0.005, "output_per_1k": 0.015}}
     LLM_COST_TABLE_JSON: str = ''
 
+    # 工具策略層開關
+    TOOL_EXEC_POLICY_ENABLED: bool = True
+    TOOL_EXEC_REQUIRE_CONFIRM_FOR_DANGEROUS: bool = True
+
     # 聊天歷史上下文注入（同一會話連貫）
     CHAT_HISTORY_MODE: str = 'recent'  # off | recent
     CHAT_HISTORY_MAX_MESSAGES: int = 8

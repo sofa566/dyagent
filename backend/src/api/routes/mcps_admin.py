@@ -9,10 +9,12 @@ from src.middleware.rbac import require_permission
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.mcp_client import MCPClient
+from src.services.tool_policy_service import ToolPolicyService
 from src.models import Log
 
 
 router = APIRouter()
+tool_policy_service = ToolPolicyService()
 
 
 def _discover_schema_from_config(*, client: MCPClient, name: str, transport: str, base_url: str | None = None, auth: dict[str, Any] | None = None, command: str | None = None, args: list[Any] | None = None, env: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -86,6 +88,7 @@ def _to_dict(m: MCPConnection) -> dict[str, Any]:
         'args': m.args or [],
         'env': m.env or {},
         'input_schema': m.input_schema or {},
+        'execution_policy': tool_policy_service.normalize_policy(m.execution_policy if isinstance(m.execution_policy, dict) else {}),
         'created_at': m.created_at.isoformat() if m.created_at else None,
         'updated_at': m.updated_at.isoformat() if m.updated_at else None,
     }
@@ -140,6 +143,7 @@ async def create_mcp(
         args=(payload or {}).get('args') or [],
         env=(payload or {}).get('env') or {},
         input_schema=(payload or {}).get('input_schema') or {},
+        execution_policy=tool_policy_service.normalize_policy((payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}),
     )
     db.add(m)
     db.commit()
@@ -182,6 +186,10 @@ async def update_mcp(
     for k in ('description','enabled','transport','base_url','auth','progress_field','eta_field','command','args','env','input_schema'):
         if k in (payload or {}):
             setattr(row, k, (payload or {}).get(k))
+    if 'execution_policy' in (payload or {}):
+        row.execution_policy = tool_policy_service.normalize_policy(
+            (payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}
+        )
     db.commit()
     db.refresh(row)
     return _to_dict(row)

@@ -314,6 +314,15 @@
         ],
       },
       {
+        module: '私有RAG資料集',
+        nodes: [
+          { label: 'private.rag.create', key: 'private.rag.create' },
+          { label: 'private.rag.read', key: 'private.rag.read' },
+          { label: 'private.rag.update', key: 'private.rag.update' },
+          { label: 'private.rag.delete', key: 'private.rag.delete' },
+        ],
+      },
+      {
         module: '聊天',
         nodes: [
           { label: 'chat', key: 'chat' },
@@ -867,6 +876,13 @@
       return `entity.${entityType}.${entityName}.execute`;
     }
 
+    function normalizePermissionKey(permissionKey) {
+      if (String(permissionKey || '') === 'read_logs') {
+        return 'logs.read';
+      }
+      return String(permissionKey || '');
+    }
+
     function formatPermissionKeysForDisplay(permissionKeys) {
       const entityNameMap = buildEntityNameMap();
       return (Array.isArray(permissionKeys) ? permissionKeys : [])
@@ -913,13 +929,13 @@
     }
 
     function buildViewerTreeDataFromModules(modules, selectedPermissionKeys, idPrefix, resolveNodeText) {
-      const selectedSet = new Set((selectedPermissionKeys || []).map(item => String(item)));
+      const selectedSet = new Set((selectedPermissionKeys || []).map(item => normalizePermissionKey(item)));
       const treeData = [];
       const existedKeySet = new Set();
       modules.forEach((moduleItem, moduleIndex) => {
         const children = [];
         for (const nodeItem of (moduleItem.nodes || [])) {
-          const permissionKey = String(nodeItem.key || '');
+          const permissionKey = normalizePermissionKey(nodeItem.key);
           existedKeySet.add(permissionKey);
           if (!selectedSet.has(permissionKey)) {
             continue;

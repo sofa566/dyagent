@@ -1373,6 +1373,10 @@
       const actions = document.createElement('div');
       actions.style.display = 'flex';
       actions.style.gap = '6px';
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'btn btn-danger';
+      confirmBtn.textContent = '確認執行';
+      confirmBtn.style.display = 'none';
       const collapseBtn = document.createElement('button');
       collapseBtn.className = 'btn';
       collapseBtn.textContent = '收合';
@@ -1380,6 +1384,7 @@
       clearBtn.className = 'btn';
       clearBtn.textContent = '清除內容';
 
+      actions.appendChild(confirmBtn);
       actions.appendChild(collapseBtn);
       actions.appendChild(clearBtn);
 
@@ -1422,8 +1427,57 @@
       card.appendChild(prog);
       card.appendChild(progMeta);
       card.appendChild(body);
-      const meta = { card, body, status, badge, alert, prog, bar, progMeta, _state: 'running', _progress: 0, _t0: Date.now(), _lastTs: null, _lastProg: 0, _toolName: '', _lastPayload: {}, _convId: '' };
+      const meta = { card, body, status, badge, alert, prog, bar, progMeta, confirmBtn, _state: 'running', _progress: 0, _t0: Date.now(), _lastTs: null, _lastProg: 0, _toolName: '', _lastPayload: {}, _convId: '' };
       return meta;
+    }
+
+    async function retryToolWithPolicyConfirmation(meta, policyReason) {
+      if (!meta || !meta._toolName) return;
+      const convId = String(meta._convId || currentConversationId || '').trim();
+      if (!convId) {
+        showError('找不到對應對話，無法重新執行工具');
+        return;
+      }
+      const confirmed = window.confirm(`此工具需要二次確認（${policyReason || 'dangerous'}），是否繼續執行？`);
+      if (!confirmed) return;
+
+      const basePayload = (meta._lastPayload && typeof meta._lastPayload === 'object') ? meta._lastPayload : {};
+      const retryPayload = {
+        ...basePayload,
+        _policy_confirmed: true,
+      };
+      if (meta.confirmBtn) {
+        meta.confirmBtn.disabled = true;
+      }
+      setCardStatus(meta, 'running', '已確認，重新執行中…');
+      try {
+        const response = await api.post(`/conversations/${encodeURIComponent(convId)}/tools/${encodeURIComponent(meta._toolName)}`, retryPayload);
+        appendFrame(meta.body, response);
+        if (response && response.ok === true) {
+          setCardStatus(meta, 'ok', '確認後執行完成');
+        } else {
+          const err = String((response && response.error) || '執行失敗');
+          setCardStatus(meta, 'error', err);
+        }
+      } catch (error) {
+        setCardStatus(meta, 'error', String((error && error.message) || '執行失敗'));
+      } finally {
+        if (meta.confirmBtn) {
+          meta.confirmBtn.disabled = false;
+        }
+      }
+    }
+
+    function bindPolicyConfirmAction(meta, framePayload) {
+      if (!meta || !meta.confirmBtn) return;
+      const policyObj = (framePayload && typeof framePayload.policy === 'object') ? framePayload.policy : {};
+      const reason = String(policyObj.reason || framePayload.error || '').trim() || 'confirmation_required';
+      const riskLevel = String(policyObj.risk_level || '').trim();
+      meta.confirmBtn.style.display = '';
+      meta.confirmBtn.textContent = riskLevel ? `確認執行（${riskLevel}）` : '確認執行';
+      meta.confirmBtn.onclick = () => {
+        retryToolWithPolicyConfirmation(meta, reason);
+      };
     }
 
     function appendFrame(container, frame) {
@@ -1470,6 +1524,9 @@
         meta.status.textContent = '完成';
         meta.status.style.color = 'var(--ok-color, #198754)';
         meta.alert.style.display = 'none';
+        if (meta.confirmBtn) {
+          meta.confirmBtn.style.display = 'none';
+        }
         updateProgress(meta, 100, 0);
         meta.prog.style.display = 'none';
         meta.progMeta.style.display = 'none';
@@ -1481,6 +1538,9 @@
           meta.alert.textContent = String(msg);
           meta.alert.style.display = 'block';
         }
+        if (meta.confirmBtn) {
+          meta.confirmBtn.style.display = 'none';
+        }
         meta.prog.style.display = 'none';
         meta.progMeta.style.display = 'none';
       } else {
@@ -1488,6 +1548,9 @@
         meta.status.textContent = '執行中…';
         meta.status.style.color = 'var(--text-secondary)';
         meta.alert.style.display = 'none';
+        if (meta.confirmBtn) {
+          meta.confirmBtn.style.display = 'none';
+        }
         meta.prog.style.display = 'block';
         meta.progMeta.style.display = 'block';
       }
@@ -2045,6 +2108,29 @@
       try {
         const result = await api.post(`/conversations/${targetConversationId}/tools/${activeSkillUiContext.tool}`, requestPayload);
         if (!result || result.ok !== true) {
+          if (String((result && result.error) || '').trim() === 'confirmation_required') {
+            const shouldConfirm = window.confirm('此技能操作需要二次確認，是否繼續執行？');
+            if (shouldConfirm) {
+              const retryResult = await api.post(
+                `/conversations/${targetConversationId}/tools/${activeSkillUiContext.tool}`,
+                {
+                  ...requestPayload,
+                  _policy_confirmed: true,
+                },
+              );
+              if (retryResult && retryResult.ok === true) {
+                const retriedModeObj = (retryResult.result && typeof retryResult.result === 'object') ? retryResult.result : {};
+                if (String(retriedModeObj.mode || '').trim().toLowerCase() === 'final') {
+                  skillUiFrame.contentWindow?.postMessage({
+                    type: 'host.close',
+                    channel_nonce: activeSkillUiContext.channelNonce,
+                  }, '*');
+                  closeSkillUi();
+                }
+                return;
+              }
+            }
+          }
           skillUiFrame.contentWindow?.postMessage({
             type: 'host.error',
             error: String((result && result.error) || 'skill_action_failed'),
@@ -2725,8 +2811,13 @@
 
                 if (activeToolCard) {
                   appendFrame(activeToolCard.body, payload.frame);
-                  if (payload.frame && payload.frame.ok === false)
+                  if (payload.frame && payload.frame.ok === false) {
                     setCardStatus(activeToolCard, 'error', payload.frame.error || '執行失敗');
+                    const policyReason = String((payload.frame && payload.frame.error) || '').trim();
+                    if (policyReason === 'confirmation_required') {
+                      bindPolicyConfirmAction(activeToolCard, payload.frame);
+                    }
+                  }
                   else if (payload.frame && payload.frame.ok === true)
                     setCardStatus(activeToolCard, 'ok');
                   const cand = (typeof f.progress === 'number' ? f.progress

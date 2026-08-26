@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Optional, List, Any, Tuple
 from datetime import datetime
+from decimal import Decimal
 import uuid
 from collections import deque
 import os
@@ -29,6 +30,7 @@ from src.services.mcp_client import MCPClient
 from src.services.react_synthesis import ReActSynthesis
 from src.services.skill_executor import execute_skill
 from src.services.skill_interaction_service import SkillInteractionService
+from src.services.tool_policy_service import ToolPolicyService, ToolPolicyDecision
 
 
 DEFAULT_LAST_METRICS = {
@@ -59,6 +61,17 @@ class ChatRouter:
         # 每回合可覆蓋的工具呼叫協定模板
         self._custom_toolcall_guide: Optional[str] = None
         self._function_profile_template: Optional[str] = None
+        self._tool_policy_service = ToolPolicyService()
+        self._current_user_id: str = ''
+        self._current_agent_id: str = ''
+        self._current_conversation_id: str = ''
+        self._current_agent_class: str = ''
+        self._active_tool_policy_decisions: dict[tuple[str, str], ToolPolicyDecision] = {}
+
+    def set_execution_context(self, *, user_id: str | None, agent_id: str | None, conversation_id: str | None) -> None:
+        self._current_user_id = str(user_id or '').strip()
+        self._current_agent_id = str(agent_id or '').strip()
+        self._current_conversation_id = str(conversation_id or '').strip()
 
     def _resolve_mcp_tool_name(self, *, conn_name: str, conn: dict[str, Any]) -> str:
         """目的：解析 MCP 連線名稱對應的實際工具名稱。
@@ -367,6 +380,7 @@ class ChatRouter:
             if db is not None:
                 ag = db.query(Agent).filter(Agent.id == agent_id).first()
                 if ag is not None:
+                    self._current_agent_class = str(getattr(ag, 'agent_class', '') or '').strip()
                     # 讀取 skills 示例參數（來自 model_config.skill_examples）
                     self._skill_examples = {}
                     try:
@@ -705,6 +719,11 @@ class ChatRouter:
         if name not in getattr(self, "_allowed_tools", set()):
             self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
             return name, {"ok": False, "error": "tool_not_allowed"}
+
+        policy_error = self._evaluate_tool_policy_before_execute(session_id=session_id, tool=name, payload=payload or {})
+        if policy_error is not None:
+            return name, policy_error
+
         self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
         if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
             return name, {"ok": False, "error": "doom_loop_denied"}
@@ -1314,11 +1333,62 @@ class ChatRouter:
             self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
             return name, {"ok": False, "error": "tool_not_allowed"}
 
+        policy_error = self._evaluate_tool_policy_before_execute(session_id=session_id, tool=name, payload=payload or {})
+        if policy_error is not None:
+            return name, policy_error
+
         self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
         if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
             return name, {"ok": False, "error": "doom_loop_denied"}
 
         return name, None
+
+    def _evaluate_tool_policy_before_execute(self, *, session_id: str, tool: str, payload: dict) -> Optional[dict]:
+        # 目的：在工具執行前套用風險策略（確認、額度、scope）。
+        # 為什麼：工具執行已不依賴 RBAC，需以策略層統一治理風險。
+        if not bool(getattr(settings, 'TOOL_EXEC_POLICY_ENABLED', True)):
+            return None
+        if not hasattr(self, '_db') or self._db is None:
+            return None
+        if not self._current_user_id:
+            return None
+
+        decision = self._tool_policy_service.evaluate_execution(
+            db=self._db,
+            tool_name=str(tool or '').strip(),
+            payload=payload if isinstance(payload, dict) else {},
+            agent_class=self._current_agent_class,
+            user_id=self._current_user_id,
+        )
+        if decision.passed:
+            self._active_tool_policy_decisions[(session_id, str(tool or '').strip())] = decision
+            return None
+
+        deny_reason = str(decision.reason or 'policy_denied')
+        status = 'confirmation_required' if deny_reason == 'confirmation_required' else 'policy_denied'
+        self.write_event_tool_error(session_id=session_id, tool=str(tool or '').strip(), error=status)
+        self._tool_policy_service.record_audit(
+            db=self._db,
+            decision=decision,
+            user_id=self._current_user_id,
+            agent_id=self._current_agent_id,
+            conversation_id=self._current_conversation_id or session_id,
+            tool_name=str(tool or '').strip(),
+            status='denied',
+            deny_reason=deny_reason,
+            payload_keys=list((payload or {}).keys()),
+            details={'stage': 'before_execute'},
+        )
+        return {
+            'ok': False,
+            'error': status,
+            'policy': {
+                'reason': deny_reason,
+                'risk_level': decision.risk_level,
+                'requires_confirmation': decision.requires_confirmation,
+                'cost_class': decision.cost_class,
+            },
+        }
 
     # 取得最近一次回合的度量（tokens/cost 等）
     def last_metrics(self) -> dict | None:
@@ -1396,6 +1466,7 @@ class ChatRouter:
         self._audit(action="event.tool_result", session_id=session_id, details={"tool": tool, "keys": list(result.keys()), "duration_ms": duration_ms})
         payload = {"tool": tool, "result": result, "duration_ms": duration_ms}
         self._write_part(session_id=session_id, type_="tool_result", payload=payload)
+        self._record_tool_policy_result(session_id=session_id, tool=tool, status='success', result=result, duration_ms=duration_ms)
 
     def write_event_tool_error(self, *, session_id: str, tool: str, error: str) -> None:
         duration_ms = None
@@ -1408,6 +1479,56 @@ class ChatRouter:
         self._log.error("event.tool_error", session_id=session_id, tool=tool, error=error, duration_ms=duration_ms)
         self._audit(action="event.tool_error", session_id=session_id, details={"tool": tool, "error": error, "duration_ms": duration_ms})
         self._write_part(session_id=session_id, type_="tool_error", payload={"tool": tool, "error": error, "duration_ms": duration_ms})
+        self._record_tool_policy_result(session_id=session_id, tool=tool, status='error', result={'error': error}, duration_ms=duration_ms)
+
+    def _record_tool_policy_result(self, *, session_id: str, tool: str, status: str, result: dict, duration_ms: int | None) -> None:
+        # 目的：將策略判斷與工具最終結果寫入稽核表。
+        # 為什麼：治理層需要 who/agent/tool/risk/status 的完整追溯資料。
+        if not bool(getattr(settings, 'TOOL_EXEC_POLICY_ENABLED', True)):
+            return
+        if not hasattr(self, '_db') or self._db is None:
+            return
+        decision = self._active_tool_policy_decisions.pop((session_id, str(tool or '').strip()), None)
+        if decision is None:
+            return
+        cost_estimate = self._extract_cost_estimate(result)
+        self._tool_policy_service.record_audit(
+            db=self._db,
+            decision=decision,
+            user_id=self._current_user_id,
+            agent_id=self._current_agent_id,
+            conversation_id=self._current_conversation_id or session_id,
+            tool_name=str(tool or '').strip(),
+            status=status,
+            payload_keys=list((result or {}).keys()),
+            deny_reason=None if status == 'success' else str((result or {}).get('error') or ''),
+            cost_estimate=cost_estimate,
+            latency_ms=duration_ms,
+            details={'stage': 'after_execute'},
+        )
+
+    def _extract_cost_estimate(self, result: dict) -> Decimal | None:
+        if not isinstance(result, dict):
+            return None
+        for key in ('cost_estimate', 'cost_usd', 'cost'):
+            raw_value = result.get(key)
+            if raw_value is None:
+                continue
+            try:
+                return Decimal(str(raw_value))
+            except Exception:
+                continue
+        inner = result.get('result')
+        if isinstance(inner, dict):
+            for key in ('cost_estimate', 'cost_usd', 'cost'):
+                raw_value = inner.get(key)
+                if raw_value is None:
+                    continue
+                try:
+                    return Decimal(str(raw_value))
+                except Exception:
+                    continue
+        return None
 
     def write_event_step_finish(self, *, session_id: str) -> None:
         self._log.info("event.step_finish", session_id=session_id)

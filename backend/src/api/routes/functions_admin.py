@@ -11,10 +11,12 @@ from src.core.database import get_db
 from src.models import FunctionProfile, User
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import require_permission, check_permission
+from src.services.tool_policy_service import ToolPolicyService
 from src.api.errors import not_found_error, validation_error, forbidden_error
 
 
 router = APIRouter()
+tool_policy_service = ToolPolicyService()
 
 
 def _parse_claude_skill(content: str) -> dict[str, str]:
@@ -81,6 +83,7 @@ def _to_dict(row: FunctionProfile) -> dict[str, Any]:
         'parameters': row.parameters,  # JSON Schema
         'handler_type': row.handler_type or 'internal',
         'handler_config': row.handler_config,
+        'execution_policy': tool_policy_service.normalize_policy(row.execution_policy if isinstance(row.execution_policy, dict) else {}),
         'created_at': row.created_at.isoformat() if row.created_at else None,
         'updated_at': row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -374,6 +377,7 @@ async def create_function(
         parameters=parameters,
         handler_type=handler_type if handler_type in ('internal', 'webhook', 'mcp') else 'internal',
         handler_config=handler_config,
+        execution_policy=tool_policy_service.normalize_policy((payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}),
     )
     db.add(row)
     db.commit()
@@ -445,6 +449,11 @@ async def update_function(
 
     if 'handler_config' in (payload or {}):
         row.handler_config = (payload or {}).get('handler_config')
+
+    if 'execution_policy' in (payload or {}):
+        row.execution_policy = tool_policy_service.normalize_policy(
+            (payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}
+        )
 
     # 驗證：至少需有 template 或 parameters
     if not str(row.template or '').strip() and not row.parameters:

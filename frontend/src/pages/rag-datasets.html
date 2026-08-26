@@ -32,7 +32,7 @@
     <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
       <button id="btn-new" class="btn btn-primary" type="button">新建資料集</button>
       <button id="btn-refresh" class="btn" type="button">重新整理</button>
-      <span style="color:var(--text-secondary);">聊天使用資料集需由使用者明確指定，實際可用範圍由 `entity.dataset.*` 權限決定。</span>
+      <span style="color:var(--text-secondary);">聊天使用資料集需由使用者明確指定；公有資料集所有人可用，私有資料集由 `entity.dataset.*` 權限決定。</span>
     </div>
 
     <div class="tab-bar">
@@ -55,11 +55,11 @@
 
     <section id="panel-private" class="tab-panel card">
       <h3>私有資料集清單</h3>
-      <div style="margin-bottom:8px;color:var(--text-secondary);">管理 scope=agent_private 資料集（需指定代理者）。</div>
+      <div style="margin-bottom:8px;color:var(--text-secondary);">管理 scope=agent_private 資料集（由 private.rag.* 權限控制）。</div>
       <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
         <table class="table" style="margin:0;">
           <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
-            <tr><th>代理者</th><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
+            <tr><th>名稱</th><th>敏感等級</th><th>狀態</th><th>vector_backend</th><th>index_name</th><th>操作</th></tr>
           </thead>
           <tbody id="rows-private"></tbody>
         </table>
@@ -71,10 +71,6 @@
     <div class="modal-content" style="max-width:560px;">
       <h3 id="dataset-modal-title">新建資料集</h3>
       <form id="dataset-form">
-        <div class="form-group" id="modal-agent-group" style="display:none;">
-          <label for="modal-agent-id">所屬代理者 <span style="color:var(--error-color);">*</span></label>
-          <select id="modal-agent-id"></select>
-        </div>
         <div class="form-group">
           <label for="modal-name">資料集名稱 <span style="color:var(--error-color);">*</span></label>
           <input id="modal-name" type="text" placeholder="例如：company-kb" required>
@@ -186,16 +182,20 @@
 
     (async () => {
       const capabilities = await getCapabilities({ forceRefresh: true });
-      if (!hasPermission(capabilities, 'rag.read')) {
+      const canReadGlobalRag = hasPermission(capabilities, 'rag.read');
+      const canReadPrivateRag = hasPermission(capabilities, 'private.rag.read');
+      if (!canReadGlobalRag && !canReadPrivateRag) {
         showError('僅限管理者存取');
         setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
         throw new Error('forbidden');
       }
 
-      const canCreateRag = hasPermission(capabilities, 'rag.create');
-      const canUpdateRag = hasPermission(capabilities, 'rag.update');
-      const canDeleteRag = hasPermission(capabilities, 'rag.delete');
-      const canUpdateAgent = hasPermission(capabilities, 'update_agent');
+      const canCreateGlobalRag = hasPermission(capabilities, 'rag.create');
+      const canUpdateGlobalRag = hasPermission(capabilities, 'rag.update');
+      const canDeleteGlobalRag = hasPermission(capabilities, 'rag.delete');
+      const canCreatePrivateRag = hasPermission(capabilities, 'private.rag.create');
+      const canUpdatePrivateRag = hasPermission(capabilities, 'private.rag.update');
+      const canDeletePrivateRag = hasPermission(capabilities, 'private.rag.delete');
 
       const rowsGlobal = document.getElementById('rows-global');
       const rowsPrivate = document.getElementById('rows-private');
@@ -212,20 +212,16 @@
         activeScope: 'global',
         editingId: '',
         editingScope: 'global',
-        editingAgentId: '',
         deleteTargetId: '',
         deleteTargetScope: 'global',
-        deleteTargetAgentId: '',
         globalDatasets: [],
         privateDatasets: [],
-        agents: [],
-        agentNameMap: new Map(),
       };
 
-      if (!canCreateRag && !canUpdateAgent) {
+      if (!canCreateGlobalRag && !canCreatePrivateRag) {
         newBtn.style.display = 'none';
       }
-      if (!canUpdateAgent) {
+      if (!canReadPrivateRag) {
         privateTabButton.style.display = 'none';
       }
 
@@ -240,54 +236,25 @@
         document.getElementById('panel-private').classList.toggle('active', state.activeScope === 'private');
       }
 
-      function fillAgentSelect(selectedAgentId = '', disabled = false) {
-        const agentSelect = document.getElementById('modal-agent-id');
-        const options = state.agents.map(agent => (`
-          <option value="${escapeHtml(String(agent.id || ''))}">${escapeHtml(String(agent.name || '未命名代理者'))}</option>
-        `)).join('');
-        agentSelect.innerHTML = options;
-        if (selectedAgentId) {
-          agentSelect.value = String(selectedAgentId);
-        }
-        agentSelect.disabled = disabled;
-      }
-
-      async function loadAgents() {
-        try {
-          const response = await api.get('/agents');
-          const agents = Array.isArray(response.agents) ? response.agents : [];
-          state.agents = agents;
-          state.agentNameMap = new Map(agents.map(agent => [String(agent.id), String(agent.name || '未命名代理者')]));
-        } catch {
-          state.agents = [];
-          state.agentNameMap = new Map();
-        }
-      }
-
       function openCreateModal() {
         const targetScope = state.activeScope;
-        if (targetScope === 'global' && !canCreateRag) {
+        if (targetScope === 'global' && !canCreateGlobalRag) {
           showError('你沒有建立公有資料集的權限');
           return;
         }
-        if (targetScope === 'private' && !canUpdateAgent) {
+        if (targetScope === 'private' && !canCreatePrivateRag) {
           showError('你沒有建立私有資料集的權限');
           return;
         }
 
         state.editingId = '';
         state.editingScope = targetScope;
-        state.editingAgentId = '';
         document.getElementById('dataset-form').reset();
         document.getElementById('modal-enabled').checked = true;
 
-        const modalAgentGroup = document.getElementById('modal-agent-group');
         if (targetScope === 'private') {
-          modalAgentGroup.style.display = '';
-          fillAgentSelect('', false);
           document.getElementById('dataset-modal-title').textContent = '新建私有資料集';
         } else {
-          modalAgentGroup.style.display = 'none';
           document.getElementById('dataset-modal-title').textContent = '新建公有資料集';
         }
         document.getElementById('dataset-modal-save').textContent = '建立';
@@ -296,11 +263,11 @@
 
       function openEditModal(scope, datasetId) {
         const normalizedScope = scope === 'private' ? 'private' : 'global';
-        if (normalizedScope === 'global' && !canUpdateRag) {
+        if (normalizedScope === 'global' && !canUpdateGlobalRag) {
           showError('你沒有編輯公有資料集的權限');
           return;
         }
-        if (normalizedScope === 'private' && !canUpdateAgent) {
+        if (normalizedScope === 'private' && !canUpdatePrivateRag) {
           showError('你沒有編輯私有資料集的權限');
           return;
         }
@@ -314,7 +281,6 @@
 
         state.editingId = String(found.id);
         state.editingScope = normalizedScope;
-        state.editingAgentId = String(found.agent_id || '');
 
         document.getElementById('modal-name').value = found.name || '';
         document.getElementById('modal-sensitivity').value = found.sensitivity || 'normal';
@@ -322,13 +288,9 @@
         document.getElementById('modal-vector-backend').value = found.vector_backend || '';
         document.getElementById('modal-index-name').value = found.index_name || '';
 
-        const modalAgentGroup = document.getElementById('modal-agent-group');
         if (normalizedScope === 'private') {
-          modalAgentGroup.style.display = '';
-          fillAgentSelect(state.editingAgentId, true);
           document.getElementById('dataset-modal-title').textContent = '編輯私有資料集';
         } else {
-          modalAgentGroup.style.display = 'none';
           document.getElementById('dataset-modal-title').textContent = '編輯公有資料集';
         }
 
@@ -355,19 +317,13 @@
         }
 
         try {
+          const scopeValue = state.editingScope === 'private' ? 'agent_private' : 'global';
           if (state.editingScope === 'private') {
-            const agentId = state.editingId
-              ? state.editingAgentId
-              : String(document.getElementById('modal-agent-id').value || '').trim();
-            if (!agentId) {
-              showError('私有資料集必須指定代理者');
-              return;
-            }
             if (state.editingId) {
-              await api.put(`/agents/${encodeURIComponent(agentId)}/rag/datasets/${encodeURIComponent(state.editingId)}`, payload);
+              await api.put(`/rag/datasets/${encodeURIComponent(state.editingId)}`, payload);
               showSuccess('已更新私有資料集');
             } else {
-              await api.post(`/agents/${encodeURIComponent(agentId)}/rag/datasets`, payload);
+              await api.post('/rag/datasets', { ...payload, scope: scopeValue });
               showSuccess('已建立私有資料集');
             }
           } else {
@@ -375,7 +331,7 @@
               await api.put(`/rag/datasets/${encodeURIComponent(state.editingId)}`, payload);
               showSuccess('已更新公有資料集');
             } else {
-              await api.post('/rag/datasets', payload);
+              await api.post('/rag/datasets', { ...payload, scope: scopeValue });
               showSuccess('已建立公有資料集');
             }
           }
@@ -432,7 +388,7 @@
                 <td>${typeof doc.progress === 'number' ? `${Math.max(0, Math.min(100, Number(doc.progress)))}%` : '-'}</td>
                 <td>${formatDate(doc.uploaded_at)}</td>
                 <td>
-                  ${canDeleteRag ? `<button
+                  ${canDeleteGlobalRag || canDeletePrivateRag ? `<button
                     class="btn btn-danger"
                     type="button"
                     data-delete-file="${escapeHtml(doc.file_key || '')}"
@@ -466,7 +422,8 @@
         if (!(target instanceof HTMLButtonElement)) return;
         const fileKey = String(target.getAttribute('data-delete-file') || '').trim();
         if (!fileKey || !currentUploadDatasetId) return;
-        if (!canDeleteRag) {
+        const isPrivateDataset = state.privateDatasets.some(item => String(item.id) === String(currentUploadDatasetId));
+        if ((isPrivateDataset && !canDeletePrivateRag) || (!isPrivateDataset && !canDeleteGlobalRag)) {
           showError('你沒有刪除資料集文件的權限');
           return;
         }
@@ -483,7 +440,8 @@
       });
 
       document.getElementById('upload-btn').addEventListener('click', () => {
-        if (!canCreateRag) {
+        const isPrivateDataset = state.privateDatasets.some(item => String(item.id) === String(currentUploadDatasetId));
+        if ((isPrivateDataset && !canCreatePrivateRag) || (!isPrivateDataset && !canCreateGlobalRag)) {
           showError('你沒有上傳文件的權限');
           return;
         }
@@ -492,7 +450,8 @@
       });
 
       uploadFileInput.addEventListener('change', async () => {
-        if (!canCreateRag) {
+        const isPrivateDataset = state.privateDatasets.some(item => String(item.id) === String(currentUploadDatasetId));
+        if ((isPrivateDataset && !canCreatePrivateRag) || (!isPrivateDataset && !canCreateGlobalRag)) {
           showError('你沒有上傳文件的權限');
           return;
         }
@@ -598,10 +557,9 @@
         closeModal(searchModal);
       });
 
-      function openDeleteModal(scope, datasetId, datasetName, agentId = '') {
+      function openDeleteModal(scope, datasetId, datasetName) {
         state.deleteTargetScope = scope === 'private' ? 'private' : 'global';
         state.deleteTargetId = datasetId;
-        state.deleteTargetAgentId = agentId;
         document.getElementById('delete-modal-name').textContent = datasetName;
         openModal(deleteModal);
       }
@@ -610,14 +568,14 @@
         if (!state.deleteTargetId) return;
         try {
           if (state.deleteTargetScope === 'private') {
-            if (!canUpdateAgent) {
+            if (!canDeletePrivateRag) {
               showError('你沒有刪除私有資料集的權限');
               return;
             }
-            await api.delete(`/agents/${encodeURIComponent(state.deleteTargetAgentId)}/rag/datasets/${encodeURIComponent(state.deleteTargetId)}`);
+            await api.delete(`/rag/datasets/${encodeURIComponent(state.deleteTargetId)}`);
             showSuccess('已刪除私有資料集');
           } else {
-            if (!canDeleteRag) {
+            if (!canDeleteGlobalRag) {
               showError('你沒有刪除公有資料集的權限');
               return;
             }
@@ -648,8 +606,8 @@
             <td style="white-space:nowrap;">
               <button class="btn" data-scope="global" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
               <button class="btn" data-scope="global" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
-              ${canUpdateRag ? `<button class="btn" data-scope="global" data-edit="${item.id}">編輯</button>` : ''}
-              ${canDeleteRag ? `<button class="btn btn-danger" data-scope="global" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
+              ${canUpdateGlobalRag ? `<button class="btn" data-scope="global" data-edit="${item.id}">編輯</button>` : ''}
+              ${canDeleteGlobalRag ? `<button class="btn btn-danger" data-scope="global" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
             </td>
           </tr>
         `).join('');
@@ -659,11 +617,8 @@
         const response = await api.get('/rag/datasets?scope=agent_private');
         state.privateDatasets = Array.isArray(response.datasets) ? response.datasets : [];
         rowsPrivate.innerHTML = state.privateDatasets.map(item => {
-          const agentId = String(item.agent_id || '');
-          const agentName = state.agentNameMap.get(agentId) || agentId || '-';
           return `
             <tr>
-              <td>${escapeHtml(agentName)}</td>
               <td>${escapeHtml(item.name || '')}</td>
               <td>${escapeHtml(item.sensitivity || 'normal')}</td>
               <td>${item.enabled ? '啟用' : '停用'}</td>
@@ -672,8 +627,8 @@
               <td style="white-space:nowrap;">
                 <button class="btn" data-scope="private" data-upload="${item.id}" data-name="${escapeHtml(item.name || '')}">上傳/文件</button>
                 <button class="btn" data-scope="private" data-search="${item.id}" data-name="${escapeHtml(item.name || '')}">查詢測試</button>
-                ${canUpdateAgent ? `<button class="btn" data-scope="private" data-edit="${item.id}">編輯</button>` : ''}
-                ${canUpdateAgent ? `<button class="btn btn-danger" data-scope="private" data-del="${item.id}" data-agent-id="${escapeHtml(agentId)}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
+                ${canUpdatePrivateRag ? `<button class="btn" data-scope="private" data-edit="${item.id}">編輯</button>` : ''}
+                ${canDeletePrivateRag ? `<button class="btn btn-danger" data-scope="private" data-del="${item.id}" data-name="${escapeHtml(item.name || '')}">刪除</button>` : ''}
               </td>
             </tr>
           `;
@@ -682,8 +637,12 @@
 
       async function loadAllDatasets() {
         try {
-          await loadAgents();
-          await Promise.all([loadGlobalDatasets(), loadPrivateDatasets()]);
+          const loaders = [];
+          if (canReadGlobalRag) loaders.push(loadGlobalDatasets());
+          else rowsGlobal.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">無公有資料集讀取權限</td></tr>';
+          if (canReadPrivateRag) loaders.push(loadPrivateDatasets());
+          else rowsPrivate.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">無私有資料集讀取權限</td></tr>';
+          await Promise.all(loaders);
         } catch (error) {
           showError((error && error.message) || '載入失敗');
         }
@@ -699,7 +658,6 @@
           const editId = target.getAttribute('data-edit');
           const delId = target.getAttribute('data-del');
           const datasetName = target.getAttribute('data-name') || '';
-          const agentId = target.getAttribute('data-agent-id') || '';
 
           if (uploadId) {
             openUploadModal(uploadId, datasetName);
@@ -714,7 +672,7 @@
             return;
           }
           if (delId) {
-            openDeleteModal(scope, delId, datasetName, agentId);
+            openDeleteModal(scope, delId, datasetName);
           }
         });
       }
@@ -728,7 +686,7 @@
       bindRowActions(rowsPrivate);
 
       await loadAllDatasets();
-      setActiveTab('global');
+      setActiveTab(canReadGlobalRag ? 'global' : 'private');
     })().catch((error) => {
       showError((error && error.message) || '初始化失敗');
     });

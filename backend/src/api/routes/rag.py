@@ -99,7 +99,7 @@ def _has_any_permission(*, current_user: User, db: Session, permission_keys: lis
 
 def _resolve_user_dataset_permission_keys(*, db: Session, current_user: User) -> set[str]:
     # 目的：取得使用者可用的資料集 execute 權限鍵。
-    # 為什麼：聊天可選資料集清單需由 entity.dataset.* 權限決策，避免隱含來源污染。
+    # 為什麼：私有資料集需由 entity.dataset.* 權限決策，避免越權存取。
     try:
         capability = access_control_service.resolve_effective_capability(db, current_user)
         permission_keys = {str(key) for key in (capability.permissions or [])}
@@ -113,10 +113,13 @@ def _resolve_user_dataset_permission_keys(*, db: Session, current_user: User) ->
 
 
 def _filter_datasets_by_user_permissions(*, dataset_rows: list[RagDataset], dataset_permission_keys: set[str]) -> list[RagDataset]:
-    # 目的：依使用者資料集 execute 權限過濾可用資料集。
-    # 為什麼：支援 id/name 舊鍵相容，並讓資料集可見性完全由實體權限決定。
+    # 目的：依規則過濾聊天可選資料集。
+    # 為什麼：公有資料集所有人可用；私有資料集才需要 entity.dataset.* 權限。
     filtered_rows: list[RagDataset] = []
     for dataset_row in dataset_rows:
+        if str(getattr(dataset_row, 'scope', '') or '') == 'global':
+            filtered_rows.append(dataset_row)
+            continue
         dataset_id = str(getattr(dataset_row, 'id', '') or '').strip()
         dataset_name = str(getattr(dataset_row, 'name', '') or '').strip()
         candidate_keys = set()
@@ -1993,12 +1996,12 @@ async def upload_dataset_document(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
-    # 權限檢查：公有資料集需要 rag.create，私有資料集接受 rag.create 或 update_agent。
+    # 權限檢查：公有資料集需要 rag.create，私有資料集需要 private.rag.create。
     if row.scope == 'global':
         if not check_permission(current_user, 'rag.create', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.create', 'update_agent']):
+        if not check_permission(current_user, 'private.rag.create', db=db):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -2168,12 +2171,24 @@ async def list_rag_datasets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'rag.read', db=db):
+    can_read_global_rag = check_permission(current_user, 'rag.read', db=db)
+    can_read_private_rag = check_permission(current_user, 'private.rag.read', db=db)
+    if not can_read_global_rag and not can_read_private_rag:
+        raise forbidden_error()
+
+    requested_scope = str(scope or '').strip()
+    if requested_scope == 'global' and not can_read_global_rag:
+        raise forbidden_error()
+    if requested_scope == 'agent_private' and not can_read_private_rag:
         raise forbidden_error()
 
     q = db.query(RagDataset)
-    if scope:
-        q = q.filter(RagDataset.scope == scope)
+    if requested_scope:
+        q = q.filter(RagDataset.scope == requested_scope)
+    elif can_read_global_rag and not can_read_private_rag:
+        q = q.filter(RagDataset.scope == 'global')
+    elif can_read_private_rag and not can_read_global_rag:
+        q = q.filter(RagDataset.scope == 'agent_private')
     if agent_id:
         q = q.filter(RagDataset.agent_id == agent_id)
     rows = q.order_by(RagDataset.created_at.desc()).all()
@@ -2187,7 +2202,7 @@ async def list_selectable_rag_datasets(
     current_user: User = Depends(get_current_user),
 ):
     # 目的：提供聊天介面可選資料集清單。
-    # 為什麼：資料集可見性需由 entity.dataset.* 決定，避免使用代理者預設綁定造成隱含來源。
+    # 為什麼：公有資料集對所有使用者可見，私有資料集才由 entity.dataset.* 決定。
     can_chat = check_permission(current_user, 'chat', db=db)
     can_read_rag = check_permission(current_user, 'rag.read', db=db)
     can_read_agent = check_permission(current_user, 'read_agent', db=db)
@@ -2215,13 +2230,22 @@ async def list_selectable_rag_datasets(
 
 
 @router.post('/rag/datasets')
-async def create_global_rag_dataset(
+async def create_rag_dataset(
     payload: dict,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'rag.create', db=db):
-        raise forbidden_error()
+    dataset_scope = str((payload or {}).get('scope') or 'global').strip() or 'global'
+    if dataset_scope not in {'global', 'agent_private'}:
+        from src.api.errors import validation_error
+        raise validation_error('scope 僅允許 global/agent_private')
+
+    if dataset_scope == 'global':
+        if not check_permission(current_user, 'rag.create', db=db):
+            raise forbidden_error()
+    else:
+        if not check_permission(current_user, 'private.rag.create', db=db):
+            raise forbidden_error()
 
     name = str((payload or {}).get('name') or '').strip()
     if not name:
@@ -2234,7 +2258,7 @@ async def create_global_rag_dataset(
 
     row = RagDataset(
         name=name,
-        scope='global',
+        scope=dataset_scope,
         agent_id=None,
         owner_user_id=current_user.id,
         sensitivity=sensitivity,
@@ -2249,23 +2273,29 @@ async def create_global_rag_dataset(
 
 
 @router.put('/rag/datasets/{dataset_id}')
-async def update_global_rag_dataset(
+async def update_rag_dataset(
     dataset_id: str,
     payload: dict,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'rag.update', db=db):
-        raise forbidden_error()
-
     try:
         dataset_uuid = uuid.UUID(str(dataset_id))
     except Exception:
         raise not_found_error('RagDataset', dataset_id) from None
 
-    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid, RagDataset.scope == 'global').first()
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid).first()
     if not row:
         raise not_found_error('RagDataset', dataset_id)
+
+    if row.scope == 'global':
+        if not check_permission(current_user, 'rag.update', db=db):
+            raise forbidden_error()
+    elif row.scope == 'agent_private':
+        if not check_permission(current_user, 'private.rag.update', db=db):
+            raise forbidden_error()
+    else:
+        raise forbidden_error()
 
     if 'name' in (payload or {}):
         name = str((payload or {}).get('name') or '').strip()
@@ -2294,22 +2324,28 @@ async def update_global_rag_dataset(
 
 
 @router.delete('/rag/datasets/{dataset_id}')
-async def delete_global_rag_dataset(
+async def delete_rag_dataset(
     dataset_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'rag.delete', db=db):
-        raise forbidden_error()
-
     try:
         dataset_uuid = uuid.UUID(str(dataset_id))
     except Exception:
         raise not_found_error('RagDataset', dataset_id) from None
 
-    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid, RagDataset.scope == 'global').first()
+    row = db.query(RagDataset).filter(RagDataset.id == dataset_uuid).first()
     if not row:
         raise not_found_error('RagDataset', dataset_id)
+
+    if row.scope == 'global':
+        if not check_permission(current_user, 'rag.delete', db=db):
+            raise forbidden_error()
+    elif row.scope == 'agent_private':
+        if not check_permission(current_user, 'private.rag.delete', db=db):
+            raise forbidden_error()
+    else:
+        raise forbidden_error()
 
     permission_keys_to_remove = _build_dataset_execute_permission_keys(dataset=row)
     db.delete(row)
@@ -2335,12 +2371,12 @@ async def list_dataset_documents(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
-    # 權限檢查：公有資料集需要 rag.read，私有資料集接受 rag.read 或 read_agent。
+    # 權限檢查：公有資料集需要 rag.read，私有資料集需要 private.rag.read。
     if row.scope == 'global':
         if not check_permission(current_user, 'rag.read', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.read', 'read_agent']):
+        if not check_permission(current_user, 'private.rag.read', db=db):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -2507,7 +2543,7 @@ async def delete_dataset_document(
         if not check_permission(current_user, 'rag.delete', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.delete', 'update_agent']):
+        if not check_permission(current_user, 'private.rag.delete', db=db):
             raise forbidden_error()
     else:
         raise forbidden_error()
@@ -2591,12 +2627,12 @@ async def search_dataset(
     if not row:
         raise not_found_error('RagDataset', dataset_id)
 
-    # 權限檢查：公有資料集需要 rag.read，私有資料集接受 rag.read 或 read_agent。
+    # 權限檢查：公有資料集需要 rag.read，私有資料集需要 private.rag.read。
     if row.scope == 'global':
         if not check_permission(current_user, 'rag.read', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not _has_any_permission(current_user=current_user, db=db, permission_keys=['rag.read', 'read_agent']):
+        if not check_permission(current_user, 'private.rag.read', db=db):
             raise forbidden_error()
     else:
         raise forbidden_error()

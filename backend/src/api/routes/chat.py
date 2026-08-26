@@ -1952,7 +1952,13 @@ def _normalize_selected_dataset_ids(raw_dataset_ids: Any) -> list[str]:
     為什麼：避免無效 UUID 或重複值污染檢索範圍，並維持後端行為可預期。
     """
     normalized_ids: list[str] = []
-    for raw_item in list(raw_dataset_ids or []):
+    if isinstance(raw_dataset_ids, str):
+        raw_items = [raw_dataset_ids]
+    elif isinstance(raw_dataset_ids, list | tuple | set):
+        raw_items = list(raw_dataset_ids)
+    else:
+        raw_items = []
+    for raw_item in raw_items:
         normalized_item = str(raw_item or '').strip()
         if not normalized_item:
             continue
@@ -1966,7 +1972,7 @@ def _normalize_selected_dataset_ids(raw_dataset_ids: Any) -> list[str]:
 
 def _resolve_user_dataset_permission_keys(*, db: Session, current_user: User) -> set[str]:
     """目的：解析使用者可用的資料集 execute 權限鍵集合。
-    為什麼：聊天 RAG 可見性需完全由 entity.dataset.* 權限決定，不再依賴代理者綁定語意。
+    為什麼：私有資料集需由 entity.dataset.* 權限決定，避免越權讀取。
     """
     try:
         capability = access_control_service.resolve_effective_capability(db, current_user)
@@ -2077,6 +2083,9 @@ def _build_chat_rag_context(
     for dataset_id in candidate_dataset_ids:
         dataset_row = dataset_by_id.get(str(dataset_id))
         if dataset_row is None:
+            continue
+        if str(getattr(dataset_row, 'scope', '') or '') == 'global':
+            effective_rows.append(dataset_row)
             continue
         dataset_id_text = str(getattr(dataset_row, 'id', '') or '').strip()
         dataset_name_text = str(getattr(dataset_row, 'name', '') or '').strip()
@@ -2380,6 +2389,11 @@ async def invoke_tool(
         raise not_found_error('Agent', str(conv.agent_id))
 
     router = ChatRouter()
+    router.set_execution_context(
+        user_id=str(current_user.id),
+        agent_id=str(agent.id),
+        conversation_id=str(conv.id),
+    )
     attachment_ids = _normalize_attachment_ids((payload or {}).get('attachment_ids'))
     if not attachment_ids:
         bound_rows = chat_attachment_service.list_user_attachments(
@@ -2467,6 +2481,11 @@ async def stream_tool(
         raise not_found_error('Agent', str(conv.agent_id))
 
     router = ChatRouter()
+    router.set_execution_context(
+        user_id=str(current_user.id),
+        agent_id=str(agent.id),
+        conversation_id=str(conv.id),
+    )
 
     async def _gen():
         # 準備白名單/連線映射，並加入心跳機制
@@ -2721,6 +2740,11 @@ async def chat_stream(
         _save_message_with_touch_fallback(db=db, conversation=conversation, message_obj=user_message)
 
     router = ChatRouter()
+    router.set_execution_context(
+        user_id=str(current_user.id),
+        agent_id=str(agent.id),
+        conversation_id=str(conversation.id),
+    )
     overrides = _build_agent_overrides(agent)
     _apply_custom_toolcall_guide(router, agent)
 

@@ -306,6 +306,7 @@ class MCPConnection(Base):
     env = Column(JSON, default=dict)
     # 輸入結構（JSON Schema，可選，用於表單渲染與驗證）
     input_schema = Column(JSON, default=dict)
+    execution_policy = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -337,6 +338,7 @@ class SkillEntry(Base):
     prompt_template = Column(Text, nullable=True)  # SKILL.md 內容（提示詞模板）
     zip_bundle = Column(LargeBinary, nullable=True)  # 完整 ZIP 檔案
     references = Column(JSON, nullable=True)  # 解壓後的 references/ 內容（JSON 快取）
+    execution_policy = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -358,6 +360,7 @@ class FunctionProfile(Base):
     parameters = Column(JSON, nullable=True)  # OpenAI JSON Schema 格式
     handler_type = Column(String(20), nullable=True, default='internal')  # internal | webhook | mcp
     handler_config = Column(JSON, nullable=True)  # 執行配置（endpoint URL、MCP server 等）
+    execution_policy = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -449,6 +452,33 @@ class LlmTurn(Base):
     latency_ms = Column(Integer, nullable=True)
     status = Column(String(20), nullable=False, default='success')
     error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class ToolExecutionAudit(Base):
+    # 目的：紀錄工具策略決策與最終執行結果。
+    # 為什麼：工具執行改由風險策略控管後，需提供可追溯的稽核與配額依據。
+    __tablename__ = 'tool_execution_audits'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey('users.id'), nullable=True)
+    agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=True)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=True)
+    tool_name = Column(String(160), nullable=False)
+    tool_type = Column(String(20), nullable=True)
+    risk_level = Column(String(20), nullable=False, default='safe')
+    cost_class = Column(String(20), nullable=False, default='free')
+    allowlist_passed = Column(Boolean, nullable=False, default=True)
+    confirmation_required = Column(Boolean, nullable=False, default=False)
+    confirmation_passed = Column(Boolean, nullable=False, default=True)
+    quota_passed = Column(Boolean, nullable=False, default=True)
+    status = Column(String(20), nullable=False, default='allowed')
+    deny_reason = Column(String(80), nullable=True)
+    payload_keys = Column(JSON, default=list)
+    cost_estimate = Column(Numeric(12, 6), nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    details = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now)
 
 
