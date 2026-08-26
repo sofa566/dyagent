@@ -93,8 +93,13 @@
       grid-template-columns: 1fr 1fr 120px;
       gap: 12px;
     }
+    .form-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
     @media (max-width: 700px) {
-      .form-grid { grid-template-columns: 1fr; }
+      .form-grid, .form-grid-2 { grid-template-columns: 1fr; }
     }
     .form-group { margin-bottom: 14px; }
     .form-group label {
@@ -253,6 +258,47 @@
             </label>
           </div>
 
+          <div class="preview-box" style="margin-top:0;">
+            <h4>執行策略（execution_policy）</h4>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="policy-risk-level">風險等級</label>
+                <select id="policy-risk-level">
+                  <option value="safe">safe</option>
+                  <option value="restricted">restricted</option>
+                  <option value="dangerous">dangerous</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="policy-cost-class">成本分類</label>
+                <select id="policy-cost-class">
+                  <option value="free">free</option>
+                  <option value="billable">billable</option>
+                </select>
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;">
+                <label class="checkbox-label" style="margin-bottom:10px;">
+                  <input id="policy-requires-confirmation" type="checkbox">
+                  <span>需要人工確認</span>
+                </label>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="policy-allow-scopes">允許 Agent Scope（逗號分隔）</label>
+              <input id="policy-allow-scopes" type="text" placeholder="master,public,tasked,private">
+            </div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="policy-daily-calls">每位使用者每日上限（可選）</label>
+                <input id="policy-daily-calls" type="number" min="1" step="1" placeholder="例如：50">
+              </div>
+              <div class="form-group">
+                <label for="policy-monthly-calls">每位使用者每月上限（可選）</label>
+                <input id="policy-monthly-calls" type="number" min="1" step="1" placeholder="例如：500">
+              </div>
+            </div>
+          </div>
+
           <!-- 格式選擇 -->
           <div class="form-group">
             <label>格式類型</label>
@@ -402,6 +448,12 @@
     const handlerConfigInput = $('handler-config');
     const parametersError = $('parameters-error');
     const handlerConfigError = $('handler-config-error');
+    const policyRiskLevelInput = $('policy-risk-level');
+    const policyCostClassInput = $('policy-cost-class');
+    const policyRequiresConfirmationInput = $('policy-requires-confirmation');
+    const policyAllowScopesInput = $('policy-allow-scopes');
+    const policyDailyCallsInput = $('policy-daily-calls');
+    const policyMonthlyCallsInput = $('policy-monthly-calls');
 
     let editingId = '';
 
@@ -465,6 +517,7 @@
       handlerConfigInput.value = '';
       parametersError.style.display = 'none';
       handlerConfigError.style.display = 'none';
+      fillExecutionPolicy({});
       // 切換顯示
       updateFormatSection();
     }
@@ -474,6 +527,47 @@
       const isOpenai = formatTypeSelect.value === 'openai';
       templateSection.style.display = isOpenai ? 'none' : 'block';
       openaiSection.style.display = isOpenai ? 'block' : 'none';
+    }
+
+    function normalizeScopeList(rawValue) {
+      const parsedScopes = String(rawValue || '').split(',').map((scopeItem) => scopeItem.trim()).filter(Boolean);
+      if (!parsedScopes.length) return ['master', 'public', 'tasked', 'private'];
+      return Array.from(new Set(parsedScopes));
+    }
+
+    function parsePositiveIntOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number.parseInt(normalizedValue, 10);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正整數`);
+      return parsedValue;
+    }
+
+    function parseExecutionPolicy() {
+      const rateLimitProfile = {};
+      const dailyLimit = parsePositiveIntOrNull(policyDailyCallsInput.value, '每日上限');
+      const monthlyLimit = parsePositiveIntOrNull(policyMonthlyCallsInput.value, '每月上限');
+      if (dailyLimit !== null) rateLimitProfile.per_user_daily_calls = dailyLimit;
+      if (monthlyLimit !== null) rateLimitProfile.per_user_monthly_calls = monthlyLimit;
+      return {
+        risk_level: policyRiskLevelInput.value || 'safe',
+        cost_class: policyCostClassInput.value || 'free',
+        requires_confirmation: !!policyRequiresConfirmationInput.checked,
+        allow_scopes: normalizeScopeList(policyAllowScopesInput.value),
+        rate_limit_profile: rateLimitProfile,
+      };
+    }
+
+    function fillExecutionPolicy(rawPolicy) {
+      const policy = (rawPolicy && typeof rawPolicy === 'object') ? rawPolicy : {};
+      const allowScopes = Array.isArray(policy.allow_scopes) ? policy.allow_scopes : ['master', 'public', 'tasked', 'private'];
+      const rateLimitProfile = (policy.rate_limit_profile && typeof policy.rate_limit_profile === 'object') ? policy.rate_limit_profile : {};
+      policyRiskLevelInput.value = String(policy.risk_level || 'safe');
+      policyCostClassInput.value = String(policy.cost_class || 'free');
+      policyRequiresConfirmationInput.checked = !!policy.requires_confirmation;
+      policyAllowScopesInput.value = allowScopes.map((scopeItem) => String(scopeItem || '').trim()).filter(Boolean).join(',');
+      policyDailyCallsInput.value = rateLimitProfile.per_user_daily_calls ? String(rateLimitProfile.per_user_daily_calls) : '';
+      policyMonthlyCallsInput.value = rateLimitProfile.per_user_monthly_calls ? String(rateLimitProfile.per_user_monthly_calls) : '';
     }
 
     // JSON 驗證
@@ -566,6 +660,7 @@
       versionInput.value = String(found.version || 1);
       descriptionInput.value = found.description || '';
       enabledInput.checked = !!found.enabled;
+      fillExecutionPolicy(found.execution_policy);
 
       // 根據資料判斷格式類型
       const hasParameters = found.parameters && Object.keys(found.parameters).length > 0;
@@ -615,13 +710,20 @@
       }
       const isOpenai = formatTypeSelect.value === 'openai';
 
-      const payload = {
-        name: String(nameInput.value || '').trim(),
-        provider: String(providerInput.value || '').trim(),
-        version: parseInt(versionInput.value, 10) || 1,
-        description: String(descriptionInput.value || ''),
-        enabled: !!enabledInput.checked,
-      };
+      let payload;
+      try {
+        payload = {
+          name: String(nameInput.value || '').trim(),
+          provider: String(providerInput.value || '').trim(),
+          version: parseInt(versionInput.value, 10) || 1,
+          description: String(descriptionInput.value || ''),
+          enabled: !!enabledInput.checked,
+          execution_policy: parseExecutionPolicy(),
+        };
+      } catch (error) {
+        showError((error && error.message) || '執行策略設定有誤');
+        return;
+      }
 
       if (!payload.name) {
         showError('名稱為必填');

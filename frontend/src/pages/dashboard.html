@@ -28,6 +28,22 @@
     table.logs th, table.logs td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
     table.logs th { color: var(--text-secondary); font-weight: 600; }
     .audit-filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+    .audit-filters label { margin-bottom: 0; font-weight: 500; color: var(--text-primary); }
+    .audit-filters select,
+    #level-filter {
+      padding: 0.75rem;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      background: #fff;
+      box-sizing: border-box;
+    }
+    .audit-filters select { min-width: 150px; }
+    .audit-filters select:focus,
+    #level-filter:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
     .pill-dangerous { color:#991b1b; font-weight:600; }
     .pill-restricted { color:#b45309; font-weight:600; }
     .pill-safe { color:#166534; font-weight:600; }

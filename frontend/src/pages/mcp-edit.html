@@ -211,6 +211,48 @@
       </div>
     </section>
 
+    <section class="card">
+      <h3>執行策略（execution_policy）</h3>
+      <div class="form-grid-3">
+        <div class="form-group">
+          <label for="policy_risk_level">風險等級</label>
+          <select id="policy_risk_level">
+            <option value="safe">safe</option>
+            <option value="restricted">restricted</option>
+            <option value="dangerous">dangerous</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="policy_cost_class">成本分類</label>
+          <select id="policy_cost_class">
+            <option value="free">free</option>
+            <option value="billable">billable</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>&nbsp;</label>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+            <input type="checkbox" id="policy_requires_confirmation"> 需要人工確認
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="policy_allow_scopes">允許 Agent Scope（逗號分隔）</label>
+        <input id="policy_allow_scopes" type="text" placeholder="master,public,tasked,private">
+        <small style="color:var(--text-secondary);">留白時會使用預設：master、public、tasked、private</small>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="policy_daily_calls">每位使用者每日上限（可選）</label>
+          <input id="policy_daily_calls" type="number" min="1" step="1" placeholder="例如：50">
+        </div>
+        <div class="form-group">
+          <label for="policy_monthly_calls">每位使用者每月上限（可選）</label>
+          <input id="policy_monthly_calls" type="number" min="1" step="1" placeholder="例如：500">
+        </div>
+      </div>
+    </section>
+
     <!-- 操作按鈕 -->
     <div class="btn-row" style="border-top:none;padding-top:0;margin-top:8px;">
       <button id="save" class="btn btn-primary" type="button">儲存</button>
@@ -369,6 +411,7 @@
         $('env').value = r.env ? JSON.stringify(r.env, null, 2) : '';
         $('input_schema').value = (r.input_schema && typeof r.input_schema === 'object')
           ? JSON.stringify(r.input_schema, null, 2) : '';
+        fillExecutionPolicy(r.execution_policy);
 
         setActiveTab((r.transport || 'remote') === 'remote' ? 'remote' : 'local');
 
@@ -413,6 +456,47 @@
       return parsed;
     }
 
+    function normalizeScopeList(rawValue) {
+      const parsedScopes = String(rawValue || '').split(',').map((scopeItem) => scopeItem.trim()).filter(Boolean);
+      if (!parsedScopes.length) return ['master', 'public', 'tasked', 'private'];
+      return Array.from(new Set(parsedScopes));
+    }
+
+    function parsePositiveIntOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number.parseInt(normalizedValue, 10);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正整數`);
+      return parsedValue;
+    }
+
+    function parseExecutionPolicy() {
+      const rateLimitProfile = {};
+      const dailyLimit = parsePositiveIntOrNull($('policy_daily_calls').value, '每日上限');
+      const monthlyLimit = parsePositiveIntOrNull($('policy_monthly_calls').value, '每月上限');
+      if (dailyLimit !== null) rateLimitProfile.per_user_daily_calls = dailyLimit;
+      if (monthlyLimit !== null) rateLimitProfile.per_user_monthly_calls = monthlyLimit;
+      return {
+        risk_level: $('policy_risk_level').value || 'safe',
+        cost_class: $('policy_cost_class').value || 'free',
+        requires_confirmation: !!$('policy_requires_confirmation').checked,
+        allow_scopes: normalizeScopeList($('policy_allow_scopes').value),
+        rate_limit_profile: rateLimitProfile,
+      };
+    }
+
+    function fillExecutionPolicy(rawPolicy) {
+      const policy = (rawPolicy && typeof rawPolicy === 'object') ? rawPolicy : {};
+      const allowScopes = Array.isArray(policy.allow_scopes) ? policy.allow_scopes : ['master', 'public', 'tasked', 'private'];
+      const rateLimitProfile = (policy.rate_limit_profile && typeof policy.rate_limit_profile === 'object') ? policy.rate_limit_profile : {};
+      $('policy_risk_level').value = String(policy.risk_level || 'safe');
+      $('policy_cost_class').value = String(policy.cost_class || 'free');
+      $('policy_requires_confirmation').checked = !!policy.requires_confirmation;
+      $('policy_allow_scopes').value = allowScopes.map((scopeItem) => String(scopeItem || '').trim()).filter(Boolean).join(',');
+      $('policy_daily_calls').value = rateLimitProfile.per_user_daily_calls ? String(rateLimitProfile.per_user_daily_calls) : '';
+      $('policy_monthly_calls').value = rateLimitProfile.per_user_monthly_calls ? String(rateLimitProfile.per_user_monthly_calls) : '';
+    }
+
     async function save() {
       if (!canSaveMcp) {
         showError('你沒有儲存 MCP 的權限');
@@ -442,12 +526,14 @@
           args: [],
           env: {},
           input_schema: {},
+          execution_policy: {},
         };
 
         body.auth = parseJsonObjectField('auth_json', 'Auth');
         body.args = parseJsonArrayField('args', 'Args');
         body.env = parseJsonObjectField('env', 'Env');
         body.input_schema = parseJsonObjectField('input_schema', 'input_schema');
+        body.execution_policy = parseExecutionPolicy();
 
         if (id) {
           await api.put(`/mcps/${id}`, body);

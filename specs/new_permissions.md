@@ -41,6 +41,62 @@
 - `allow_scopes`: 允許掛載在哪些 Agent 類型或範圍
 - `rate_limit_profile`: 每使用者 / 每群組 / 每 Agent 的配額與頻率限制
 
+### 4.1 `execution_policy` 欄位說明（本次已落地）
+
+- `risk_level`
+  - 用途：定義工具風險等級，供執行前策略判斷與儀表板統計使用。
+  - 可用值：`safe`、`restricted`、`dangerous`。
+  - 預設值：`safe`（若輸入無效值，後端會正規化回 `safe`）。
+
+- `requires_confirmation`
+  - 用途：是否要求使用者在聊天流程中進行二次確認。
+  - 可用值：`true`、`false`。
+  - 預設值：`false`。
+  - 特例：當 `risk_level=dangerous` 且系統設定 `TOOL_EXEC_REQUIRE_CONFIRM_FOR_DANGEROUS=true` 時，後端會強制視為 `true`。
+
+- `cost_class`
+  - 用途：標記此工具是否屬於可能產生成本的類型，供治理與報表分類。
+  - 可用值：`free`、`billable`。
+  - 預設值：`free`（若輸入無效值，後端會正規化回 `free`）。
+
+- `allow_scopes`
+  - 用途：限制哪些 Agent 類型可執行該工具（與 RBAC 無關，屬策略層限制）。
+  - 可用值：字串陣列，例如 `[
+    "master",
+    "public",
+    "tasked",
+    "private"
+  ]`。
+  - 預設值：`["master", "public", "tasked", "private"]`（空值時套用預設）。
+
+- `rate_limit_profile`
+  - 用途：定義呼叫配額，避免工具濫用或成本暴增。
+  - 目前已支援：
+    - `per_user_daily_calls`：每位使用者每日成功呼叫上限。
+    - `per_user_monthly_calls`：每位使用者每月成功呼叫上限。
+  - 規則：需為正整數；未填或非正整數視為不啟用該配額。
+
+### 4.2 建議設定範例
+
+```json
+{
+  "risk_level": "restricted",
+  "requires_confirmation": false,
+  "cost_class": "billable",
+  "allow_scopes": ["master", "tasked"],
+  "rate_limit_profile": {
+    "per_user_daily_calls": 50,
+    "per_user_monthly_calls": 500
+  }
+}
+```
+
+### 4.3 前端設定入口（本次已補齊）
+
+- `frontend/src/pages/mcp-edit.html`
+- `frontend/src/pages/skill-edit.html`
+- `frontend/src/pages/functions.html`
+
 ## 5. 風險治理原則
 
 - `safe`：純讀、純計算，預設可執行。
@@ -291,3 +347,18 @@
 2. 再將資料集讀取統一切換為 `entity.dataset.*` 決策。
 3. 前端文案改版：Agent 不承載資料授權語意。
 4. 最後移除工具執行 RBAC 舊判斷與舊鍵顯示。
+
+## 15. 未完成項目清單（追蹤用）
+
+- [x] 工具策略欄位落地（`execution_policy`）與預設正規化（`risk_level` / `cost_class` / `allow_scopes` / `requires_confirmation` / `rate_limit_profile`）。
+- [x] 工具執行稽核表落地（`tool_execution_audits`）與查詢 API。
+- [x] 聊天工具執行路徑接入策略判斷（allowlist 後接 policy）。
+- [x] `dangerous` 工具二次確認（前後端 MVP 流程）。
+- [x] 儀表板接入策略統計（7 天統計、Top 風險工具、24h 突增指標）。
+- [ ] 將二次確認升級為一次性確認 token（含 TTL 與防重放），取代目前 `_policy_confirmed` 單旗標。
+- [ ] 補齊群組層與成本層配額（`per_group_*`、`monthly_cost_usd`）與對應拒絕碼。
+- [x] 為策略層補齊管理 UI（MCP/Skills/Functions 編輯頁可直接設定 `execution_policy`，不只 API）。
+- [x] 儀表板工具策略稽核篩選下拉樣式統一（對齊 MCP 編輯頁表單風格）。
+- [ ] 將舊私有資料集 API（`/agents/{agent_id}/rag/datasets*`）標記 deprecated 並逐步退場。
+- [ ] 清理工具執行 RBAC 舊鍵與相容邏輯（相容期結束後移除，避免治理混淆）。
+- [ ] 補齊策略稽核與異常告警文件（操作手冊、拒絕碼對照、回滾流程）。
