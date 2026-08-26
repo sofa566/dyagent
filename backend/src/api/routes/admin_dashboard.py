@@ -89,6 +89,7 @@ async def _build_overview(db: Session) -> dict:
     now = datetime.now()
     since_15m = now - timedelta(minutes=15)
     since_24h = now - timedelta(hours=24)
+    since_prev_24h = now - timedelta(hours=48)
     since_7d = now - timedelta(days=7)
 
     users_total = db.query(func.count(User.id)).scalar() or 0
@@ -304,6 +305,28 @@ async def _build_overview(db: Session) -> dict:
         for tool_name, count in sorted(tool_counter_map.items(), key=lambda item: int(item[1]), reverse=True)[:5]
     ]
 
+    current_24h_rows = db.query(ToolExecutionAudit).filter(ToolExecutionAudit.created_at >= since_24h).all()
+    previous_24h_rows = db.query(ToolExecutionAudit).filter(
+        ToolExecutionAudit.created_at >= since_prev_24h,
+        ToolExecutionAudit.created_at < since_24h,
+    ).all()
+    denied_24h = sum(1 for row in current_24h_rows if str(getattr(row, 'status', '') or '') == 'denied')
+    denied_prev_24h = sum(1 for row in previous_24h_rows if str(getattr(row, 'status', '') or '') == 'denied')
+    high_risk_24h = sum(
+        1
+        for row in current_24h_rows
+        if str(getattr(row, 'risk_level', '') or '') in {'dangerous', 'restricted'}
+    )
+    denied_delta_24h = int(denied_24h) - int(denied_prev_24h)
+    if denied_prev_24h > 0:
+        denied_ratio_24h_vs_prev_24h = round(float(denied_24h) / float(denied_prev_24h), 2)
+    else:
+        denied_ratio_24h_vs_prev_24h = None
+    anomaly_spike_24h = (
+        (denied_prev_24h == 0 and denied_24h >= 10)
+        or (denied_prev_24h > 0 and denied_24h >= 10 and float(denied_24h) / float(denied_prev_24h) >= 2.0)
+    )
+
     load1, load5, load15 = (0.0, 0.0, 0.0)
     try:
         load1, load5, load15 = os.getloadavg()
@@ -389,6 +412,12 @@ async def _build_overview(db: Session) -> dict:
             "denied_rate_7d": float(tool_policy_denied_rate_7d),
             "high_risk_rate_7d": float(tool_policy_high_risk_rate_7d),
             "top_risk_tools_7d": tool_policy_top_risk_tools,
+            "denied_24h": int(denied_24h),
+            "high_risk_24h": int(high_risk_24h),
+            "denied_prev_24h": int(denied_prev_24h),
+            "denied_delta_24h": int(denied_delta_24h),
+            "denied_ratio_24h_vs_prev_24h": denied_ratio_24h_vs_prev_24h,
+            "anomaly_spike_24h": bool(anomaly_spike_24h),
         },
     }
 

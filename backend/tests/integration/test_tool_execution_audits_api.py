@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.models import ToolExecutionAudit
 
@@ -67,3 +67,77 @@ def test_list_tool_execution_audits_returns_filtered_rows(client, db, admin_toke
     assert first_item.get('status') == 'denied'
     assert first_item.get('risk_level') == 'dangerous'
     assert first_item.get('tool_name') == 'dangerous-skill'
+
+
+def test_dashboard_overview_includes_tool_policy_anomaly_fields(client, db, admin_token, admin_user, agent):
+    now = datetime.now()
+    db.add_all([
+        ToolExecutionAudit(
+            user_id=admin_user.id,
+            agent_id=agent.id,
+            conversation_id=None,
+            tool_name='tool-a',
+            tool_type='skill',
+            risk_level='dangerous',
+            cost_class='free',
+            allowlist_passed=True,
+            confirmation_required=True,
+            confirmation_passed=False,
+            quota_passed=True,
+            status='denied',
+            deny_reason='confirmation_required',
+            payload_keys=['x'],
+            details={},
+            created_at=now - timedelta(hours=1),
+        ),
+        ToolExecutionAudit(
+            user_id=admin_user.id,
+            agent_id=agent.id,
+            conversation_id=None,
+            tool_name='tool-a',
+            tool_type='skill',
+            risk_level='dangerous',
+            cost_class='free',
+            allowlist_passed=True,
+            confirmation_required=True,
+            confirmation_passed=False,
+            quota_passed=True,
+            status='denied',
+            deny_reason='confirmation_required',
+            payload_keys=['x'],
+            details={},
+            created_at=now - timedelta(hours=2),
+        ),
+        ToolExecutionAudit(
+            user_id=admin_user.id,
+            agent_id=agent.id,
+            conversation_id=None,
+            tool_name='tool-a',
+            tool_type='skill',
+            risk_level='dangerous',
+            cost_class='free',
+            allowlist_passed=True,
+            confirmation_required=True,
+            confirmation_passed=False,
+            quota_passed=True,
+            status='denied',
+            deny_reason='confirmation_required',
+            payload_keys=['x'],
+            details={},
+            created_at=now - timedelta(hours=3),
+        ),
+    ])
+    db.commit()
+
+    response = client.get(
+        '/api/admin/dashboard/overview',
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    tool_policy = payload.get('tool_policy') or {}
+    assert 'denied_24h' in tool_policy
+    assert 'denied_prev_24h' in tool_policy
+    assert 'denied_delta_24h' in tool_policy
+    assert 'denied_ratio_24h_vs_prev_24h' in tool_policy
+    assert 'anomaly_spike_24h' in tool_policy

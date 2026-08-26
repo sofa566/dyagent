@@ -35,6 +35,8 @@
     .audit-detail-toggle { cursor:pointer; color: var(--primary-color); text-decoration: underline; }
     .audit-detail-row td { background:#f8fafc; }
     .audit-detail-pre { margin:0; white-space:pre-wrap; word-break:break-word; font-size:0.83rem; }
+    .audit-anomaly-ok { color:#166534; font-weight:600; margin-bottom:8px; }
+    .audit-anomaly-alert { color:#991b1b; font-weight:700; margin-bottom:8px; }
   </style>
 </head>
 <body>
@@ -107,6 +109,7 @@
             <button id="audit-refresh-btn" class="btn btn-secondary" type="button">更新稽核</button>
           </div>
           <div id="tool-policy-audit-summary" class="audit-summary-grid"></div>
+          <div id="tool-policy-anomaly" class="audit-anomaly-ok">近 24h 突增：尚未載入</div>
           <div id="tool-policy-top-risk-tools" class="mono" style="margin-bottom:8px;"></div>
           <div id="tool-policy-audits" class="table-wrap"></div>
         </div>
@@ -280,11 +283,14 @@
         const highRiskRate = Number(overview.high_risk_rate_7d || 0);
         const dangerousCount = Number(overview.dangerous_7d || 0);
         const restrictedCount = Number(overview.restricted_7d || 0);
+        const denied24h = Number(overview.denied_24h || 0);
+        const deniedPrev24h = Number(overview.denied_prev_24h || 0);
         return [
           mkStat('稽核筆數', Number(overview.total_7d || 0)),
           mkStat('拒絕率', `${deniedRate.toFixed(1)}%`),
           mkStat('高風險占比', `${highRiskRate.toFixed(1)}%`),
           mkStat('dangerous / restricted', `${dangerousCount} / ${restrictedCount}`),
+          mkStat('拒絕（近24h/前24h）', `${denied24h} / ${deniedPrev24h}`),
         ];
       }
       const totalCount = rows.length;
@@ -298,7 +304,32 @@
         mkStat('拒絕率', `${deniedRate.toFixed(1)}%`),
         mkStat('高風險占比', `${highRiskRate.toFixed(1)}%`),
         mkStat('dangerous / restricted', `${dangerousCount} / ${restrictedCount}`),
+        mkStat('拒絕（近24h/前24h）', '-'),
       ];
+    }
+
+    function renderToolPolicyAnomaly(toolPolicyOverview) {
+      const container = document.getElementById('tool-policy-anomaly');
+      const overview = (toolPolicyOverview && typeof toolPolicyOverview === 'object') ? toolPolicyOverview : null;
+      if (!overview) {
+        container.className = 'audit-anomaly-ok';
+        container.textContent = '近 24h 突增：無資料';
+        return;
+      }
+      const isAnomaly = Boolean(overview.anomaly_spike_24h);
+      const denied24h = Number(overview.denied_24h || 0);
+      const deniedPrev24h = Number(overview.denied_prev_24h || 0);
+      const ratioRaw = overview.denied_ratio_24h_vs_prev_24h;
+      const ratioText = (typeof ratioRaw === 'number' && Number.isFinite(ratioRaw)) ? `${ratioRaw.toFixed(2)}x` : 'n/a';
+      const delta = Number(overview.denied_delta_24h || 0);
+      const deltaSign = delta > 0 ? '+' : '';
+      if (isAnomaly) {
+        container.className = 'audit-anomaly-alert';
+        container.textContent = `近 24h 突增告警：拒絕 ${denied24h}（前24h ${deniedPrev24h}，變化 ${deltaSign}${delta}，倍率 ${ratioText}）`;
+      } else {
+        container.className = 'audit-anomaly-ok';
+        container.textContent = `近 24h 無異常突增：拒絕 ${denied24h}（前24h ${deniedPrev24h}，變化 ${deltaSign}${delta}，倍率 ${ratioText}）`;
+      }
     }
 
     function renderTopRiskTools(rows, toolPolicyOverview) {
@@ -339,6 +370,7 @@
       const container = document.getElementById('tool-policy-audits');
       const rows = Array.isArray(payload.items) ? payload.items : [];
       summaryContainer.innerHTML = buildAuditSummaryRows(rows, latestToolPolicyOverview).join('');
+      renderToolPolicyAnomaly(latestToolPolicyOverview);
       renderTopRiskTools(rows, latestToolPolicyOverview);
       if (!rows.length) {
         container.innerHTML = '<div class="mono">目前無符合條件的工具稽核紀錄</div>';
