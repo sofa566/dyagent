@@ -31,6 +31,10 @@
     .pill-dangerous { color:#991b1b; font-weight:600; }
     .pill-restricted { color:#b45309; font-weight:600; }
     .pill-safe { color:#166534; font-weight:600; }
+    .audit-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:8px; margin-bottom:10px; }
+    .audit-detail-toggle { cursor:pointer; color: var(--primary-color); text-decoration: underline; }
+    .audit-detail-row td { background:#f8fafc; }
+    .audit-detail-pre { margin:0; white-space:pre-wrap; word-break:break-word; font-size:0.83rem; }
   </style>
 </head>
 <body>
@@ -102,6 +106,8 @@
             </select>
             <button id="audit-refresh-btn" class="btn btn-secondary" type="button">更新稽核</button>
           </div>
+          <div id="tool-policy-audit-summary" class="audit-summary-grid"></div>
+          <div id="tool-policy-top-risk-tools" class="mono" style="margin-bottom:8px;"></div>
           <div id="tool-policy-audits" class="table-wrap"></div>
         </div>
 
@@ -256,9 +262,58 @@
       return 'pill-safe';
     }
 
+    function escapeHtml(rawText) {
+      return String(rawText || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function buildAuditSummaryRows(rows) {
+      const totalCount = rows.length;
+      const deniedCount = rows.filter((row) => String(row.status || '') === 'denied').length;
+      const dangerousCount = rows.filter((row) => String(row.risk_level || '') === 'dangerous').length;
+      const restrictedCount = rows.filter((row) => String(row.risk_level || '') === 'restricted').length;
+      const deniedRate = totalCount > 0 ? ((deniedCount / totalCount) * 100) : 0;
+      const highRiskRate = totalCount > 0 ? (((dangerousCount + restrictedCount) / totalCount) * 100) : 0;
+      return [
+        mkStat('稽核筆數', totalCount),
+        mkStat('拒絕率', `${deniedRate.toFixed(1)}%`),
+        mkStat('高風險占比', `${highRiskRate.toFixed(1)}%`),
+        mkStat('dangerous / restricted', `${dangerousCount} / ${restrictedCount}`),
+      ];
+    }
+
+    function renderTopRiskTools(rows) {
+      const container = document.getElementById('tool-policy-top-risk-tools');
+      const riskRows = rows.filter((row) => {
+        const risk = String(row.risk_level || '');
+        return risk === 'dangerous' || risk === 'restricted';
+      });
+      if (!riskRows.length) {
+        container.textContent = '高風險工具 Top N：目前無資料';
+        return;
+      }
+      const counterMap = new Map();
+      for (const row of riskRows) {
+        const toolName = String(row.tool_name || '-');
+        counterMap.set(toolName, Number(counterMap.get(toolName) || 0) + 1);
+      }
+      const topItems = Array.from(counterMap.entries())
+        .sort((left, right) => Number(right[1]) - Number(left[1]))
+        .slice(0, 5)
+        .map(([toolName, count], index) => `${index + 1}. ${toolName}（${count}）`);
+      container.textContent = `高風險工具 Top 5：${topItems.join('、')}`;
+    }
+
     function renderToolExecutionAudits(payload) {
+      const summaryContainer = document.getElementById('tool-policy-audit-summary');
       const container = document.getElementById('tool-policy-audits');
       const rows = Array.isArray(payload.items) ? payload.items : [];
+      summaryContainer.innerHTML = buildAuditSummaryRows(rows).join('');
+      renderTopRiskTools(rows);
       if (!rows.length) {
         container.innerHTML = '<div class="mono">目前無符合條件的工具稽核紀錄</div>';
         return;
@@ -270,6 +325,11 @@
         const denyReason = String(row.deny_reason || '') || '-';
         const userText = row.user_id ? `${String(row.user_id).slice(0, 8)}...` : '-';
         const costText = (typeof row.cost_estimate === 'number' && Number.isFinite(row.cost_estimate)) ? Number(row.cost_estimate).toFixed(6) : '-';
+        const detailText = JSON.stringify(row.details || {}, null, 2);
+        const payloadText = JSON.stringify(row.payload_keys || [], null, 2);
+        const detailBlock = `{\n  "details": ${detailText},\n  "payload_keys": ${payloadText}\n}`;
+        const escapedDetailBlock = escapeHtml(detailBlock);
+        const detailRowId = `audit-detail-${String(row.id || '').replace(/[^a-zA-Z0-9_-]/g, '')}`;
         return `<tr>
           <td>${createdAt}</td>
           <td>${row.tool_name || '-'}</td>
@@ -278,6 +338,10 @@
           <td>${denyReason}</td>
           <td>${userText}</td>
           <td class="num">${costText}</td>
+          <td><span class="audit-detail-toggle" data-detail-row-id="${detailRowId}">查看</span></td>
+        </tr>
+        <tr id="${detailRowId}" class="audit-detail-row" style="display:none;">
+          <td colspan="8"><pre class="audit-detail-pre">${escapedDetailBlock}</pre></td>
         </tr>`;
       }).join('');
       container.innerHTML = `
@@ -291,11 +355,23 @@
               <th>拒絕原因</th>
               <th>使用者</th>
               <th class="num">成本估算</th>
+              <th>詳情</th>
             </tr>
           </thead>
           <tbody>${htmlRows}</tbody>
         </table>
       `;
+      container.querySelectorAll('[data-detail-row-id]').forEach((toggleNode) => {
+        toggleNode.addEventListener('click', () => {
+          const rowId = String(toggleNode.getAttribute('data-detail-row-id') || '').trim();
+          if (!rowId) return;
+          const targetRow = document.getElementById(rowId);
+          if (!targetRow) return;
+          const isHidden = targetRow.style.display === 'none';
+          targetRow.style.display = isHidden ? '' : 'none';
+          toggleNode.textContent = isHidden ? '收合' : '查看';
+        });
+      });
     }
 
     async function loadToolExecutionAudits() {
