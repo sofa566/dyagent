@@ -355,7 +355,7 @@
 - [x] 聊天工具執行路徑接入策略判斷（allowlist 後接 policy）。
 - [x] `dangerous` 工具二次確認（前後端 MVP 流程）。
 - [x] 儀表板接入策略統計（7 天統計、Top 風險工具、24h 突增指標）。
-- [ ] 將二次確認升級為一次性確認 token（含 TTL 與防重放），取代目前 `_policy_confirmed` 單旗標。
+- [x] 將二次確認升級為一次性確認 token（含 TTL 與防重放），取代目前 `_policy_confirmed` 單旗標。
 - [ ] 補齊群組層與成本層配額（`per_group_*`、`monthly_cost_usd`）與對應拒絕碼。
 - [x] 為策略層補齊管理 UI（MCP/Skills/Functions 編輯頁可直接設定 `execution_policy`，不只 API）。
 - [x] 儀表板工具策略稽核篩選下拉樣式統一（對齊 MCP 編輯頁表單風格）。

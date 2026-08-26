@@ -482,6 +482,27 @@ class ToolExecutionAudit(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class ToolExecutionConfirmation(Base):
+    # 目的：儲存危險工具二次確認的一次性 token。
+    # 為什麼：避免僅用布林旗標造成重放與偽造，需提供 TTL 與單次消耗能力。
+    __tablename__ = 'tool_execution_confirmations'
+    __table_args__ = (
+        UniqueConstraint('token_hash', name='uq_tool_execution_confirmation_token_hash'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    token_hash = Column(String(128), nullable=False)
+    user_id = Column(GUID(), ForeignKey('users.id'), nullable=False)
+    agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=True)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=True)
+    tool_name = Column(String(160), nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class SkillInteraction(Base):
     """目的：儲存 HTML 技能的多步驟互動狀態。
     為什麼：executable skill 每次為新 subprocess，需將流程狀態持久化以支援 submit/back/resume。

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from src.models import SkillEntry, ToolExecutionAudit
+from src.models import SkillEntry, ToolExecutionAudit, ToolExecutionConfirmation
 from src.services.tool_policy_service import ToolPolicyService
 
 
 class TestToolPolicyService:
-    def test_dangerous_tool_requires_confirmation(self, db, regular_user):
+    def test_dangerous_tool_requires_confirmation_token_and_single_use(self, db, regular_user):
         service = ToolPolicyService()
         skill = SkillEntry(
             name='dangerous-skill',
@@ -32,16 +32,73 @@ class TestToolPolicyService:
         )
         assert denied_decision.passed is False
         assert denied_decision.reason == 'confirmation_required'
+        assert isinstance(denied_decision.confirmation_token, str)
+        assert denied_decision.confirmation_token
 
         passed_decision = service.evaluate_execution(
             db=db,
             tool_name='dangerous-skill',
-            payload={'_policy_confirmed': True},
+            payload={'_policy_confirm_token': denied_decision.confirmation_token},
             agent_class='tasked',
             user_id=str(regular_user.id),
         )
         assert passed_decision.passed is True
         assert passed_decision.reason == 'pass'
+
+        replay_decision = service.evaluate_execution(
+            db=db,
+            tool_name='dangerous-skill',
+            payload={'_policy_confirm_token': denied_decision.confirmation_token},
+            agent_class='tasked',
+            user_id=str(regular_user.id),
+        )
+        assert replay_decision.passed is False
+        assert replay_decision.reason == 'confirmation_required'
+
+    def test_confirmation_token_expired_requires_new_confirmation(self, db, regular_user):
+        service = ToolPolicyService()
+        skill = SkillEntry(
+            name='dangerous-skill-expired',
+            description='dangerous',
+            enabled=True,
+            type='python',
+            execution_policy={
+                'risk_level': 'dangerous',
+                'requires_confirmation': True,
+            },
+        )
+        db.add(skill)
+        db.commit()
+
+        first_denied = service.evaluate_execution(
+            db=db,
+            tool_name='dangerous-skill-expired',
+            payload={},
+            agent_class='tasked',
+            user_id=str(regular_user.id),
+        )
+        first_token = str(first_denied.confirmation_token or '')
+        assert first_denied.passed is False
+        assert first_denied.reason == 'confirmation_required'
+        assert first_token
+
+        token_hash = service._hash_token(first_token)
+        row = db.query(ToolExecutionConfirmation).filter(ToolExecutionConfirmation.token_hash == token_hash).first()
+        assert row is not None
+        row.expires_at = datetime.now() - timedelta(seconds=1)
+        db.add(row)
+        db.commit()
+
+        expired_decision = service.evaluate_execution(
+            db=db,
+            tool_name='dangerous-skill-expired',
+            payload={'_policy_confirm_token': first_token},
+            agent_class='tasked',
+            user_id=str(regular_user.id),
+        )
+        assert expired_decision.passed is False
+        assert expired_decision.reason == 'confirmation_required'
+        assert str(expired_decision.confirmation_token or '') != first_token
 
     def test_daily_quota_blocks_after_limit(self, db, regular_user):
         service = ToolPolicyService()

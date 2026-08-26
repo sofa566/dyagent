@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # 工具策略層開關
     TOOL_EXEC_POLICY_ENABLED: bool = True
     TOOL_EXEC_REQUIRE_CONFIRM_FOR_DANGEROUS: bool = True
+    TOOL_CONFIRM_TOKEN_TTL_SECONDS: int = 300
 
     # 聊天歷史上下文注入（同一會話連貫）
     CHAT_HISTORY_MODE: str = 'recent'  # off | recent

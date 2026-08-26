@@ -1431,11 +1431,16 @@
       return meta;
     }
 
-    async function retryToolWithPolicyConfirmation(meta, policyReason) {
+    async function retryToolWithPolicyConfirmation(meta, policyReason, confirmToken) {
       if (!meta || !meta._toolName) return;
       const convId = String(meta._convId || currentConversationId || '').trim();
       if (!convId) {
         showError('找不到對應對話，無法重新執行工具');
+        return;
+      }
+      const tokenText = String(confirmToken || '').trim();
+      if (!tokenText) {
+        showError('缺少一次性確認 token，請重新執行工具後再確認');
         return;
       }
       const confirmed = window.confirm(`此工具需要二次確認（${policyReason || 'dangerous'}），是否繼續執行？`);
@@ -1444,7 +1449,7 @@
       const basePayload = (meta._lastPayload && typeof meta._lastPayload === 'object') ? meta._lastPayload : {};
       const retryPayload = {
         ...basePayload,
-        _policy_confirmed: true,
+        _policy_confirm_token: tokenText,
       };
       if (meta.confirmBtn) {
         meta.confirmBtn.disabled = true;
@@ -1473,10 +1478,11 @@
       const policyObj = (framePayload && typeof framePayload.policy === 'object') ? framePayload.policy : {};
       const reason = String(policyObj.reason || framePayload.error || '').trim() || 'confirmation_required';
       const riskLevel = String(policyObj.risk_level || '').trim();
+      const confirmToken = String(policyObj.confirm_token || '').trim();
       meta.confirmBtn.style.display = '';
       meta.confirmBtn.textContent = riskLevel ? `確認執行（${riskLevel}）` : '確認執行';
       meta.confirmBtn.onclick = () => {
-        retryToolWithPolicyConfirmation(meta, reason);
+        retryToolWithPolicyConfirmation(meta, reason, confirmToken);
       };
     }
 
@@ -2109,13 +2115,23 @@
         const result = await api.post(`/conversations/${targetConversationId}/tools/${activeSkillUiContext.tool}`, requestPayload);
         if (!result || result.ok !== true) {
           if (String((result && result.error) || '').trim() === 'confirmation_required') {
+            const policyObj = (result && typeof result.policy === 'object') ? result.policy : {};
+            const confirmToken = String(policyObj.confirm_token || '').trim();
+            if (!confirmToken) {
+              skillUiFrame.contentWindow?.postMessage({
+                type: 'host.error',
+                error: 'confirmation_token_missing',
+                channel_nonce: activeSkillUiContext.channelNonce,
+              }, '*');
+              return;
+            }
             const shouldConfirm = window.confirm('此技能操作需要二次確認，是否繼續執行？');
             if (shouldConfirm) {
               const retryResult = await api.post(
                 `/conversations/${targetConversationId}/tools/${activeSkillUiContext.tool}`,
                 {
                   ...requestPayload,
-                  _policy_confirmed: true,
+                  _policy_confirm_token: confirmToken,
                 },
               );
               if (retryResult && retryResult.ok === true) {

@@ -3,17 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+import hashlib
+import json
+import secrets
 import uuid
 
 from sqlalchemy.orm import Session
 
 from src.core.config import settings
-from src.models import FunctionProfile, MCPConnection, SkillEntry, ToolExecutionAudit
+from src.models import FunctionProfile, MCPConnection, SkillEntry, ToolExecutionAudit, ToolExecutionConfirmation
 
 
 SUPPORTED_RISK_LEVELS = {'safe', 'restricted', 'dangerous'}
 SUPPORTED_COST_CLASSES = {'free', 'billable'}
 DEFAULT_ALLOW_SCOPES = ['master', 'public', 'tasked', 'private']
+POLICY_CONFIRM_META_KEYS = {'_policy_confirmed', '_confirmed', '_policy_confirm_token'}
 
 
 @dataclass
@@ -30,6 +34,8 @@ class ToolPolicyDecision:
     confirmation_passed: bool
     quota_passed: bool
     policy: dict
+    confirmation_token: str | None = None
+    confirmation_token_expires_at: datetime | None = None
 
 
 class ToolPolicyService:
@@ -97,6 +103,8 @@ class ToolPolicyService:
         payload: dict,
         agent_class: str,
         user_id: str,
+        agent_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> ToolPolicyDecision:
         tool_type, policy = self.resolve_tool_policy(db=db, tool_name=tool_name)
 
@@ -117,8 +125,29 @@ class ToolPolicyService:
             )
 
         confirmation_required = bool(policy.get('requires_confirmation'))
-        confirmation_passed = bool((payload or {}).get('_policy_confirmed') or (payload or {}).get('_confirmed'))
+        confirmation_token = str((payload or {}).get('_policy_confirm_token') or '').strip()
+        confirmation_passed = True
+        issued_confirmation_token = None
+        issued_confirmation_token_expires_at = None
+        if confirmation_required:
+            confirmation_passed = self._consume_confirmation_token(
+                db=db,
+                token=confirmation_token,
+                user_id=user_id,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                tool_name=tool_name,
+                payload=payload or {},
+            )
         if confirmation_required and not confirmation_passed:
+            issued_confirmation_token, issued_confirmation_token_expires_at = self._issue_confirmation_token(
+                db=db,
+                user_id=user_id,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                tool_name=tool_name,
+                payload=payload or {},
+            )
             return ToolPolicyDecision(
                 passed=False,
                 reason='confirmation_required',
@@ -130,6 +159,8 @@ class ToolPolicyService:
                 confirmation_passed=False,
                 quota_passed=True,
                 policy=policy,
+                confirmation_token=issued_confirmation_token,
+                confirmation_token_expires_at=issued_confirmation_token_expires_at,
             )
 
         quota_passed, quota_reason = self._check_quota(
@@ -164,6 +195,106 @@ class ToolPolicyService:
             quota_passed=True,
             policy=policy,
         )
+
+    def _issue_confirmation_token(
+        self,
+        *,
+        db: Session,
+        user_id: str,
+        agent_id: str | None,
+        conversation_id: str | None,
+        tool_name: str,
+        payload: dict,
+    ) -> tuple[str | None, datetime | None]:
+        parsed_user_id = self._parse_uuid_or_none(user_id)
+        if parsed_user_id is None:
+            return None, None
+        raw_token = secrets.token_urlsafe(32)
+        now = datetime.now()
+        ttl_seconds = max(30, int(getattr(settings, 'TOOL_CONFIRM_TOKEN_TTL_SECONDS', 300) or 300))
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        token_hash = self._hash_token(raw_token)
+        payload_hash = self._build_payload_hash(payload)
+        row = ToolExecutionConfirmation(
+            token_hash=token_hash,
+            user_id=parsed_user_id,
+            agent_id=self._parse_uuid_or_none(agent_id),
+            conversation_id=self._parse_uuid_or_none(conversation_id),
+            tool_name=str(tool_name or '').strip() or '<empty>',
+            payload_hash=payload_hash,
+            expires_at=expires_at,
+            used_at=None,
+            created_at=now,
+        )
+        try:
+            db.add(row)
+            db.commit()
+            return raw_token, expires_at
+        except Exception:
+            db.rollback()
+            return None, None
+
+    def _consume_confirmation_token(
+        self,
+        *,
+        db: Session,
+        token: str,
+        user_id: str,
+        agent_id: str | None,
+        conversation_id: str | None,
+        tool_name: str,
+        payload: dict,
+    ) -> bool:
+        normalized_token = str(token or '').strip()
+        if not normalized_token:
+            return False
+
+        user_uuid = self._parse_uuid_or_none(user_id)
+        if user_uuid is None:
+            return False
+
+        token_hash = self._hash_token(normalized_token)
+        row = db.query(ToolExecutionConfirmation).filter(ToolExecutionConfirmation.token_hash == token_hash).first()
+        if row is None:
+            return False
+
+        now = datetime.now()
+        expected_payload_hash = self._build_payload_hash(payload)
+        same_user = row.user_id == user_uuid
+        same_tool = str(row.tool_name or '').strip() == (str(tool_name or '').strip() or '<empty>')
+        same_payload = str(row.payload_hash or '') == expected_payload_hash
+        not_used = row.used_at is None
+        not_expired = isinstance(row.expires_at, datetime) and row.expires_at > now
+
+        expected_agent = self._parse_uuid_or_none(agent_id)
+        expected_conversation = self._parse_uuid_or_none(conversation_id)
+        same_agent = (row.agent_id is None) or (expected_agent is not None and row.agent_id == expected_agent)
+        same_conversation = (row.conversation_id is None) or (expected_conversation is not None and row.conversation_id == expected_conversation)
+
+        if not (same_user and same_tool and same_payload and not_used and not_expired and same_agent and same_conversation):
+            return False
+
+        try:
+            row.used_at = now
+            db.add(row)
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            return False
+
+    def _build_payload_hash(self, payload: dict) -> str:
+        normalized_payload = payload if isinstance(payload, dict) else {}
+        filtered_payload = {
+            str(key): value
+            for key, value in normalized_payload.items()
+            if str(key) not in POLICY_CONFIRM_META_KEYS
+        }
+        encoded_payload = json.dumps(filtered_payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
+        return hashlib.sha256(encoded_payload.encode('utf-8')).hexdigest()
+
+    def _hash_token(self, token: str) -> str:
+        return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
 
     def record_audit(
         self,

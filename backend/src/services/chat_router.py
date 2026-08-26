@@ -73,6 +73,17 @@ class ChatRouter:
         self._current_agent_id = str(agent_id or '').strip()
         self._current_conversation_id = str(conversation_id or '').strip()
 
+    def _strip_policy_runtime_fields(self, payload: dict) -> dict:
+        # 目的：移除策略確認流程的內部欄位後再交給實際工具。
+        # 為什麼：避免一次性 token 或控制旗標被傳入外部工具與事件紀錄。
+        source_payload = payload if isinstance(payload, dict) else {}
+        internal_fields = {'_policy_confirm_token', '_policy_confirmed', '_confirmed'}
+        return {
+            key: value
+            for key, value in source_payload.items()
+            if str(key) not in internal_fields
+        }
+
     def _resolve_mcp_tool_name(self, *, conn_name: str, conn: dict[str, Any]) -> str:
         """目的：解析 MCP 連線名稱對應的實際工具名稱。
         為什麼：部分 MCP server 的工具名稱不等於連線名稱，若直接以連線名稱呼叫會出現 Unknown tool。
@@ -634,6 +645,7 @@ class ChatRouter:
         )
         if early is not None:
             return early
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
 
         # 僅在 MCP 工具時優先走 WS JSON-RPC 串流（stdio 模式則直接走同步）
         if name.startswith("mcp:"):
@@ -657,7 +669,7 @@ class ChatRouter:
                         args=args,
                         env=env,
                         method="tools/call",
-                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})},
+                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)},
                     ):
                         if isinstance(frame, dict) and frame.get("ok") is True:
                             self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -677,7 +689,7 @@ class ChatRouter:
                 return {"ok": False, "error": "mcp_invalid_base_url"}
             # 嘗試 WS 串流呼叫
             try:
-                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})}, auth=auth if isinstance(auth, dict) else None):
+                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)}, auth=auth if isinstance(auth, dict) else None):
                     # 可在此寫入逐段事件，先保留最小行為：若拿到 result 即成功
                     if isinstance(frame, dict) and ("result" in frame or frame.get("ok") is True):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -689,11 +701,11 @@ class ChatRouter:
             except Exception as e:
                 # WS 不可用或失敗時，落回同步 HTTP 邏輯
                 self._log.warning("mcp.ws.stream_failed_fallback_http", error=str(e))
-                return self.call_tool(session_id=session_id, tool=name, payload=payload)
+                return self.call_tool(session_id=session_id, tool=name, payload=sanitized_payload, skip_precheck=True)
 
         _log.debug("call_tool", tool=name, session_id=session_id)
         # 其他情況沿用同步路徑
-        return self.call_tool(session_id=session_id, tool=name, payload=payload)
+        return self.call_tool(session_id=session_id, tool=name, payload=sanitized_payload, skip_precheck=True)
 
     def _validate_async_tool_call_request(
         self,
@@ -724,8 +736,9 @@ class ChatRouter:
         if policy_error is not None:
             return name, policy_error
 
-        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
-        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=sanitized_payload)
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=sanitized_payload):
             return name, {"ok": False, "error": "doom_loop_denied"}
         return name, None
 
@@ -980,12 +993,15 @@ class ChatRouter:
             return {"ok": True, "result": {"text": stdout[:6000], "return_code": 0}}
 
     # 公用：以白名單強制的工具呼叫（未來供工具規劃/LLM function call 整合）
-    def call_tool(self, *, session_id: str, tool: str, payload: dict) -> dict:
+    def call_tool(self, *, session_id: str, tool: str, payload: dict, skip_precheck: bool = False) -> dict:
         _log.debug("Start call_tool.request", tool=tool, session_id=session_id)
 
-        name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
-        if early is not None:
-            return early
+        name = (tool or '').strip()
+        if not skip_precheck:
+            name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
+            if early is not None:
+                return early
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
 
         # MCP 工具：命名慣例 mcp:<conn-name>
         if name.startswith("mcp:"):
@@ -1006,7 +1022,7 @@ class ChatRouter:
                         args=args,
                         env=env,
                         method="tools/call",
-                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})},
+                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)},
                     )
                     if res.get("ok"):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=res)
@@ -1022,7 +1038,7 @@ class ChatRouter:
                     self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
                     return {"ok": False, "error": "mcp_invalid_base_url"}
                 try:
-                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=self._normalize_mcp_arguments(payload or {}))
+                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=self._normalize_mcp_arguments(sanitized_payload))
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                     return {"ok": True, "result": res}
                 except Exception as e:
@@ -1042,7 +1058,7 @@ class ChatRouter:
 
             interaction_service = None
             prepare_result = None
-            skill_payload = payload or {}
+            skill_payload = sanitized_payload
             try:
                 interaction_service = SkillInteractionService(db)
                 _log.debug("SkillInteractionService.prepare_request", tool=name, session_id=session_id)
@@ -1050,13 +1066,13 @@ class ChatRouter:
                     conversation_id=session_id,
                     tool_name=name,
                     skill_id=(str(getattr(row, 'id', '') or '') or None),
-                    payload=payload or {},
+                    payload=sanitized_payload,
                 )
                 if not prepare_result.ok:
                     error_text = str(prepare_result.error or 'interaction_prepare_failed')
                     self.write_event_tool_error(session_id=session_id, tool=name, error=error_text)
                     return {"ok": False, "error": error_text}
-                skill_payload = prepare_result.skill_payload if isinstance(prepare_result.skill_payload, dict) else (payload or {})
+                skill_payload = prepare_result.skill_payload if isinstance(prepare_result.skill_payload, dict) else sanitized_payload
             except Exception as interaction_error:
                 try:
                     db.rollback()
@@ -1337,8 +1353,9 @@ class ChatRouter:
         if policy_error is not None:
             return name, policy_error
 
-        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
-        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=sanitized_payload)
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=sanitized_payload):
             return name, {"ok": False, "error": "doom_loop_denied"}
 
         return name, None
@@ -1359,6 +1376,8 @@ class ChatRouter:
             payload=payload if isinstance(payload, dict) else {},
             agent_class=self._current_agent_class,
             user_id=self._current_user_id,
+            agent_id=self._current_agent_id,
+            conversation_id=self._current_conversation_id or session_id,
         )
         if decision.passed:
             self._active_tool_policy_decisions[(session_id, str(tool or '').strip())] = decision
@@ -1376,18 +1395,23 @@ class ChatRouter:
             tool_name=str(tool or '').strip(),
             status='denied',
             deny_reason=deny_reason,
-            payload_keys=list((payload or {}).keys()),
+            payload_keys=list(self._strip_policy_runtime_fields(payload or {}).keys()),
             details={'stage': 'before_execute'},
         )
+        policy_payload = {
+            'reason': deny_reason,
+            'risk_level': decision.risk_level,
+            'requires_confirmation': decision.requires_confirmation,
+            'cost_class': decision.cost_class,
+        }
+        if deny_reason == 'confirmation_required' and decision.confirmation_token:
+            policy_payload['confirm_token'] = decision.confirmation_token
+        if deny_reason == 'confirmation_required' and decision.confirmation_token_expires_at:
+            policy_payload['confirm_token_expires_at'] = decision.confirmation_token_expires_at.isoformat()
         return {
             'ok': False,
             'error': status,
-            'policy': {
-                'reason': deny_reason,
-                'risk_level': decision.risk_level,
-                'requires_confirmation': decision.requires_confirmation,
-                'cost_class': decision.cost_class,
-            },
+            'policy': policy_payload,
         }
 
     # 取得最近一次回合的度量（tokens/cost 等）
