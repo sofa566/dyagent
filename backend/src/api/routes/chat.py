@@ -10,7 +10,8 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
@@ -819,7 +820,7 @@ def _fetch_reference_text(url: str) -> str:
     """目的：抓取單一參考網址文字內容。
     為什麼：補足未配置 mcp:fetch 的代理者，仍可使用外部參考內容回答。
     """
-    req = Request(url, headers={'User-Agent': 'dyagent/1.0'})
+    req = UrlRequest(url, headers={'User-Agent': 'dyagent/1.0'})
     with urlopen(req, timeout=REFERENCE_FETCH_TIMEOUT_SECONDS) as response:  # nosec B310
         content_type = str(response.headers.get('Content-Type') or '').lower()
         raw = response.read(REFERENCE_FETCH_MAX_CHARS * 2)
@@ -1986,11 +1987,41 @@ def _resolve_user_dataset_permission_keys(*, db: Session, current_user: User) ->
     }
 
 
-def _merge_selected_dataset_ids(*, payload_ids: list[str]) -> list[str]:
+def _merge_selected_dataset_ids(*, payload_ids: Any) -> list[str]:
     """目的：正規化前端傳入的 selected_dataset_ids。
     為什麼：資料集使用需由使用者明確指定，不再從訊息文字隱含推導。
     """
-    return _normalize_selected_dataset_ids(payload_ids)
+    if isinstance(payload_ids, list | tuple | set):
+        raw_values = [str(raw_value or '') for raw_value in list(payload_ids)]
+    elif payload_ids is None:
+        raw_values = []
+    else:
+        raw_values = [str(payload_ids)]
+    return _extract_selected_dataset_ids_from_query_values(raw_values)
+
+
+def _extract_selected_dataset_ids_from_query_values(raw_values: list[str]) -> list[str]:
+    """目的：從 query string 的各種格式中提取 selected_dataset_ids。
+    為什麼：GET 路徑實務上可能出現重複 key、逗號字串或序列化字串，需統一解析。
+    """
+    uuid_pattern = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    collected_values: list[str] = []
+    for raw_value in list(raw_values or []):
+        normalized_value = str(raw_value or '').strip()
+        if not normalized_value:
+            continue
+        if ',' in normalized_value:
+            for split_item in normalized_value.split(','):
+                split_text = str(split_item or '').strip()
+                if split_text:
+                    collected_values.append(split_text)
+        else:
+            matched_values = uuid_pattern.findall(normalized_value)
+            if matched_values:
+                collected_values.extend(matched_values)
+            else:
+                collected_values.append(normalized_value)
+    return _normalize_selected_dataset_ids(collected_values)
 
 
 def _dataset_collection_name_for_chat(dataset_row: RagDataset) -> str:
@@ -2647,7 +2678,7 @@ async def chat_stream(
     message: str,  # 用户输入的消息内容，需要AI代理处理和回应
     conversation_id: str | None = None,
     attachment_ids: list[str] | None = None,
-    selected_dataset_ids: list[str] | None = None,
+    selected_dataset_ids: Any = None,
     route_reason: str | None = None,
     persist_user_message: bool = True,
     allow_memory_write: bool = True,
@@ -2692,7 +2723,9 @@ async def chat_stream(
         conversation = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
 
     normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
-    normalized_selected_dataset_ids = _merge_selected_dataset_ids(payload_ids=(selected_dataset_ids or []))
+    normalized_selected_dataset_ids = _merge_selected_dataset_ids(
+        payload_ids=selected_dataset_ids,
+    )
     _log.info(
         'chat.stream.selected_datasets',
         conversation_id=str(conversation.id),

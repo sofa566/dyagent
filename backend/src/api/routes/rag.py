@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from src.api.errors import forbidden_error, not_found_error
+from src.api.errors import forbidden_error, not_found_error, validation_error
 from src.core.config import settings
 from src.core.database import SessionLocal, get_db
 from src.core.logging import get_logger
@@ -1733,6 +1733,30 @@ def _dataset_to_dict(row: RagDataset) -> dict:
     }
 
 
+def _parse_agent_uuid_or_none(raw_agent_id: object) -> uuid.UUID | None:
+    normalized_agent_id = str(raw_agent_id or '').strip()
+    if not normalized_agent_id:
+        return None
+    try:
+        return uuid.UUID(normalized_agent_id)
+    except Exception:
+        return None
+
+
+def _can_manage_private_dataset(*, current_user: User, db: Session, action: str) -> bool:
+    # 目的：統一 agent_private 資料集的權限判斷（新舊流程相容）。
+    # 為什麼：逐步退場舊 API 期間，仍需支援 update_agent 角色操作私有資料集。
+    permission_by_action = {
+        'create': 'private.rag.create',
+        'update': 'private.rag.update',
+        'delete': 'private.rag.delete',
+    }
+    action_permission = permission_by_action.get(str(action or '').strip())
+    if action_permission and check_permission(current_user, action_permission, db=db):
+        return True
+    return check_permission(current_user, 'update_agent', db=db)
+
+
 @router.post('/rag/upload')
 async def upload_document(
     agent_id: str,
@@ -2237,29 +2261,33 @@ async def create_rag_dataset(
 ):
     dataset_scope = str((payload or {}).get('scope') or 'global').strip() or 'global'
     if dataset_scope not in {'global', 'agent_private'}:
-        from src.api.errors import validation_error
         raise validation_error('scope 僅允許 global/agent_private')
 
+    private_agent_row = None
     if dataset_scope == 'global':
         if not check_permission(current_user, 'rag.create', db=db):
             raise forbidden_error()
     else:
-        if not check_permission(current_user, 'private.rag.create', db=db):
+        if not _can_manage_private_dataset(current_user=current_user, db=db, action='create'):
             raise forbidden_error()
+        parsed_agent_id = _parse_agent_uuid_or_none((payload or {}).get('agent_id'))
+        if parsed_agent_id is None:
+            raise validation_error('scope=agent_private 時，agent_id 為必填且需為 UUID')
+        private_agent_row = db.query(Agent).filter(Agent.id == parsed_agent_id).first()
+        if private_agent_row is None:
+            raise not_found_error('Agent', str((payload or {}).get('agent_id') or ''))
 
     name = str((payload or {}).get('name') or '').strip()
     if not name:
-        from src.api.errors import validation_error
         raise validation_error('name 為必填')
     sensitivity = str((payload or {}).get('sensitivity') or 'normal').strip() or 'normal'
     if sensitivity not in {'normal', 'confidential', 'restricted'}:
-        from src.api.errors import validation_error
         raise validation_error('sensitivity 僅允許 normal/confidential/restricted')
 
     row = RagDataset(
         name=name,
         scope=dataset_scope,
-        agent_id=None,
+        agent_id=(private_agent_row.id if private_agent_row is not None else None),
         owner_user_id=current_user.id,
         sensitivity=sensitivity,
         vector_backend=str((payload or {}).get('vector_backend') or '') or None,
@@ -2292,22 +2320,25 @@ async def update_rag_dataset(
         if not check_permission(current_user, 'rag.update', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not check_permission(current_user, 'private.rag.update', db=db):
+        if not _can_manage_private_dataset(current_user=current_user, db=db, action='update'):
             raise forbidden_error()
     else:
         raise forbidden_error()
 
+    if 'scope' in (payload or {}):
+        requested_scope = str((payload or {}).get('scope') or '').strip()
+        if requested_scope and requested_scope != str(row.scope):
+            raise validation_error('不允許透過更新操作變更資料集 scope')
+
     if 'name' in (payload or {}):
         name = str((payload or {}).get('name') or '').strip()
         if not name:
-            from src.api.errors import validation_error
             raise validation_error('name 不可為空')
         row.name = name
 
     if 'sensitivity' in (payload or {}):
         sensitivity = str((payload or {}).get('sensitivity') or '').strip()
         if sensitivity not in {'normal', 'confidential', 'restricted'}:
-            from src.api.errors import validation_error
             raise validation_error('sensitivity 僅允許 normal/confidential/restricted')
         row.sensitivity = sensitivity
 
@@ -2342,7 +2373,7 @@ async def delete_rag_dataset(
         if not check_permission(current_user, 'rag.delete', db=db):
             raise forbidden_error()
     elif row.scope == 'agent_private':
-        if not check_permission(current_user, 'private.rag.delete', db=db):
+        if not _can_manage_private_dataset(current_user=current_user, db=db, action='delete'):
             raise forbidden_error()
     else:
         raise forbidden_error()

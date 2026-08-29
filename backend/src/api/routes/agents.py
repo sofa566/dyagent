@@ -1,11 +1,12 @@
 import uuid
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.api.errors import not_found_error, validation_error
 from src.core.database import get_db
+from src.core.logging import get_logger
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.models import (
@@ -25,6 +26,23 @@ from src.services.mcp_client import MCPClient
 from src.services.qdrant_service import qdrant_service
 
 router = APIRouter()
+logger = get_logger(__name__)
+AGENT_PRIVATE_DATASET_DEPRECATED_SUNSET = 'Tue, 31 Mar 2027 00:00:00 GMT'
+
+
+def _mark_agent_private_dataset_api_deprecated(*, response: Response, operation: str, agent_id: str, dataset_id: str | None = None) -> None:
+    # 目的：標記舊私有資料集 API 已進入退場期並提供替代路徑。
+    # 為什麼：讓客戶端可在回應層感知 deprecated 訊號，逐步切換到 /api/rag/datasets。
+    response.headers['Deprecation'] = 'true'
+    response.headers['Sunset'] = AGENT_PRIVATE_DATASET_DEPRECATED_SUNSET
+    response.headers['Link'] = '</api/rag/datasets>; rel="successor-version"'
+    response.headers['X-Deprecated-Reason'] = 'use /api/rag/datasets with scope=agent_private'
+    logger.warning(
+        'agents.private_dataset_api_deprecated_called',
+        operation=str(operation or ''),
+        agent_id=str(agent_id or ''),
+        dataset_id=str(dataset_id or ''),
+    )
 
 
 def _can_read_agent_integrations(current_user: User, db: Session) -> bool:
@@ -605,13 +623,16 @@ async def bind_agent_function_profile(
     }
 
 
-@router.post('/agents/{agent_id}/rag/datasets')
+@router.post('/agents/{agent_id}/rag/datasets', deprecated=True)
 async def create_agent_private_dataset(
     agent_id: str,
+    response: Response,
     payload: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if response is not None:
+        _mark_agent_private_dataset_api_deprecated(response=response, operation='create', agent_id=agent_id)
     if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
@@ -642,17 +663,25 @@ async def create_agent_private_dataset(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return {'ok': True, 'dataset': {'id': str(row.id), 'name': row.name, 'scope': row.scope, 'agent_id': str(row.agent_id)}}
+    return {
+        'ok': True,
+        'dataset': {'id': str(row.id), 'name': row.name, 'scope': row.scope, 'agent_id': str(row.agent_id)},
+        'deprecated': True,
+        'replacement': '/api/rag/datasets',
+    }
 
 
-@router.put('/agents/{agent_id}/rag/datasets/{dataset_id}')
+@router.put('/agents/{agent_id}/rag/datasets/{dataset_id}', deprecated=True)
 async def update_agent_private_dataset(
     agent_id: str,
     dataset_id: str,
+    response: Response,
     payload: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if response is not None:
+        _mark_agent_private_dataset_api_deprecated(response=response, operation='update', agent_id=agent_id, dataset_id=dataset_id)
     if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
@@ -704,16 +733,21 @@ async def update_agent_private_dataset(
             'agent_id': str(dataset_row.agent_id),
             'enabled': bool(dataset_row.enabled),
         },
+        'deprecated': True,
+        'replacement': '/api/rag/datasets/{dataset_id}',
     }
 
 
-@router.delete('/agents/{agent_id}/rag/datasets/{dataset_id}')
+@router.delete('/agents/{agent_id}/rag/datasets/{dataset_id}', deprecated=True)
 async def delete_agent_private_dataset(
     agent_id: str,
     dataset_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if response is not None:
+        _mark_agent_private_dataset_api_deprecated(response=response, operation='delete', agent_id=agent_id, dataset_id=dataset_id)
     if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
@@ -739,7 +773,7 @@ async def delete_agent_private_dataset(
     db.delete(dataset_row)
     access_control_service.remove_permission_keys(db, sorted(permission_keys_to_remove))
     db.commit()
-    return {'ok': True, 'id': str(dataset_id)}
+    return {'ok': True, 'id': str(dataset_id), 'deprecated': True, 'replacement': '/api/rag/datasets/{dataset_id}'}
 
 
 @router.put('/agents/{agent_id}/rag/bindings')

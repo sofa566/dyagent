@@ -4,7 +4,14 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 from src.api.routes import rag as rag_routes
-from src.models import AccessGroup, AccessPermission, Document, GroupPermissionBinding, RagDataset, UserGroupBinding
+from src.models import (
+    AccessGroup,
+    AccessPermission,
+    Document,
+    GroupPermissionBinding,
+    RagDataset,
+    UserGroupBinding,
+)
 
 
 class TestRAGUpload:
@@ -429,8 +436,24 @@ class TestRagDatasetPermissionCleanup:
         )
 
         assert response.status_code == 200
+        assert response.headers.get('deprecation') == 'true'
         assert db.query(AccessPermission).filter(AccessPermission.key == permission_key).first() is None
         assert db.query(GroupPermissionBinding).filter(GroupPermissionBinding.permission_id == permission_id).count() == 0
+
+    def test_create_agent_private_dataset_via_rag_dataset_api_requires_agent_id(self, client, admin_token):
+        response = client.post(
+            '/api/rag/datasets',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            json={
+                'name': 'private-missing-agent-id',
+                'scope': 'agent_private',
+                'enabled': True,
+            },
+        )
+
+        assert response.status_code == 400
+        payload = response.json()
+        assert 'agent_id' in str(payload.get('error') or payload.get('detail') or '')
 
     def test_open_dataset_document_preview_renders_docx_as_html(self, client, db, admin_user, monkeypatch):
         # 目的：驗證 docx 可透過 open-preview 直接瀏覽，不只下載。
