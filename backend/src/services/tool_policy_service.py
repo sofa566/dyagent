@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from decimal import Decimal
 import hashlib
 import json
 import secrets
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.core.config import settings
-from src.models import FunctionProfile, MCPConnection, SkillEntry, ToolExecutionAudit, ToolExecutionConfirmation
-
+from src.models import (
+    AccessGroup,
+    FunctionProfile,
+    MCPConnection,
+    SkillEntry,
+    ToolExecutionAudit,
+    ToolExecutionConfirmation,
+    UserGroupBinding,
+)
 
 SUPPORTED_RISK_LEVELS = {'safe', 'restricted', 'dangerous'}
 SUPPORTED_COST_CLASSES = {'free', 'billable'}
@@ -338,9 +346,20 @@ class ToolPolicyService:
             db.rollback()
 
     def _check_quota(self, *, db: Session, user_id: str, tool_name: str, rate_limit_profile: dict) -> tuple[bool, str]:
+        # 目的：檢查工具執行是否超過個人/群組次數與月成本配額。
+        # 為什麼：將配額治理集中在單一函式，避免策略判斷路徑分散且難以維護。
         daily_limit = self._parse_positive_int(rate_limit_profile.get('per_user_daily_calls'))
         monthly_limit = self._parse_positive_int(rate_limit_profile.get('per_user_monthly_calls'))
-        if daily_limit is None and monthly_limit is None:
+        group_daily_limit = self._parse_positive_int(rate_limit_profile.get('per_group_daily_calls'))
+        group_monthly_limit = self._parse_positive_int(rate_limit_profile.get('per_group_monthly_calls'))
+        monthly_cost_limit = self._parse_positive_decimal(rate_limit_profile.get('monthly_cost_usd'))
+        if (
+            daily_limit is None
+            and monthly_limit is None
+            and group_daily_limit is None
+            and group_monthly_limit is None
+            and monthly_cost_limit is None
+        ):
             return True, 'pass'
 
         user_uuid = self._parse_uuid_or_none(user_id)
@@ -374,7 +393,81 @@ class ToolPolicyService:
             if month_count >= monthly_limit:
                 return False, 'quota_monthly_calls_exceeded'
 
+        if group_daily_limit is not None or group_monthly_limit is not None:
+            current_user_group_ids = self._load_user_group_ids(db=db, user_uuid=user_uuid)
+            if current_user_group_ids:
+                if group_daily_limit is not None:
+                    day_start = datetime(now.year, now.month, now.day)
+                    day_end = day_start + timedelta(days=1)
+                    for group_id in current_user_group_ids:
+                        group_day_count = db.query(ToolExecutionAudit.id).join(
+                            UserGroupBinding,
+                            UserGroupBinding.user_id == ToolExecutionAudit.user_id,
+                        ).filter(
+                            UserGroupBinding.group_id == group_id,
+                            ToolExecutionAudit.tool_name == tool_name,
+                            ToolExecutionAudit.status == 'success',
+                            ToolExecutionAudit.created_at >= day_start,
+                            ToolExecutionAudit.created_at < day_end,
+                        ).count()
+                        if group_day_count >= group_daily_limit:
+                            return False, 'quota_group_daily_calls_exceeded'
+
+                if group_monthly_limit is not None:
+                    month_start = datetime(now.year, now.month, 1)
+                    next_month = datetime(now.year + 1, 1, 1) if now.month == 12 else datetime(now.year, now.month + 1, 1)
+                    for group_id in current_user_group_ids:
+                        group_month_count = db.query(ToolExecutionAudit.id).join(
+                            UserGroupBinding,
+                            UserGroupBinding.user_id == ToolExecutionAudit.user_id,
+                        ).filter(
+                            UserGroupBinding.group_id == group_id,
+                            ToolExecutionAudit.tool_name == tool_name,
+                            ToolExecutionAudit.status == 'success',
+                            ToolExecutionAudit.created_at >= month_start,
+                            ToolExecutionAudit.created_at < next_month,
+                        ).count()
+                        if group_month_count >= group_monthly_limit:
+                            return False, 'quota_group_monthly_calls_exceeded'
+
+        if monthly_cost_limit is not None:
+            month_start = datetime(now.year, now.month, 1)
+            next_month = datetime(now.year + 1, 1, 1) if now.month == 12 else datetime(now.year, now.month + 1, 1)
+            monthly_cost_total = db.query(
+                func.coalesce(func.sum(ToolExecutionAudit.cost_estimate), 0)
+            ).filter(
+                ToolExecutionAudit.user_id == user_uuid,
+                ToolExecutionAudit.tool_name == tool_name,
+                ToolExecutionAudit.status == 'success',
+                ToolExecutionAudit.created_at >= month_start,
+                ToolExecutionAudit.created_at < next_month,
+            ).scalar()
+            normalized_monthly_cost_total = Decimal(str(monthly_cost_total or 0))
+            if normalized_monthly_cost_total >= monthly_cost_limit:
+                return False, 'quota_monthly_cost_exceeded'
+
         return True, 'pass'
+
+    def _load_user_group_ids(self, *, db: Session, user_uuid: uuid.UUID) -> list[uuid.UUID]:
+        # 目的：載入使用者所屬且啟用中的群組 ID。
+        # 為什麼：群組配額需基於群組成員共同使用量計算，避免只看個人維度。
+        group_id_rows = db.query(UserGroupBinding.group_id).join(
+            AccessGroup,
+            AccessGroup.id == UserGroupBinding.group_id,
+        ).filter(
+            UserGroupBinding.user_id == user_uuid,
+            AccessGroup.enabled == True,  # noqa: E712
+        ).all()
+        return [group_id_row.group_id for group_id_row in group_id_rows]
+
+    def _parse_positive_decimal(self, raw_value: object) -> Decimal | None:
+        try:
+            parsed = Decimal(str(raw_value))
+        except Exception:
+            return None
+        if parsed <= 0:
+            return None
+        return parsed
 
     def _parse_positive_int(self, raw_value: object) -> int | None:
         try:

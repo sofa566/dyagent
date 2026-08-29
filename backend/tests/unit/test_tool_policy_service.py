@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from src.models import SkillEntry, ToolExecutionAudit, ToolExecutionConfirmation
+from src.models import (
+    AccessGroup,
+    SkillEntry,
+    ToolExecutionAudit,
+    ToolExecutionConfirmation,
+    UserGroupBinding,
+)
 from src.services.tool_policy_service import ToolPolicyService
 
 
@@ -144,3 +150,141 @@ class TestToolPolicyService:
 
         assert decision.passed is False
         assert decision.reason == 'quota_daily_calls_exceeded'
+
+    def test_group_daily_quota_blocks_after_limit(self, db, regular_user):
+        service = ToolPolicyService()
+        target_group = AccessGroup(code='quota_group_daily', name='Quota Group Daily', enabled=True)
+        skill = SkillEntry(
+            name='quota-group-daily-skill',
+            description='quota group daily',
+            enabled=True,
+            type='python',
+            execution_policy={
+                'risk_level': 'restricted',
+                'rate_limit_profile': {
+                    'per_group_daily_calls': 1,
+                },
+            },
+        )
+        db.add_all([target_group, skill])
+        db.flush()
+        db.add(UserGroupBinding(user_id=regular_user.id, group_id=target_group.id))
+        db.add(ToolExecutionAudit(
+            user_id=regular_user.id,
+            tool_name='quota-group-daily-skill',
+            tool_type='skill',
+            risk_level='restricted',
+            cost_class='free',
+            allowlist_passed=True,
+            confirmation_required=False,
+            confirmation_passed=True,
+            quota_passed=True,
+            status='success',
+            payload_keys=[],
+            details={},
+            created_at=datetime.now(),
+        ))
+        db.commit()
+
+        decision = service.evaluate_execution(
+            db=db,
+            tool_name='quota-group-daily-skill',
+            payload={},
+            agent_class='tasked',
+            user_id=str(regular_user.id),
+        )
+
+        assert decision.passed is False
+        assert decision.reason == 'quota_group_daily_calls_exceeded'
+
+    def test_monthly_cost_quota_blocks_after_limit(self, db, regular_user):
+        service = ToolPolicyService()
+        skill = SkillEntry(
+            name='quota-monthly-cost-skill',
+            description='quota monthly cost',
+            enabled=True,
+            type='python',
+            execution_policy={
+                'risk_level': 'restricted',
+                'cost_class': 'billable',
+                'rate_limit_profile': {
+                    'monthly_cost_usd': 10,
+                },
+            },
+        )
+        db.add(skill)
+        db.flush()
+        db.add(ToolExecutionAudit(
+            user_id=regular_user.id,
+            tool_name='quota-monthly-cost-skill',
+            tool_type='skill',
+            risk_level='restricted',
+            cost_class='billable',
+            allowlist_passed=True,
+            confirmation_required=False,
+            confirmation_passed=True,
+            quota_passed=True,
+            status='success',
+            payload_keys=[],
+            cost_estimate=10,
+            details={},
+            created_at=datetime.now(),
+        ))
+        db.commit()
+
+        decision = service.evaluate_execution(
+            db=db,
+            tool_name='quota-monthly-cost-skill',
+            payload={},
+            agent_class='tasked',
+            user_id=str(regular_user.id),
+        )
+
+        assert decision.passed is False
+        assert decision.reason == 'quota_monthly_cost_exceeded'
+
+    def test_group_monthly_quota_blocks_after_limit(self, db, regular_user):
+        service = ToolPolicyService()
+        target_group = AccessGroup(code='quota_group_monthly', name='Quota Group Monthly', enabled=True)
+        skill = SkillEntry(
+            name='quota-group-monthly-skill',
+            description='quota group monthly',
+            enabled=True,
+            type='python',
+            execution_policy={
+                'risk_level': 'restricted',
+                'rate_limit_profile': {
+                    'per_group_monthly_calls': 1,
+                },
+            },
+        )
+        db.add_all([target_group, skill])
+        db.flush()
+        db.add(UserGroupBinding(user_id=regular_user.id, group_id=target_group.id))
+        db.add(ToolExecutionAudit(
+            user_id=regular_user.id,
+            tool_name='quota-group-monthly-skill',
+            tool_type='skill',
+            risk_level='restricted',
+            cost_class='free',
+            allowlist_passed=True,
+            confirmation_required=False,
+            confirmation_passed=True,
+            quota_passed=True,
+            status='success',
+            payload_keys=[],
+            details={},
+            created_at=datetime.now(),
+        ))
+        db.commit()
+
+        decision = service.evaluate_execution(
+            db=db,
+            tool_name='quota-group-monthly-skill',
+            payload={},
+            agent_class='tasked',
+            user_id=str(regular_user.id),
+        )
+
+        assert decision.passed is False
+        assert decision.reason == 'quota_group_monthly_calls_exceeded'
