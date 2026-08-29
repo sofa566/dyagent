@@ -1,8 +1,21 @@
 import hashlib
 import math
+from collections.abc import Iterator
 
 
 VECTOR_SIZE = 1536
+
+
+def iter_chunk_text(text: str, max_chars: int = 800) -> Iterator[str]:
+    for chunk in chunk_text(text, max_chars=max_chars):
+        yield chunk
+
+
+def iter_chunk_text_with_pages(page_texts: list[str], max_chars: int = 800) -> Iterator[dict[str, int | str]]:
+    for page_number, page_text in enumerate(page_texts or [], start=1):
+        for chunk in chunk_text(page_text, max_chars=max_chars):
+            if chunk:
+                yield {'text': chunk, 'page_number': page_number}
 
 
 def chunk_text(text: str, max_chars: int = 800) -> list[str]:

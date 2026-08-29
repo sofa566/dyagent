@@ -5,14 +5,16 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.models import MCPConnection, User
 from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_role, Role
+from src.middleware.rbac import require_permission
 from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
 from src.services.mcp_client import MCPClient
+from src.services.tool_policy_service import ToolPolicyService
 from src.models import Log
 
 
 router = APIRouter()
+tool_policy_service = ToolPolicyService()
 
 
 def _discover_schema_from_config(*, client: MCPClient, name: str, transport: str, base_url: str | None = None, auth: dict[str, Any] | None = None, command: str | None = None, args: list[Any] | None = None, env: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -86,13 +88,14 @@ def _to_dict(m: MCPConnection) -> dict[str, Any]:
         'args': m.args or [],
         'env': m.env or {},
         'input_schema': m.input_schema or {},
+        'execution_policy': tool_policy_service.normalize_policy(m.execution_policy if isinstance(m.execution_policy, dict) else {}),
         'created_at': m.created_at.isoformat() if m.created_at else None,
         'updated_at': m.updated_at.isoformat() if m.updated_at else None,
     }
 
 
 @router.get('/mcps')
-@require_role([Role.ADMIN])
+@require_permission('mcp.read')
 async def list_mcps(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -107,7 +110,7 @@ async def list_selectable_mcps(
     current_user: User = Depends(get_current_user),
 ):
     """提供可被代理者綁定的 MCP 清單（admin / agent_admin 可用）。"""
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     rows = db.query(MCPConnection).filter(MCPConnection.enabled == True).order_by(MCPConnection.created_at.desc()).all()  # noqa: E712
@@ -115,7 +118,7 @@ async def list_selectable_mcps(
 
 
 @router.post('/mcps')
-@require_role([Role.ADMIN])
+@require_permission('mcp.create')
 async def create_mcp(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -140,6 +143,7 @@ async def create_mcp(
         args=(payload or {}).get('args') or [],
         env=(payload or {}).get('env') or {},
         input_schema=(payload or {}).get('input_schema') or {},
+        execution_policy=tool_policy_service.normalize_policy((payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}),
     )
     db.add(m)
     db.commit()
@@ -148,7 +152,7 @@ async def create_mcp(
 
 
 @router.get('/mcps/{mcp_id}')
-@require_role([Role.ADMIN])
+@require_permission('mcp.read')
 async def get_mcp(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -161,7 +165,7 @@ async def get_mcp(
 
 
 @router.put('/mcps/{mcp_id}')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def update_mcp(
     mcp_id: str,
     payload: dict[str, Any] = Body(...),
@@ -182,13 +186,17 @@ async def update_mcp(
     for k in ('description','enabled','transport','base_url','auth','progress_field','eta_field','command','args','env','input_schema'):
         if k in (payload or {}):
             setattr(row, k, (payload or {}).get(k))
+    if 'execution_policy' in (payload or {}):
+        row.execution_policy = tool_policy_service.normalize_policy(
+            (payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}
+        )
     db.commit()
     db.refresh(row)
     return _to_dict(row)
 
 
 @router.post('/mcps/{mcp_id}/test')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def test_mcp(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -246,7 +254,7 @@ async def test_mcp(
 
 
 @router.get('/mcps/{mcp_id}/tests')
-@require_role([Role.ADMIN])
+@require_permission('mcp.read')
 async def list_mcp_tests(
     mcp_id: str,
     limit: int = 20,
@@ -263,7 +271,7 @@ async def list_mcp_tests(
 
 
 @router.delete('/mcps/{mcp_id}/tests')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def delete_mcp_tests(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -276,7 +284,7 @@ async def delete_mcp_tests(
 
 
 @router.post('/mcps/{mcp_id}/discover-schema')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def discover_mcp_schema(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -302,7 +310,7 @@ async def discover_mcp_schema(
 
 
 @router.post('/mcps/discover-schema-preview')
-@require_role([Role.ADMIN])
+@require_permission('mcp.update')
 async def discover_mcp_schema_preview(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -325,7 +333,7 @@ async def discover_mcp_schema_preview(
 
 
 @router.delete('/mcps/{mcp_id}')
-@require_role([Role.ADMIN])
+@require_permission('mcp.delete')
 async def delete_mcp(
     mcp_id: str,
     db: Session = Depends(get_db),
@@ -340,7 +348,7 @@ async def delete_mcp(
 
 
 @router.post('/mcps/import-mcpservers')
-@require_role([Role.ADMIN])
+@require_permission('mcp.create')
 async def import_mcpservers(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),

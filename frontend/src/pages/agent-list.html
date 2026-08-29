@@ -86,12 +86,20 @@
               </tr>
             </thead>
             <tbody>
-              ${response.agents.map(agent => `
+              ${response.agents.map(agent => {
+                const normalizedClass = String(agent.agent_class || (agent.is_router ? 'master' : 'tasked')).toLowerCase();
+                const classLabel = (
+                  normalizedClass === 'master' ? '主代理 (master)'
+                  : normalizedClass === 'public' ? '公眾 (public)'
+                  : normalizedClass === 'private' ? '私有 (private)'
+                  : '任務 (tasked)'
+                );
+                return `
                 <tr>
                   <td>${agent.name}</td>
                   <td>${agent.description || '-'}</td>
                   <td>${agent.model_type}</td>
-                  <td>${agent.agent_class || (agent.is_router ? 'master' : 'tasked')}</td>
+                  <td>${classLabel}</td>
                   <td>${agent.enabled === false ? '停用' : '啟用'}</td>
                   <td>${(integrationsByAgent[agent.id]?.mcpNames || []).join(', ') || '-'}</td>
                   <td>${(integrationsByAgent[agent.id]?.skills || []).join(', ') || '-'}</td>
@@ -100,11 +108,9 @@
                     <a href="/pages/chat.html?agent=${agent.id}" class="btn btn-primary">聊天</a>
                     <a href="/pages/edit-agent.html?id=${agent.id}" class="btn btn-secondary">編輯</a>
                     <a href="/pages/agent-llm.html?id=${agent.id}" class="btn">LLM 設定</a>
-                    <a href="/pages/agent-llm-config.html?id=${agent.id}" class="btn">工具設定</a>
-                    <a href="/pages/agent-rag-config.html?id=${agent.id}" class="btn">RAG設定</a>
                   </td>
                 </tr>
-              `).join('')}
+              `;}).join('')}
             </tbody>
           </table>
         `;

@@ -3,8 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>使用者管理 - dyagent</title>
+  <title>使用者與群組管理 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+    .tab-bar { display: inline-flex; border: 1px solid var(--border-color); border-radius: var(--radius); overflow: hidden; margin: 8px 0 10px; }
+    .tab-btn { border: none; background: #fff; color: var(--text-secondary); padding: 8px 14px; cursor: pointer; }
+    .tab-btn.active { background: var(--primary-color); color: #fff; }
+    .toolbar-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .hint { color: var(--text-secondary); font-size: 0.9rem; }
+    .action-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .status-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem; }
+    .status-on { background: #dcfce7; color: #166534; }
+    .status-off { background: #fef2f2; color: #b91c1c; }
+    .group-chip { display: inline-block; background: #e2e8f0; color: #334155; border-radius: 999px; padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 0.78rem; }
+    .tree-box { border: 1px solid var(--border-color); border-radius: var(--radius); padding: 8px; max-height: 260px; overflow: auto; background: #fff; }
+    .tree-box.compact { max-height: 84px; }
+  </style>
 </head>
 <body>
   <nav class="navbar">
@@ -16,113 +31,719 @@
       <a href="/pages/login.html" id="auth-link">登入</a>
     </div>
   </nav>
+
   <main class="container">
-    <div class="actions" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-      <h2 style="margin:0;">使用者管理</h2>
-      <details class="card" style="padding:8px;">
-        <summary>新增使用者</summary>
-        <form id="create-user-form" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px;">
-          <div class="form-group">
-            <label>使用者名稱</label>
-            <input id="cu-username" type="text" required maxlength="100" placeholder="username">
-          </div>
-          <div class="form-group">
-            <label>Email</label>
-            <input id="cu-email" type="email" required placeholder="email@example.com">
-          </div>
-          <div class="form-group">
-            <label>密碼</label>
-            <input id="cu-password" type="password" required autocomplete="new-password">
-          </div>
-          <div class="form-group">
-            <label>角色</label>
-            <select id="cu-role">
-              <option value="user" selected>user（預設）</option>
-              <option value="agent_admin">agent_admin</option>
-              <option value="admin">admin</option>
-            </select>
-          </div>
-          <button type="submit" class="btn btn-primary">建立</button>
-        </form>
-      </details>
+    <div class="toolbar">
+      <h2 id="page-title" style="margin:0;">使用者管理</h2>
     </div>
+
+    <div class="tab-bar">
+      <button id="tab-users" class="tab-btn active" type="button">使用者</button>
+      <button id="tab-groups" class="tab-btn" type="button">群組</button>
+    </div>
+
+    <div class="toolbar-actions">
+      <button id="btn-new" class="btn btn-primary" type="button">新建</button>
+      <button id="btn-refresh" class="btn" type="button">重新整理</button>
+    </div>
+
+    <div class="hint" id="tab-hint">可同時管理角色與群組，最終權限為聯集。</div>
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
-    <div id="users-list" class="card"><p>載入中...</p></div>
+
+    <section class="card">
+      <h3 id="list-title">使用者清單</h3>
+      <div style="max-height:480px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
+        <table style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr id="list-head-row"></tr>
+          </thead>
+          <tbody id="list-body"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
+
+  <div id="user-modal" class="modal">
+    <div class="modal-content" style="max-width:560px;">
+      <h3 id="user-modal-title">新增使用者</h3>
+      <form id="user-form">
+        <input id="user-id" type="hidden">
+        <div class="form-group" id="fg-username">
+          <label for="user-username">使用者名稱</label>
+          <input id="user-username" type="text" maxlength="100" placeholder="username">
+        </div>
+        <div class="form-group" id="fg-email">
+          <label for="user-email">Email</label>
+          <input id="user-email" type="email" placeholder="email@example.com">
+        </div>
+        <div class="form-group" id="fg-password">
+          <label for="user-password">密碼</label>
+          <input id="user-password" type="password" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label for="user-enabled-tree">啟用狀態</label>
+          <div id="user-enabled-tree" class="tree-box compact"></div>
+        </div>
+        <div class="actions">
+          <button id="user-modal-save" type="submit" class="btn btn-primary">建立</button>
+          <button id="user-modal-cancel" type="button" class="btn btn-secondary">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="group-modal" class="modal">
+    <div class="modal-content" style="max-width:560px;">
+      <h3 id="group-modal-title">新增群組</h3>
+      <form id="group-form">
+        <input id="group-id" type="hidden">
+        <div class="form-group" id="fg-group-code">
+          <label for="group-code">群組代碼</label>
+          <input id="group-code" type="text" placeholder="ops_group">
+        </div>
+        <div class="form-group">
+          <label for="group-name">群組名稱</label>
+          <input id="group-name" type="text" placeholder="營運群組">
+        </div>
+        <div class="form-group">
+          <label><input id="group-enabled" type="checkbox" checked> 啟用</label>
+        </div>
+        <div class="actions">
+          <button id="group-modal-save" type="submit" class="btn btn-primary">建立</button>
+          <button id="group-modal-cancel" type="button" class="btn btn-secondary">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="user-access-modal" class="modal">
+    <div class="modal-content" style="max-width:760px;">
+      <h3>編輯使用者群組/角色</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+        <div>
+          <strong id="ua-user-name">-</strong>
+        </div>
+        <div id="ua-user-email" style="text-align:right;color:var(--text-secondary);">-</div>
+      </div>
+
+      <div class="form-group">
+        <label>角色綁定</label>
+        <div id="ua-role-list" class="tree-box"></div>
+      </div>
+
+      <div class="form-group">
+        <label>群組綁定</label>
+        <div id="ua-group-list" class="tree-box"></div>
+      </div>
+
+      <div class="actions">
+        <button id="ua-save-btn" type="button" class="btn btn-primary">儲存</button>
+        <button id="ua-close-btn" type="button" class="btn btn-secondary">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-group-modal" class="modal">
+    <div class="modal-content">
+      <h3>確認刪除群組</h3>
+      <p>確定刪除群組「<span id="delete-group-name"></span>」嗎？此操作會清除關聯綁定。</p>
+      <div class="actions">
+        <button id="delete-group-confirm" class="btn btn-danger" type="button">確認刪除</button>
+        <button id="delete-group-cancel" class="btn btn-secondary" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-user-modal" class="modal">
+    <div class="modal-content">
+      <h3>確認刪除使用者</h3>
+      <p>確定刪除使用者「<span id="delete-user-name"></span>」嗎？此操作無法還原。</p>
+      <div class="actions">
+        <button id="delete-user-confirm" class="btn btn-danger" type="button">確認刪除</button>
+        <button id="delete-user-cancel" class="btn btn-secondary" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module">
-    import { api, auth, showError } from '/main.js';
+    import Tree from '@widgetjs/tree';
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
 
-    const me = auth.getUser();
-    if (!me || me.role !== 'admin') {
-      showError('僅限管理者使用');
-      setTimeout(()=> window.location.href='/pages/chat.html', 1500);
+    const currentUser = auth.getUser();
+    const state = {
+      activeTab: 'users',
+      users: [],
+      roles: [],
+      groups: [],
+      deletingUser: null,
+      deletingGroup: null,
+      userGroupIdsByUserId: {},
+      editingUserAccess: null,
+      editingUserRoleIds: [],
+      editingUserGroupIds: [],
+      userEnabledTreeInstance: null,
+      userAccessRoleTreeInstance: null,
+      userAccessGroupTreeInstance: null,
+    };
+
+    const listTitle = document.getElementById('list-title');
+    const pageTitle = document.getElementById('page-title');
+    const listHeadRow = document.getElementById('list-head-row');
+    const listBody = document.getElementById('list-body');
+    const tabHint = document.getElementById('tab-hint');
+
+    const userModal = document.getElementById('user-modal');
+    const groupModal = document.getElementById('group-modal');
+    const userAccessModal = document.getElementById('user-access-modal');
+    const deleteGroupModal = document.getElementById('delete-group-modal');
+    const deleteUserModal = document.getElementById('delete-user-modal');
+
+    function openModal(modalElement) {
+      modalElement.classList.add('active');
+    }
+
+    function closeModal(modalElement) {
+      modalElement.classList.remove('active');
+    }
+
+    function setActiveTab(nextTab) {
+      state.activeTab = nextTab;
+      document.getElementById('tab-users').classList.toggle('active', nextTab === 'users');
+      document.getElementById('tab-groups').classList.toggle('active', nextTab === 'groups');
+      if (nextTab === 'users') {
+        pageTitle.textContent = '使用者管理';
+        listTitle.textContent = '使用者清單';
+        tabHint.textContent = '可同時管理角色與群組，最終權限為聯集。';
+        document.getElementById('btn-new').textContent = '新建使用者';
+      } else {
+        pageTitle.textContent = '群組管理';
+        listTitle.textContent = '群組清單';
+        tabHint.textContent = '管理群組資料（新增、編輯、刪除）；群組角色會併入使用者權限。';
+        document.getElementById('btn-new').textContent = '新建群組';
+      }
+      renderList();
+    }
+
+    function renderUsers() {
+      listHeadRow.innerHTML = '<th>名稱</th><th>Email</th><th>狀態</th><th>角色</th><th>群組</th><th>建立時間</th><th>操作</th>';
+      const users = state.users.filter(user => user.id !== (currentUser && currentUser.id));
+      const groupNameById = {};
+      for (const groupItem of state.groups) {
+        groupNameById[String(groupItem.id)] = formatGroupLabel(groupItem);
+      }
+      if (!users.length) {
+        listBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);">沒有其他使用者</td></tr>';
+        return;
+      }
+      listBody.innerHTML = users.map(user => `
+        <tr>
+          <td>${user.username || '-'}</td>
+          <td>${user.email || '-'}</td>
+          <td><span class="status-pill ${user.enabled ? 'status-on' : 'status-off'}">${user.enabled ? '啟用' : '停用'}</span></td>
+          <td>${user.role || '-'}</td>
+          <td>${((state.userGroupIdsByUserId[String(user.id)] || []).map(groupId => `<span class="group-chip">${groupNameById[String(groupId)] || String(groupId)}</span>`).join('')) || '-'}</td>
+          <td>${user.created_at ? new Date(user.created_at).toLocaleString() : ''}</td>
+          <td>
+            <div class="action-row">
+              <button class="btn" data-action="edit-user" data-id="${user.id}" type="button">編輯</button>
+              <button class="btn" data-action="edit-user-access" data-id="${user.id}" type="button">群組/角色</button>
+              <button class="btn btn-danger" data-action="delete-user" data-id="${user.id}" type="button">刪除</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function formatGroupLabel(groupItem) {
+      if (!groupItem) {
+        return '-';
+      }
+      const groupName = String(groupItem.name || '').trim();
+      const groupCode = String(groupItem.code || '').trim();
+      if (groupName && groupCode) {
+        return `${groupName} (${groupCode})`;
+      }
+      return groupName || groupCode || '-';
+    }
+
+    function createTreeSelection(containerSelector, treeData, selectedValues) {
+      return new Tree(containerSelector, {
+        data: treeData,
+        values: selectedValues,
+      });
+    }
+
+    function getSelectedBindingValues(treeInstance, prefix) {
+      if (!treeInstance) {
+        return [];
+      }
+      const selectedNodes = Array.isArray(treeInstance.selectedNodes) ? treeInstance.selectedNodes : [];
+      return selectedNodes
+        .map((node) => {
+          const nodeId = String((node && node.id) || '');
+          if (nodeId.startsWith(prefix)) {
+            return nodeId.slice(prefix.length);
+          }
+          return '';
+        })
+        .filter(Boolean);
+    }
+
+    function renderUserEnabledTree(enabled) {
+      const containerElement = document.getElementById('user-enabled-tree');
+      containerElement.innerHTML = '';
+      state.userEnabledTreeInstance = createTreeSelection('#user-enabled-tree', [
+        {
+          id: 'enabled-module:user',
+          text: '帳號狀態',
+          children: [{ id: 'enabled-item:true', text: '啟用' }],
+        },
+      ], enabled ? ['enabled-item:true'] : []);
+    }
+
+    function isUserEnabledSelected() {
+      const selectedValues = getSelectedBindingValues(state.userEnabledTreeInstance, 'enabled-item:');
+      return selectedValues.includes('true');
+    }
+
+    function renderGroups() {
+      listHeadRow.innerHTML = '<th>代碼</th><th>名稱</th><th>狀態</th><th>建立時間</th><th>操作</th>';
+      if (!state.groups.length) {
+        listBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);">尚無群組</td></tr>';
+        return;
+      }
+      listBody.innerHTML = state.groups.map(group => `
+        <tr>
+          <td>${group.code || '-'}</td>
+          <td>${group.name || '-'}</td>
+          <td><span class="status-pill ${group.enabled ? 'status-on' : 'status-off'}">${group.enabled ? '啟用' : '停用'}</span></td>
+          <td>${group.created_at ? new Date(group.created_at).toLocaleString() : ''}</td>
+          <td>
+            <div class="action-row">
+              <button class="btn" data-action="edit-group" data-id="${group.id}" type="button">編輯</button>
+              <button class="btn btn-danger" data-action="delete-group" data-id="${group.id}" type="button">刪除</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function renderList() {
+      if (state.activeTab === 'users') {
+        renderUsers();
+      } else {
+        renderGroups();
+      }
     }
 
     async function loadUsers() {
-      try {
-        const res = await api.get('/users');
-        const container = document.getElementById('users-list');
-        const list = Array.isArray(res.users) ? res.users.filter(u => u.id !== (me && me.id)) : [];
-        if (list.length === 0) {
-          container.innerHTML = '<p>沒有其他使用者</p>';
-          return;
-        }
-        container.innerHTML = `
-          <table>
-            <thead>
-              <tr>
-                <th>名稱</th>
-                <th>Email</th>
-                <th>角色</th>
-                <th>建立時間</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${list.map(u => `
-                <tr>
-                  <td>${u.username || '-'}</td>
-                  <td>${u.email || '-'}</td>
-                  <td>${u.role}</td>
-                  <td>${u.created_at ? new Date(u.created_at).toLocaleString() : ''}</td>
-                  <td><a href="/pages/user-edit.html?id=${u.id}" class="btn">編輯</a></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `;
-      } catch (e) {
-        showError(e.message || '載入使用者失敗');
-      }
+      const usersResponse = await api.get('/users');
+      state.users = Array.isArray(usersResponse.users) ? usersResponse.users : [];
+      await loadUserGroupIdsByUsers();
     }
 
-    loadUsers();
+    async function loadUserGroupIdsByUsers() {
+      const targetUsers = state.users.filter(user => user.id !== (currentUser && currentUser.id));
+      const groupIdsByUserId = {};
+      await Promise.all(
+        targetUsers.map(async (targetUser) => {
+          try {
+            const bindingPayload = await api.get(`/access/users/${encodeURIComponent(targetUser.id)}/bindings`);
+            groupIdsByUserId[String(targetUser.id)] = Array.isArray(bindingPayload.group_ids) ? bindingPayload.group_ids : [];
+          } catch {
+            groupIdsByUserId[String(targetUser.id)] = [];
+          }
+        }),
+      );
+      state.userGroupIdsByUserId = groupIdsByUserId;
+    }
 
-    // 建立使用者（僅 admin）
-    const cuForm = document.getElementById('create-user-form');
-    cuForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const username = document.getElementById('cu-username').value.trim();
-      const email = document.getElementById('cu-email').value.trim();
-      const password = document.getElementById('cu-password').value;
-      const role = document.getElementById('cu-role').value;
-      if (!username || !email || !password) { showError('請完整填寫表單'); return; }
-      try {
-        await api.post('/users', { username, email, password, role });
-        // 清空表單並刷新清單
-        cuForm.reset();
-        document.getElementById('success-message').textContent = '已建立使用者';
-        document.getElementById('success-message').style.display = 'block';
-        setTimeout(()=>{ document.getElementById('success-message').style.display='none'; }, 2000);
-        loadUsers();
-      } catch (e2) {
-        showError(e2.message || '建立失敗');
+    async function loadGroups() {
+      const groupsResponse = await api.get('/access/groups');
+      state.groups = Array.isArray(groupsResponse.groups) ? groupsResponse.groups : [];
+    }
+
+    async function loadRoles() {
+      const rolesResponse = await api.get('/access/roles');
+      const roleList = Array.isArray(rolesResponse.roles) ? rolesResponse.roles : [];
+      state.roles = roleList
+        .filter(roleItem => !!roleItem.enabled)
+        .sort((leftRole, rightRole) => String(leftRole.code || '').localeCompare(String(rightRole.code || '')));
+    }
+
+    async function reloadActiveTab() {
+      if (state.activeTab === 'users') {
+        await Promise.all([loadUsers(), loadRoles()]);
+      } else {
+        await loadGroups();
       }
+      renderList();
+    }
+
+    function openCreateUserModal() {
+      document.getElementById('user-form').reset();
+      document.getElementById('user-id').value = '';
+      document.getElementById('user-modal-title').textContent = '新增使用者';
+      document.getElementById('user-modal-save').textContent = '建立';
+      document.getElementById('fg-username').style.display = 'block';
+      document.getElementById('fg-email').style.display = 'block';
+      document.getElementById('fg-password').style.display = 'block';
+      renderUserEnabledTree(true);
+      openModal(userModal);
+    }
+
+    function openEditUserModal(userId) {
+      const targetUser = state.users.find(user => String(user.id) === String(userId));
+      if (!targetUser) {
+        showError('找不到使用者');
+        return;
+      }
+      document.getElementById('user-form').reset();
+      document.getElementById('user-id').value = String(targetUser.id);
+      document.getElementById('user-modal-title').textContent = `編輯使用者：${targetUser.username || targetUser.email}`;
+      document.getElementById('user-modal-save').textContent = '儲存基本資料';
+      document.getElementById('fg-username').style.display = 'block';
+      document.getElementById('fg-email').style.display = 'block';
+      document.getElementById('fg-password').style.display = 'none';
+      document.getElementById('user-username').value = targetUser.username || '';
+      document.getElementById('user-email').value = targetUser.email || '';
+      renderUserEnabledTree(!!targetUser.enabled);
+      openModal(userModal);
+    }
+
+    function openCreateGroupModal() {
+      document.getElementById('group-form').reset();
+      document.getElementById('group-id').value = '';
+      document.getElementById('group-modal-title').textContent = '新增群組';
+      document.getElementById('group-modal-save').textContent = '建立';
+      document.getElementById('fg-group-code').style.display = 'block';
+      document.getElementById('group-enabled').checked = true;
+      openModal(groupModal);
+    }
+
+    function openEditGroupModal(groupId) {
+      const targetGroup = state.groups.find(group => String(group.id) === String(groupId));
+      if (!targetGroup) {
+        showError('找不到群組');
+        return;
+      }
+      document.getElementById('group-id').value = String(targetGroup.id);
+      document.getElementById('group-code').value = targetGroup.code || '';
+      document.getElementById('group-name').value = targetGroup.name || '';
+      document.getElementById('group-enabled').checked = !!targetGroup.enabled;
+      document.getElementById('group-modal-title').textContent = `編輯群組：${targetGroup.code}`;
+      document.getElementById('group-modal-save').textContent = '儲存';
+      document.getElementById('fg-group-code').style.display = 'none';
+      openModal(groupModal);
+    }
+
+    function openDeleteGroupModal(groupId) {
+      const targetGroup = state.groups.find(group => String(group.id) === String(groupId));
+      if (!targetGroup) {
+        showError('找不到群組');
+        return;
+      }
+      state.deletingGroup = targetGroup;
+      document.getElementById('delete-group-name').textContent = targetGroup.name || targetGroup.code;
+      openModal(deleteGroupModal);
+    }
+
+    function openDeleteUserModal(userId) {
+      const targetUser = state.users.find(user => String(user.id) === String(userId));
+      if (!targetUser) {
+        showError('找不到使用者');
+        return;
+      }
+      state.deletingUser = targetUser;
+      document.getElementById('delete-user-name').textContent = targetUser.username || targetUser.email || String(targetUser.id);
+      openModal(deleteUserModal);
+    }
+
+    function groupItemsByCategory(items) {
+      const groupedMap = new Map();
+      for (const item of items) {
+        const category = String(item.category || '其他');
+        if (!groupedMap.has(category)) {
+          groupedMap.set(category, []);
+        }
+        groupedMap.get(category).push(item);
+      }
+      return Array.from(groupedMap.entries());
+    }
+
+    function buildUserAccessTreeData(containerPrefix, items) {
+      const groupedItems = groupItemsByCategory(items);
+      return groupedItems.map(([category, categoryItems], categoryIndex) => ({
+        id: `${containerPrefix}:module:${categoryIndex}`,
+        text: category,
+        children: categoryItems.map(item => ({
+          id: `${containerPrefix}:item:${String(item.id)}`,
+          text: String(item.label),
+        })),
+      }));
+    }
+
+    async function openEditUserAccessModal(userId) {
+      const targetUser = state.users.find(user => String(user.id) === String(userId));
+      if (!targetUser) {
+        showError('找不到使用者');
+        return;
+      }
+      state.editingUserAccess = targetUser;
+      state.editingUserRoleIds = [];
+      state.editingUserGroupIds = [];
+
+      document.getElementById('ua-user-name').textContent = String(targetUser.username || '-');
+      document.getElementById('ua-user-email').textContent = String(targetUser.email || '-');
+
+      try {
+        const bindingPayload = await api.get(`/access/users/${encodeURIComponent(targetUser.id)}/bindings`);
+        state.editingUserRoleIds = Array.isArray(bindingPayload.role_ids) ? bindingPayload.role_ids.map(id => String(id)) : [];
+        state.editingUserGroupIds = Array.isArray(bindingPayload.group_ids) ? bindingPayload.group_ids.map(id => String(id)) : [];
+      } catch (error) {
+        state.editingUserRoleIds = [];
+        state.editingUserGroupIds = [];
+        showError((error && error.message) || '讀取使用者綁定失敗');
+      }
+
+      const roleItems = state.roles.map(roleItem => ({
+        id: roleItem.id,
+        label: `${String(roleItem.code)} (${String(roleItem.name || roleItem.code)})`,
+        category: roleItem.is_system ? '系統角色' : '自訂角色',
+      }));
+      const groupItems = state.groups
+        .filter(groupItem => !!groupItem.enabled)
+        .map(groupItem => ({
+          id: groupItem.id,
+          label: formatGroupLabel(groupItem),
+          category: '啟用中群組',
+        }));
+
+      const roleTreeData = buildUserAccessTreeData('ua-role', roleItems);
+      const groupTreeData = buildUserAccessTreeData('ua-group', groupItems);
+      document.getElementById('ua-role-list').innerHTML = '';
+      document.getElementById('ua-group-list').innerHTML = '';
+      state.userAccessRoleTreeInstance = createTreeSelection(
+        '#ua-role-list',
+        roleTreeData,
+        state.editingUserRoleIds.map(roleId => `ua-role:item:${roleId}`),
+      );
+      state.userAccessGroupTreeInstance = createTreeSelection(
+        '#ua-group-list',
+        groupTreeData,
+        state.editingUserGroupIds.map(groupId => `ua-group:item:${groupId}`),
+      );
+      openModal(userAccessModal);
+    }
+
+    async function saveEditingUserAccess() {
+      if (!state.editingUserAccess) {
+        return;
+      }
+      const userId = String(state.editingUserAccess.id);
+      const roleIds = getSelectedBindingValues(state.userAccessRoleTreeInstance, 'ua-role:item:');
+      const groupIds = getSelectedBindingValues(state.userAccessGroupTreeInstance, 'ua-group:item:');
+      await api.post(`/access/users/${encodeURIComponent(userId)}/roles`, {
+        role_ids: roleIds,
+      });
+      await api.post(`/access/users/${encodeURIComponent(userId)}/groups`, {
+        group_ids: groupIds,
+      });
+      state.userGroupIdsByUserId[userId] = [...groupIds];
+    }
+
+    document.getElementById('tab-users').addEventListener('click', () => setActiveTab('users'));
+    document.getElementById('tab-groups').addEventListener('click', () => setActiveTab('groups'));
+
+    document.getElementById('btn-refresh').addEventListener('click', async () => {
+      try {
+        await reloadActiveTab();
+      } catch (error) {
+        showError((error && error.message) || '重新整理失敗');
+      }
+    });
+
+    document.getElementById('btn-new').addEventListener('click', () => {
+      if (state.activeTab === 'users') {
+        openCreateUserModal();
+        return;
+      }
+      openCreateGroupModal();
+    });
+
+    listBody.addEventListener('click', async (event) => {
+      const action = event.target && event.target.dataset ? event.target.dataset.action : '';
+      const targetId = event.target && event.target.dataset ? event.target.dataset.id : '';
+      if (!action || !targetId) {
+        return;
+      }
+      if (action === 'edit-user') {
+        await openEditUserModal(targetId);
+        return;
+      }
+      if (action === 'delete-user') {
+        openDeleteUserModal(targetId);
+        return;
+      }
+      if (action === 'edit-group') {
+        openEditGroupModal(targetId);
+        return;
+      }
+      if (action === 'delete-group') {
+        openDeleteGroupModal(targetId);
+        return;
+      }
+      if (action === 'edit-user-access') {
+        await openEditUserAccessModal(targetId);
+      }
+    });
+
+    document.getElementById('user-modal-cancel').addEventListener('click', () => closeModal(userModal));
+    document.getElementById('group-modal-cancel').addEventListener('click', () => closeModal(groupModal));
+    document.getElementById('ua-close-btn').addEventListener('click', () => closeModal(userAccessModal));
+    document.getElementById('delete-group-cancel').addEventListener('click', () => closeModal(deleteGroupModal));
+    document.getElementById('delete-user-cancel').addEventListener('click', () => closeModal(deleteUserModal));
+
+    document.getElementById('ua-save-btn').addEventListener('click', async () => {
+      try {
+        await saveEditingUserAccess();
+        closeModal(userAccessModal);
+        await loadUsers();
+        renderList();
+        showSuccess('已更新使用者群組/角色');
+      } catch (error) {
+        showError((error && error.message) || '儲存使用者綁定失敗');
+      }
+    });
+
+    document.getElementById('user-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const userId = document.getElementById('user-id').value.trim();
+      const username = document.getElementById('user-username').value.trim();
+      const email = document.getElementById('user-email').value.trim();
+      const enabled = isUserEnabledSelected();
+      try {
+        if (!username || !email) {
+          showError('請完整填寫使用者資料');
+          return;
+        }
+        if (userId) {
+          await api.put(`/users/${encodeURIComponent(userId)}`, {
+            username,
+            email,
+            enabled,
+          });
+          showSuccess('已更新使用者基本資料');
+        } else {
+          const password = document.getElementById('user-password').value;
+          if (!password) {
+            showError('請完整填寫使用者資料');
+            return;
+          }
+          await api.post('/users', { username, email, password, role: 'user', enabled });
+          showSuccess('已建立使用者');
+        }
+        closeModal(userModal);
+        await loadUsers();
+        renderList();
+      } catch (error) {
+        showError((error && error.message) || '儲存使用者失敗');
+      }
+    });
+
+    document.getElementById('group-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const groupId = document.getElementById('group-id').value.trim();
+      const groupCode = document.getElementById('group-code').value.trim();
+      const groupName = document.getElementById('group-name').value.trim();
+      const groupEnabled = document.getElementById('group-enabled').checked;
+      if (!groupName) {
+        showError('群組名稱為必填');
+        return;
+      }
+
+      try {
+        if (groupId) {
+          await api.put(`/access/groups/${encodeURIComponent(groupId)}`, {
+            name: groupName,
+            enabled: groupEnabled,
+          });
+          showSuccess('已更新群組');
+        } else {
+          if (!groupCode) {
+            showError('群組代碼為必填');
+            return;
+          }
+          await api.post('/access/groups', {
+            code: groupCode,
+            name: groupName,
+            enabled: groupEnabled,
+          });
+          showSuccess('已建立群組');
+        }
+        closeModal(groupModal);
+        await loadGroups();
+        await loadUserGroupIdsByUsers();
+        renderList();
+      } catch (error) {
+        showError((error && error.message) || '儲存群組失敗');
+      }
+    });
+
+    document.getElementById('delete-group-confirm').addEventListener('click', async () => {
+      if (!state.deletingGroup) {
+        closeModal(deleteGroupModal);
+        return;
+      }
+      try {
+        await api.delete(`/access/groups/${encodeURIComponent(state.deletingGroup.id)}`);
+        showSuccess('已刪除群組');
+        state.deletingGroup = null;
+        closeModal(deleteGroupModal);
+        await loadGroups();
+        await loadUserGroupIdsByUsers();
+        renderList();
+      } catch (error) {
+        showError((error && error.message) || '刪除群組失敗');
+      }
+    });
+
+    document.getElementById('delete-user-confirm').addEventListener('click', async () => {
+      if (!state.deletingUser) {
+        closeModal(deleteUserModal);
+        return;
+      }
+      try {
+        await api.delete(`/users/${encodeURIComponent(state.deletingUser.id)}`);
+        showSuccess('已刪除使用者');
+        state.deletingUser = null;
+        closeModal(deleteUserModal);
+        await loadUsers();
+        renderList();
+      } catch (error) {
+        showError((error && error.message) || '刪除使用者失敗');
+      }
+    });
+
+    async function initializeUsersPage() {
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      if (!hasAnyPermission(capabilities, ['read_user', 'update_user'])) {
+        showError('僅限管理者使用');
+        setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
+        return;
+      }
+
+      await Promise.all([loadUsers(), loadGroups(), loadRoles()]);
+      setActiveTab('users');
+    }
+
+    initializeUsersPage().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
     });
   </script>
 </body>

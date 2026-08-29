@@ -4,10 +4,96 @@
 // - 其他情況走同源 '/api'
 const __url = new URL(window.location.href);
 const __override = __url.searchParams.get('api_base') || localStorage.getItem('API_BASE');
-const __devDefault = `${window.location.protocol}//${window.location.hostname}:8000/api`;
+const __devDefault = '/api';
+const __devDirectBackend = `http://${window.location.hostname}:8000/api`;
 const API_BASE = (__override
   || (window.location.port === '5173' ? __devDefault : '/api'));
 try { console.info('[dyagent] API_BASE =', API_BASE); } catch {}
+
+const CAPABILITIES_CACHE_KEY = 'dyagent_capabilities_cache';
+const CAPABILITIES_CACHE_TTL_MS = 15000;
+
+
+function getLegacyPermissionsByRole(role) {
+  const rolePermissions = {
+    admin: [
+      'create_agent',
+      'read_agent',
+      'update_agent',
+      'delete_agent',
+      'create_user',
+      'read_user',
+      'update_user',
+      'delete_user',
+      'chat',
+    ],
+    agent_admin: [
+      'read_agent',
+      'update_agent',
+      'chat',
+    ],
+    user: ['chat'],
+  };
+  return Array.isArray(rolePermissions[role]) ? rolePermissions[role] : [];
+}
+
+
+function normalizeCapabilities(payload, fallbackUser) {
+  const fallbackRole = String((fallbackUser && fallbackUser.role) || 'user');
+  const fallbackPermissions = getLegacyPermissionsByRole(fallbackRole);
+  const permissions = Array.isArray(payload && payload.permissions)
+    ? payload.permissions.map(item => String(item || '').trim()).filter(Boolean)
+    : fallbackPermissions;
+  const roles = Array.isArray(payload && payload.roles)
+    ? payload.roles.map(item => String(item || '').trim()).filter(Boolean)
+    : [fallbackRole];
+  const groups = Array.isArray(payload && payload.groups)
+    ? payload.groups.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  return {
+    roles: Array.from(new Set(roles)),
+    groups: Array.from(new Set(groups)),
+    permissions: Array.from(new Set(permissions)),
+  };
+}
+
+
+function readCachedCapabilities() {
+  try {
+    const rawCache = sessionStorage.getItem(CAPABILITIES_CACHE_KEY);
+    if (!rawCache) {
+      return null;
+    }
+    const cachePayload = JSON.parse(rawCache);
+    const cachedAt = Number(cachePayload && cachePayload.cached_at);
+    if (!cachedAt || Date.now() - cachedAt > CAPABILITIES_CACHE_TTL_MS) {
+      return null;
+    }
+    return cachePayload.capabilities || null;
+  } catch {
+    return null;
+  }
+}
+
+
+function writeCapabilitiesCache(capabilities) {
+  try {
+    sessionStorage.setItem(
+      CAPABILITIES_CACHE_KEY,
+      JSON.stringify({
+        cached_at: Date.now(),
+        capabilities,
+      }),
+    );
+  } catch {}
+}
+
+
+function clearCapabilitiesCache() {
+  try {
+    sessionStorage.removeItem(CAPABILITIES_CACHE_KEY);
+  } catch {}
+}
 
 function sanitizeRuntimeText(rawText) {
   let text = String(rawText || '');
@@ -32,10 +118,19 @@ const api = {
       ...options.headers,
     };
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        headers,
+      });
+    } catch (networkError) {
+      if (window.location.port === '5173' && !__override) {
+        const hint = `無法連線 API，請確認後端已啟動（可改用 ?api_base=${__devDirectBackend} 測試）`;
+        throw new Error(hint);
+      }
+      throw networkError;
+    }
 
     if (!response.ok) {
       // 401 表示 token 無效或過期，自動清除並重導向到登入頁
@@ -123,6 +218,7 @@ const auth = {
     const response = await api.post('/login', { email, password });
     localStorage.setItem('auth_token', response.token);
     localStorage.setItem('user', JSON.stringify(response.user));
+    clearCapabilitiesCache();
     // 非 admin 登入後直接導向聊天頁
     try {
       if (response.user && response.user.role !== 'admin') {
@@ -135,6 +231,7 @@ const auth = {
   logout() {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('user');
+    clearCapabilitiesCache();
     window.location.href = '/pages/login.html';
   },
 
@@ -147,6 +244,45 @@ const auth = {
     return !!localStorage.getItem('auth_token');
   },
 };
+
+
+async function getCapabilities(options = {}) {
+  const { forceRefresh = false } = options;
+  const user = auth.getUser();
+  if (!user || !auth.isAuthenticated()) {
+    return normalizeCapabilities(null, user);
+  }
+
+  if (!forceRefresh) {
+    const cachedCapabilities = readCachedCapabilities();
+    if (cachedCapabilities) {
+      return normalizeCapabilities(cachedCapabilities, user);
+    }
+  }
+
+  try {
+    const payload = await api.get('/me/capabilities');
+    const normalized = normalizeCapabilities(payload, user);
+    writeCapabilitiesCache(normalized);
+    return normalized;
+  } catch {
+    const fallbackCapabilities = normalizeCapabilities(null, user);
+    writeCapabilitiesCache(fallbackCapabilities);
+    return fallbackCapabilities;
+  }
+}
+
+
+function hasPermission(capabilities, permission) {
+  const permissionSet = new Set(Array.isArray(capabilities && capabilities.permissions) ? capabilities.permissions : []);
+  return permissionSet.has(String(permission || '').trim());
+}
+
+
+function hasAnyPermission(capabilities, permissions) {
+  const permissionSet = new Set(Array.isArray(capabilities && capabilities.permissions) ? capabilities.permissions : []);
+  return (permissions || []).some(permission => permissionSet.has(String(permission || '').trim()));
+}
 
 function showError(message) {
   const cleanedMessage = sanitizeRuntimeText(message) || '發生未知錯誤';
@@ -169,15 +305,55 @@ function showSuccess(message) {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   const user = auth.getUser();
+  const capabilities = user ? await getCapabilities() : normalizeCapabilities(null, null);
+
+  function renderNavbarUserMeta(currentUser, currentCapabilities) {
+    try {
+      const navBar = document.querySelector('.navbar');
+      if (!navBar) return;
+
+      const navMenu = navBar.querySelector('.nav-menu');
+      if (!navMenu) return;
+
+      const existingMeta = navBar.querySelector('#nav-user-meta');
+      if (!currentUser || !auth.isAuthenticated()) {
+        if (existingMeta) {
+          existingMeta.remove();
+        }
+        return;
+      }
+
+      const roles = Array.isArray(currentCapabilities && currentCapabilities.roles)
+        ? currentCapabilities.roles.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+      const groups = Array.isArray(currentCapabilities && currentCapabilities.groups)
+        ? currentCapabilities.groups.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+      const roleText = roles.length > 0 ? roles.join('、') : '無角色';
+      const groupText = groups.length > 0 ? groups.join('、') : '未分組';
+      const username = String((currentUser && currentUser.username) || '使用者').trim() || '使用者';
+      const userMetaText = `歡迎，${username}！ ${roleText}｜${groupText}`;
+
+      const metaElement = existingMeta || document.createElement('div');
+      metaElement.id = 'nav-user-meta';
+      metaElement.className = 'nav-user-meta';
+      metaElement.textContent = userMetaText;
+      metaElement.title = userMetaText;
+
+      if (!existingMeta) {
+        navBar.insertBefore(metaElement, navMenu);
+      }
+    } catch {}
+  }
 
   // 依規則重排導覽連結：
   // - 儀表板 最左
   // - （admin）使用者、代理者、MCP 管理、技能管理
   // - 其他項目（如 聊天）置於上述之後
   // - 登出（或登入）永遠在最右
-  function arrangeNavMenu(currentUser) {
+  function arrangeNavMenu(currentUser, currentCapabilities) {
     try {
       const navMenu = document.querySelector('.nav-menu');
       if (!navMenu) return;
@@ -189,64 +365,75 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const byId = (id) => navMenu.querySelector(`#${id}`);
 
+      const permissionSet = new Set(Array.isArray(currentCapabilities && currentCapabilities.permissions) ? currentCapabilities.permissions : []);
+      const canAccess = (requiredPermissions) => {
+        if (!Array.isArray(requiredPermissions) || requiredPermissions.length === 0) {
+          return true;
+        }
+        return requiredPermissions.some(permission => permissionSet.has(permission));
+      };
+
+      const navConfigs = [
+        { id: 'dashboard-link', href: '/pages/dashboard.html', text: '儀表板', requiredPermissions: ['dashboard.read', 'logs.read'] },
+        { id: 'users-admin-link', href: '/pages/users.html', text: '使用者管理', requiredPermissions: ['read_user', 'update_user'] },
+        { id: 'access-control-link', href: '/pages/access-control.html', text: '權限管理', requiredPermissions: ['update_user', 'role.read', 'group.read', 'role.update', 'group.update'] },
+        { id: 'agent-list-link', href: '/pages/agent-list.html', text: '代理者', requiredPermissions: ['read_agent', 'update_agent', 'create_agent'] },
+        { id: 'mcps-admin-link', href: '/pages/mcps.html', text: 'MCP 管理', requiredPermissions: ['mcp.read'] },
+        { id: 'skills-admin-link', href: '/pages/skills.html', text: '技能管理', requiredPermissions: ['skills.read'] },
+        { id: 'functions-admin-link', href: '/pages/functions.html', text: 'Functions', requiredPermissions: ['functions.read'] },
+        { id: 'rag-datasets-admin-link', href: '/pages/rag-datasets.html', text: 'RAG 資料集', requiredPermissions: ['rag.read'] },
+        { id: 'chat-link', href: '/pages/chat.html', text: '聊天', requiredPermissions: ['chat'] },
+      ];
+
+      const findByHref = (href) => getLinks().find(a => (a.getAttribute('href') || '').endsWith(href));
+      for (const navConfig of navConfigs) {
+        const hasPermissionForLink = canAccess(navConfig.requiredPermissions);
+        let navLink = byId(navConfig.id) || findByHref(navConfig.href);
+        if (!hasPermissionForLink) {
+          if (navLink && navLink.parentElement === navMenu) {
+            navMenu.removeChild(navLink);
+          }
+          continue;
+        }
+        if (!navLink) {
+          navLink = document.createElement('a');
+          navLink.id = navConfig.id;
+          navLink.href = navConfig.href;
+          navLink.textContent = navConfig.text;
+          navMenu.appendChild(navLink);
+        } else {
+          navLink.id = navConfig.id;
+          navLink.href = navConfig.href;
+          navLink.textContent = navConfig.text;
+        }
+      }
+
       const logoutOrAuth = byId('logout-link') || byId('auth-link');
 
       const order = [];
 
-      // 儀表板（僅 admin 顯示）
-      const dashboard = findByHrefEnd('/pages/dashboard.html');
-      if (currentUser && currentUser.role === 'admin') {
-        if (dashboard) order.push(dashboard);
-      } else if (dashboard && dashboard.parentElement === navMenu) {
-        navMenu.removeChild(dashboard);
-      }
-
-      // 角色相關排序
-      if (currentUser && currentUser.role === 'admin') {
-        const users = byId('users-admin-link') || findByHrefEnd('/pages/users.html');
-        if (users) order.push(users);
-
-        const agents = findByHrefEnd('/pages/agent-list.html');
-        if (agents) order.push(agents);
-
-        const mcps = byId('mcps-admin-link') || findByHrefEnd('/pages/mcps.html');
-        if (mcps) order.push(mcps);
-
-        const skills = byId('skills-admin-link') || findByHrefEnd('/pages/skills.html');
-        if (skills) order.push(skills);
-
-        const functionsLink = byId('functions-admin-link') || findByHrefEnd('/pages/functions.html');
-        if (functionsLink) order.push(functionsLink);
-
-        const ragDatasetsLink = byId('rag-datasets-admin-link') || findByHrefEnd('/pages/rag-datasets.html');
-        if (ragDatasetsLink) order.push(ragDatasetsLink);
-
-        // 其他（如 聊天）
-        const chat = findByHrefEnd('/pages/chat.html');
-        if (chat) order.push(chat);
-      } else {
-        // 非 admin：依既有頁面存在與否排序
-        const users = findByHrefEnd('/pages/users.html');
-        if (users) order.push(users);
-
-        const agents = findByHrefEnd('/pages/agent-list.html');
-        if (agents) order.push(agents);
-
-        const mcps = findByHrefEnd('/pages/mcps.html');
-        if (mcps) order.push(mcps);
-
-        const skills = findByHrefEnd('/pages/skills.html');
-        if (skills) order.push(skills);
-
-        const chat = findByHrefEnd('/pages/chat.html');
-        if (chat) order.push(chat);
+      const orderedPaths = [
+        '/pages/dashboard.html',
+        '/pages/users.html',
+        '/pages/access-control.html',
+        '/pages/agent-list.html',
+        '/pages/mcps.html',
+        '/pages/skills.html',
+        '/pages/functions.html',
+        '/pages/rag-datasets.html',
+        '/pages/chat.html',
+      ];
+      for (const path of orderedPaths) {
+        const link = findByHrefEnd(path);
+        if (link) {
+          order.push(link);
+        }
       }
 
       // 其餘未收錄的項目（排除登出/登入；非 admin 排除儀表板）
       getLinks().forEach(a => {
         const href = a.getAttribute('href') || '';
         if (a === logoutOrAuth || order.includes(a)) return;
-        if ((!currentUser || currentUser.role !== 'admin') && href.endsWith('/pages/dashboard.html')) return;
         order.push(a);
       });
 
@@ -263,47 +450,6 @@ document.addEventListener('DOMContentLoaded', () => {
       authLink.textContent = '登出';
       authLink.href = '#logout';
       authLink.id = 'logout-link'; // 正規化 id，後續用同一套綁定
-      // 動態注入『使用者管理』（僅 admin 顯示）
-      try {
-        const navMenu = document.querySelector('.nav-menu');
-        if (navMenu && user.role === 'admin') {
-          if (!navMenu.querySelector('#users-admin-link')) {
-            const usersLink = document.createElement('a');
-            usersLink.id = 'users-admin-link';
-            usersLink.href = '/pages/users.html';
-            usersLink.textContent = '使用者管理';
-            navMenu.appendChild(usersLink);
-          }
-          if (!navMenu.querySelector('#mcps-admin-link')) {
-            const link = document.createElement('a');
-            link.id = 'mcps-admin-link';
-            link.href = '/pages/mcps.html';
-            link.textContent = 'MCP 管理';
-            navMenu.appendChild(link);
-          }
-          if (!navMenu.querySelector('#skills-admin-link')) {
-            const link = document.createElement('a');
-            link.id = 'skills-admin-link';
-            link.href = '/pages/skills.html';
-            link.textContent = '技能管理';
-            navMenu.appendChild(link);
-          }
-          if (!navMenu.querySelector('#functions-admin-link')) {
-            const link = document.createElement('a');
-            link.id = 'functions-admin-link';
-            link.href = '/pages/functions.html';
-            link.textContent = 'Functions';
-            navMenu.appendChild(link);
-          }
-          if (!navMenu.querySelector('#rag-datasets-admin-link')) {
-            const link = document.createElement('a');
-            link.id = 'rag-datasets-admin-link';
-            link.href = '/pages/rag-datasets.html';
-            link.textContent = 'RAG 資料集';
-            navMenu.appendChild(link);
-          }
-        }
-      } catch {}
     } else {
       authLink.textContent = '登入';
       authLink.href = '/pages/login.html';
@@ -312,22 +458,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 確保導覽列有登出按鈕（已登入時）
   if (user) {
-    // 針對聊天頁：若為一般使用者，僅顯示登出按鈕
-    try {
-      const isChatPage = window.location.pathname.endsWith('/pages/chat.html');
-      if (isChatPage && user.role === 'user') {
-        const navMenu = document.querySelector('.nav-menu');
-        if (navMenu) {
-          // 保留現有的 #auth-link / #logout-link，其餘移除
-          Array.from(navMenu.querySelectorAll('a')).forEach((a) => {
-            if (a.id !== 'logout-link' && a.id !== 'auth-link') {
-              navMenu.removeChild(a);
-            }
-          });
-        }
-      }
-    } catch {}
-
     let logoutLink = document.getElementById('logout-link');
     if (!logoutLink) {
       const navMenu = document.querySelector('.nav-menu');
@@ -350,7 +480,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // 最後統一整理導覽列順序
-  arrangeNavMenu(user);
+  arrangeNavMenu(user, capabilities);
+  renderNavbarUserMeta(user, capabilities);
 });
 
-export { api, auth, showError, showSuccess, API_BASE };
+export { api, auth, showError, showSuccess, API_BASE, getCapabilities, hasPermission, hasAnyPermission, clearCapabilitiesCache };

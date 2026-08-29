@@ -93,8 +93,13 @@
       grid-template-columns: 1fr 1fr 120px;
       gap: 12px;
     }
+    .form-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
     @media (max-width: 700px) {
-      .form-grid { grid-template-columns: 1fr; }
+      .form-grid, .form-grid-2 { grid-template-columns: 1fr; }
     }
     .form-group { margin-bottom: 14px; }
     .form-group label {
@@ -253,6 +258,61 @@
             </label>
           </div>
 
+          <div class="preview-box" style="margin-top:0;">
+            <h4>執行策略（execution_policy）</h4>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="policy-risk-level">風險等級</label>
+                <select id="policy-risk-level">
+                  <option value="safe">safe</option>
+                  <option value="restricted">restricted</option>
+                  <option value="dangerous">dangerous</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="policy-cost-class">成本分類</label>
+                <select id="policy-cost-class">
+                  <option value="free">free</option>
+                  <option value="billable">billable</option>
+                </select>
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;">
+                <label class="checkbox-label" style="margin-bottom:10px;">
+                  <input id="policy-requires-confirmation" type="checkbox">
+                  <span>需要人工確認</span>
+                </label>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="policy-allow-scopes">允許 Agent Scope（逗號分隔）</label>
+              <input id="policy-allow-scopes" type="text" placeholder="master,public,tasked,private">
+            </div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="policy-daily-calls">每位使用者每日上限（可選）</label>
+                <input id="policy-daily-calls" type="number" min="1" step="1" placeholder="例如：50">
+              </div>
+              <div class="form-group">
+                <label for="policy-monthly-calls">每位使用者每月上限（可選）</label>
+                <input id="policy-monthly-calls" type="number" min="1" step="1" placeholder="例如：500">
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="policy-group-daily-calls">每群組每日上限（可選）</label>
+                <input id="policy-group-daily-calls" type="number" min="1" step="1" placeholder="例如：200">
+              </div>
+              <div class="form-group">
+                <label for="policy-group-monthly-calls">每群組每月上限（可選）</label>
+                <input id="policy-group-monthly-calls" type="number" min="1" step="1" placeholder="例如：3000">
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="policy-monthly-cost-usd">每位使用者每月成本上限 USD（可選）</label>
+              <input id="policy-monthly-cost-usd" type="number" min="0.01" step="0.01" placeholder="例如：20.00">
+            </div>
+          </div>
+
           <!-- 格式選擇 -->
           <div class="form-group">
             <label>格式類型</label>
@@ -351,17 +411,21 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    if (!hasPermission(capabilities, 'functions.read')) {
       showError('僅限管理者存取');
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
+    const canCreateFunction = hasPermission(capabilities, 'functions.create');
+    const canUpdateFunction = hasPermission(capabilities, 'functions.update');
+    const canDeleteFunction = hasPermission(capabilities, 'functions.delete');
 
     const $ = (id) => document.getElementById(id);
 
@@ -385,6 +449,10 @@
     const saveBtn = $('btn-save');
     const cancelBtn = $('btn-cancel');
 
+    if (!canCreateFunction) {
+      newBtn.style.display = 'none';
+    }
+
     // OpenAI 格式欄位
     const formatTypeSelect = $('format-type');
     const templateSection = $('template-section');
@@ -394,6 +462,15 @@
     const handlerConfigInput = $('handler-config');
     const parametersError = $('parameters-error');
     const handlerConfigError = $('handler-config-error');
+    const policyRiskLevelInput = $('policy-risk-level');
+    const policyCostClassInput = $('policy-cost-class');
+    const policyRequiresConfirmationInput = $('policy-requires-confirmation');
+    const policyAllowScopesInput = $('policy-allow-scopes');
+    const policyDailyCallsInput = $('policy-daily-calls');
+    const policyMonthlyCallsInput = $('policy-monthly-calls');
+    const policyGroupDailyCallsInput = $('policy-group-daily-calls');
+    const policyGroupMonthlyCallsInput = $('policy-group-monthly-calls');
+    const policyMonthlyCostUsdInput = $('policy-monthly-cost-usd');
 
     let editingId = '';
 
@@ -457,6 +534,7 @@
       handlerConfigInput.value = '';
       parametersError.style.display = 'none';
       handlerConfigError.style.display = 'none';
+      fillExecutionPolicy({});
       // 切換顯示
       updateFormatSection();
     }
@@ -466,6 +544,64 @@
       const isOpenai = formatTypeSelect.value === 'openai';
       templateSection.style.display = isOpenai ? 'none' : 'block';
       openaiSection.style.display = isOpenai ? 'block' : 'none';
+    }
+
+    function normalizeScopeList(rawValue) {
+      const parsedScopes = String(rawValue || '').split(',').map((scopeItem) => scopeItem.trim()).filter(Boolean);
+      if (!parsedScopes.length) return ['master', 'public', 'tasked', 'private'];
+      return Array.from(new Set(parsedScopes));
+    }
+
+    function parsePositiveIntOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number.parseInt(normalizedValue, 10);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正整數`);
+      return parsedValue;
+    }
+
+    function parsePositiveNumberOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number(normalizedValue);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正數`);
+      return parsedValue;
+    }
+
+    function parseExecutionPolicy() {
+      const rateLimitProfile = {};
+      const dailyLimit = parsePositiveIntOrNull(policyDailyCallsInput.value, '每日上限');
+      const monthlyLimit = parsePositiveIntOrNull(policyMonthlyCallsInput.value, '每月上限');
+      const groupDailyLimit = parsePositiveIntOrNull(policyGroupDailyCallsInput.value, '群組每日上限');
+      const groupMonthlyLimit = parsePositiveIntOrNull(policyGroupMonthlyCallsInput.value, '群組每月上限');
+      const monthlyCostLimitUsd = parsePositiveNumberOrNull(policyMonthlyCostUsdInput.value, '每月成本上限 USD');
+      if (dailyLimit !== null) rateLimitProfile.per_user_daily_calls = dailyLimit;
+      if (monthlyLimit !== null) rateLimitProfile.per_user_monthly_calls = monthlyLimit;
+      if (groupDailyLimit !== null) rateLimitProfile.per_group_daily_calls = groupDailyLimit;
+      if (groupMonthlyLimit !== null) rateLimitProfile.per_group_monthly_calls = groupMonthlyLimit;
+      if (monthlyCostLimitUsd !== null) rateLimitProfile.monthly_cost_usd = monthlyCostLimitUsd;
+      return {
+        risk_level: policyRiskLevelInput.value || 'safe',
+        cost_class: policyCostClassInput.value || 'free',
+        requires_confirmation: !!policyRequiresConfirmationInput.checked,
+        allow_scopes: normalizeScopeList(policyAllowScopesInput.value),
+        rate_limit_profile: rateLimitProfile,
+      };
+    }
+
+    function fillExecutionPolicy(rawPolicy) {
+      const policy = (rawPolicy && typeof rawPolicy === 'object') ? rawPolicy : {};
+      const allowScopes = Array.isArray(policy.allow_scopes) ? policy.allow_scopes : ['master', 'public', 'tasked', 'private'];
+      const rateLimitProfile = (policy.rate_limit_profile && typeof policy.rate_limit_profile === 'object') ? policy.rate_limit_profile : {};
+      policyRiskLevelInput.value = String(policy.risk_level || 'safe');
+      policyCostClassInput.value = String(policy.cost_class || 'free');
+      policyRequiresConfirmationInput.checked = !!policy.requires_confirmation;
+      policyAllowScopesInput.value = allowScopes.map((scopeItem) => String(scopeItem || '').trim()).filter(Boolean).join(',');
+      policyDailyCallsInput.value = rateLimitProfile.per_user_daily_calls ? String(rateLimitProfile.per_user_daily_calls) : '';
+      policyMonthlyCallsInput.value = rateLimitProfile.per_user_monthly_calls ? String(rateLimitProfile.per_user_monthly_calls) : '';
+      policyGroupDailyCallsInput.value = rateLimitProfile.per_group_daily_calls ? String(rateLimitProfile.per_group_daily_calls) : '';
+      policyGroupMonthlyCallsInput.value = rateLimitProfile.per_group_monthly_calls ? String(rateLimitProfile.per_group_monthly_calls) : '';
+      policyMonthlyCostUsdInput.value = rateLimitProfile.monthly_cost_usd ? String(rateLimitProfile.monthly_cost_usd) : '';
     }
 
     // JSON 驗證
@@ -501,7 +637,7 @@
         const res = await api.get('/functions');
         const list = Array.isArray(res.functions) ? res.functions : [];
         if (list.length === 0) {
-          rows.innerHTML = '<tr class="empty-row"><td colspan="6">尚無 Function Profile，請點擊「新建」建立</td></tr>';
+          rows.innerHTML = `<tr class="empty-row"><td colspan="6">尚無 Function Profile${canCreateFunction ? '，請點擊「新建」建立' : ''}</td></tr>`;
         } else {
           rows.innerHTML = list.map((item) => {
             // 判斷格式類型
@@ -531,11 +667,11 @@
                 : '<span class="badge badge-secondary">停用</span>'}</td>
               <td>${escapeHtml(item.description) || '<span class="muted">-</span>'}</td>
               <td class="actions-cell">
-                <button class="btn" data-edit="${item.id}">編輯</button>
-                <button class="btn" data-del="${item.id}">刪除</button>
-              </td>
-            </tr>
-          `;}).join('');
+                 ${canUpdateFunction ? `<button class="btn" data-edit="${item.id}">編輯</button>` : '<span class="muted">唯讀</span>'}
+                 ${canDeleteFunction ? `<button class="btn" data-del="${item.id}">刪除</button>` : ''}
+               </td>
+             </tr>
+           `;}).join('');
         }
         window.__functionProfiles = list;
       } catch (e) {
@@ -558,6 +694,7 @@
       versionInput.value = String(found.version || 1);
       descriptionInput.value = found.description || '';
       enabledInput.checked = !!found.enabled;
+      fillExecutionPolicy(found.execution_policy);
 
       // 根據資料判斷格式類型
       const hasParameters = found.parameters && Object.keys(found.parameters).length > 0;
@@ -597,15 +734,30 @@
     }
 
     async function saveForm() {
+      if (editingId && !canUpdateFunction) {
+        showError('你沒有編輯 Functions 的權限');
+        return;
+      }
+      if (!editingId && !canCreateFunction) {
+        showError('你沒有建立 Functions 的權限');
+        return;
+      }
       const isOpenai = formatTypeSelect.value === 'openai';
 
-      const payload = {
-        name: String(nameInput.value || '').trim(),
-        provider: String(providerInput.value || '').trim(),
-        version: parseInt(versionInput.value, 10) || 1,
-        description: String(descriptionInput.value || ''),
-        enabled: !!enabledInput.checked,
-      };
+      let payload;
+      try {
+        payload = {
+          name: String(nameInput.value || '').trim(),
+          provider: String(providerInput.value || '').trim(),
+          version: parseInt(versionInput.value, 10) || 1,
+          description: String(descriptionInput.value || ''),
+          enabled: !!enabledInput.checked,
+          execution_policy: parseExecutionPolicy(),
+        };
+      } catch (error) {
+        showError((error && error.message) || '執行策略設定有誤');
+        return;
+      }
 
       if (!payload.name) {
         showError('名稱為必填');
@@ -668,10 +820,18 @@
       const editId = e.target.getAttribute('data-edit');
       const delId = e.target.getAttribute('data-del');
       if (editId) {
+        if (!canUpdateFunction) {
+          showError('你沒有編輯 Functions 的權限');
+          return;
+        }
         fillFormById(editId);
         return;
       }
       if (delId) {
+        if (!canDeleteFunction) {
+          showError('你沒有刪除 Functions 的權限');
+          return;
+        }
         const ok = window.confirm('確定刪除此 Function Profile？');
         if (!ok) return;
         try {
@@ -685,6 +845,10 @@
     });
 
     newBtn.addEventListener('click', () => {
+      if (!canCreateFunction) {
+        showError('你沒有建立 Functions 的權限');
+        return;
+      }
       resetForm();
       openModal(false);
     });
@@ -718,6 +882,9 @@
 
     // 初始載入
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

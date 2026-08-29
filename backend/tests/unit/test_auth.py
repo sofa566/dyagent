@@ -101,6 +101,28 @@ class TestAuthLogin:
         )
         assert response.status_code == 422
 
+    def test_login_disabled_user(self, client, db):
+        from src.models import User
+        from src.middleware.auth import get_password_hash
+
+        disabled_user = User(
+            username='disabled_user',
+            email='disabled_user@test.com',
+            password_hash=get_password_hash('disabled123'),
+            enabled=False,
+        )
+        db.add(disabled_user)
+        db.commit()
+
+        response = client.post(
+            '/api/login',
+            json={
+                'email': 'disabled_user@test.com',
+                'password': 'disabled123',
+            },
+        )
+        assert response.status_code == 401
+
 
 class TestAuthMe:
     def test_get_current_user(self, client, admin_user, admin_token):

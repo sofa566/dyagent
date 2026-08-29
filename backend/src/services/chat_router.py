@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Optional, List, Any, Tuple
 from datetime import datetime
+from decimal import Decimal
 import uuid
 from collections import deque
 import os
@@ -29,6 +30,7 @@ from src.services.mcp_client import MCPClient
 from src.services.react_synthesis import ReActSynthesis
 from src.services.skill_executor import execute_skill
 from src.services.skill_interaction_service import SkillInteractionService
+from src.services.tool_policy_service import ToolPolicyService, ToolPolicyDecision
 
 
 DEFAULT_LAST_METRICS = {
@@ -59,6 +61,28 @@ class ChatRouter:
         # 每回合可覆蓋的工具呼叫協定模板
         self._custom_toolcall_guide: Optional[str] = None
         self._function_profile_template: Optional[str] = None
+        self._tool_policy_service = ToolPolicyService()
+        self._current_user_id: str = ''
+        self._current_agent_id: str = ''
+        self._current_conversation_id: str = ''
+        self._current_agent_class: str = ''
+        self._active_tool_policy_decisions: dict[tuple[str, str], ToolPolicyDecision] = {}
+
+    def set_execution_context(self, *, user_id: str | None, agent_id: str | None, conversation_id: str | None) -> None:
+        self._current_user_id = str(user_id or '').strip()
+        self._current_agent_id = str(agent_id or '').strip()
+        self._current_conversation_id = str(conversation_id or '').strip()
+
+    def _strip_policy_runtime_fields(self, payload: dict) -> dict:
+        # 目的：移除策略確認流程的內部欄位後再交給實際工具。
+        # 為什麼：避免一次性 token 或控制旗標被傳入外部工具與事件紀錄。
+        source_payload = payload if isinstance(payload, dict) else {}
+        internal_fields = {'_policy_confirm_token', '_policy_confirmed', '_confirmed'}
+        return {
+            key: value
+            for key, value in source_payload.items()
+            if str(key) not in internal_fields
+        }
 
     def _resolve_mcp_tool_name(self, *, conn_name: str, conn: dict[str, Any]) -> str:
         """目的：解析 MCP 連線名稱對應的實際工具名稱。
@@ -367,6 +391,7 @@ class ChatRouter:
             if db is not None:
                 ag = db.query(Agent).filter(Agent.id == agent_id).first()
                 if ag is not None:
+                    self._current_agent_class = str(getattr(ag, 'agent_class', '') or '').strip()
                     # 讀取 skills 示例參數（來自 model_config.skill_examples）
                     self._skill_examples = {}
                     try:
@@ -620,6 +645,7 @@ class ChatRouter:
         )
         if early is not None:
             return early
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
 
         # 僅在 MCP 工具時優先走 WS JSON-RPC 串流（stdio 模式則直接走同步）
         if name.startswith("mcp:"):
@@ -643,7 +669,7 @@ class ChatRouter:
                         args=args,
                         env=env,
                         method="tools/call",
-                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})},
+                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)},
                     ):
                         if isinstance(frame, dict) and frame.get("ok") is True:
                             self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -663,7 +689,7 @@ class ChatRouter:
                 return {"ok": False, "error": "mcp_invalid_base_url"}
             # 嘗試 WS 串流呼叫
             try:
-                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})}, auth=auth if isinstance(auth, dict) else None):
+                async for frame in self._mcp.stream_rpc_call_ws(base_url=base_url, method="tools/call", params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)}, auth=auth if isinstance(auth, dict) else None):
                     # 可在此寫入逐段事件，先保留最小行為：若拿到 result 即成功
                     if isinstance(frame, dict) and ("result" in frame or frame.get("ok") is True):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=frame)
@@ -675,11 +701,11 @@ class ChatRouter:
             except Exception as e:
                 # WS 不可用或失敗時，落回同步 HTTP 邏輯
                 self._log.warning("mcp.ws.stream_failed_fallback_http", error=str(e))
-                return self.call_tool(session_id=session_id, tool=name, payload=payload)
+                return self.call_tool(session_id=session_id, tool=name, payload=sanitized_payload, skip_precheck=True)
 
         _log.debug("call_tool", tool=name, session_id=session_id)
         # 其他情況沿用同步路徑
-        return self.call_tool(session_id=session_id, tool=name, payload=payload)
+        return self.call_tool(session_id=session_id, tool=name, payload=sanitized_payload, skip_precheck=True)
 
     def _validate_async_tool_call_request(
         self,
@@ -705,8 +731,14 @@ class ChatRouter:
         if name not in getattr(self, "_allowed_tools", set()):
             self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
             return name, {"ok": False, "error": "tool_not_allowed"}
-        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
-        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+
+        policy_error = self._evaluate_tool_policy_before_execute(session_id=session_id, tool=name, payload=payload or {})
+        if policy_error is not None:
+            return name, policy_error
+
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=sanitized_payload)
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=sanitized_payload):
             return name, {"ok": False, "error": "doom_loop_denied"}
         return name, None
 
@@ -961,12 +993,15 @@ class ChatRouter:
             return {"ok": True, "result": {"text": stdout[:6000], "return_code": 0}}
 
     # 公用：以白名單強制的工具呼叫（未來供工具規劃/LLM function call 整合）
-    def call_tool(self, *, session_id: str, tool: str, payload: dict) -> dict:
+    def call_tool(self, *, session_id: str, tool: str, payload: dict, skip_precheck: bool = False) -> dict:
         _log.debug("Start call_tool.request", tool=tool, session_id=session_id)
 
-        name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
-        if early is not None:
-            return early
+        name = (tool or '').strip()
+        if not skip_precheck:
+            name, early = self._validate_sync_tool_call_request(session_id=session_id, tool=tool, payload=payload)
+            if early is not None:
+                return early
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
 
         # MCP 工具：命名慣例 mcp:<conn-name>
         if name.startswith("mcp:"):
@@ -987,7 +1022,7 @@ class ChatRouter:
                         args=args,
                         env=env,
                         method="tools/call",
-                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(payload or {})},
+                        params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)},
                     )
                     if res.get("ok"):
                         self.write_event_tool_result(session_id=session_id, tool=name, result=res)
@@ -1003,7 +1038,7 @@ class ChatRouter:
                     self.write_event_tool_error(session_id=session_id, tool=name, error="mcp_invalid_base_url")
                     return {"ok": False, "error": "mcp_invalid_base_url"}
                 try:
-                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=self._normalize_mcp_arguments(payload or {}))
+                    res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=self._normalize_mcp_arguments(sanitized_payload))
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                     return {"ok": True, "result": res}
                 except Exception as e:
@@ -1023,7 +1058,7 @@ class ChatRouter:
 
             interaction_service = None
             prepare_result = None
-            skill_payload = payload or {}
+            skill_payload = sanitized_payload
             try:
                 interaction_service = SkillInteractionService(db)
                 _log.debug("SkillInteractionService.prepare_request", tool=name, session_id=session_id)
@@ -1031,13 +1066,13 @@ class ChatRouter:
                     conversation_id=session_id,
                     tool_name=name,
                     skill_id=(str(getattr(row, 'id', '') or '') or None),
-                    payload=payload or {},
+                    payload=sanitized_payload,
                 )
                 if not prepare_result.ok:
                     error_text = str(prepare_result.error or 'interaction_prepare_failed')
                     self.write_event_tool_error(session_id=session_id, tool=name, error=error_text)
                     return {"ok": False, "error": error_text}
-                skill_payload = prepare_result.skill_payload if isinstance(prepare_result.skill_payload, dict) else (payload or {})
+                skill_payload = prepare_result.skill_payload if isinstance(prepare_result.skill_payload, dict) else sanitized_payload
             except Exception as interaction_error:
                 try:
                     db.rollback()
@@ -1314,11 +1349,70 @@ class ChatRouter:
             self.write_event_tool_error(session_id=session_id, tool=name, error="tool_not_allowed")
             return name, {"ok": False, "error": "tool_not_allowed"}
 
-        self.write_event_tool_input(session_id=session_id, tool=name, payload=payload or {})
-        if self._check_doom_loop(session_id=session_id, tool=name, payload=payload or {}):
+        policy_error = self._evaluate_tool_policy_before_execute(session_id=session_id, tool=name, payload=payload or {})
+        if policy_error is not None:
+            return name, policy_error
+
+        sanitized_payload = self._strip_policy_runtime_fields(payload or {})
+        self.write_event_tool_input(session_id=session_id, tool=name, payload=sanitized_payload)
+        if self._check_doom_loop(session_id=session_id, tool=name, payload=sanitized_payload):
             return name, {"ok": False, "error": "doom_loop_denied"}
 
         return name, None
+
+    def _evaluate_tool_policy_before_execute(self, *, session_id: str, tool: str, payload: dict) -> Optional[dict]:
+        # 目的：在工具執行前套用風險策略（確認、額度、scope）。
+        # 為什麼：工具執行已不依賴 RBAC，需以策略層統一治理風險。
+        if not bool(getattr(settings, 'TOOL_EXEC_POLICY_ENABLED', True)):
+            return None
+        if not hasattr(self, '_db') or self._db is None:
+            return None
+        if not self._current_user_id:
+            return None
+
+        decision = self._tool_policy_service.evaluate_execution(
+            db=self._db,
+            tool_name=str(tool or '').strip(),
+            payload=payload if isinstance(payload, dict) else {},
+            agent_class=self._current_agent_class,
+            user_id=self._current_user_id,
+            agent_id=self._current_agent_id,
+            conversation_id=self._current_conversation_id or session_id,
+        )
+        if decision.passed:
+            self._active_tool_policy_decisions[(session_id, str(tool or '').strip())] = decision
+            return None
+
+        deny_reason = str(decision.reason or 'policy_denied')
+        status = 'confirmation_required' if deny_reason == 'confirmation_required' else 'policy_denied'
+        self.write_event_tool_error(session_id=session_id, tool=str(tool or '').strip(), error=status)
+        self._tool_policy_service.record_audit(
+            db=self._db,
+            decision=decision,
+            user_id=self._current_user_id,
+            agent_id=self._current_agent_id,
+            conversation_id=self._current_conversation_id or session_id,
+            tool_name=str(tool or '').strip(),
+            status='denied',
+            deny_reason=deny_reason,
+            payload_keys=list(self._strip_policy_runtime_fields(payload or {}).keys()),
+            details={'stage': 'before_execute'},
+        )
+        policy_payload = {
+            'reason': deny_reason,
+            'risk_level': decision.risk_level,
+            'requires_confirmation': decision.requires_confirmation,
+            'cost_class': decision.cost_class,
+        }
+        if deny_reason == 'confirmation_required' and decision.confirmation_token:
+            policy_payload['confirm_token'] = decision.confirmation_token
+        if deny_reason == 'confirmation_required' and decision.confirmation_token_expires_at:
+            policy_payload['confirm_token_expires_at'] = decision.confirmation_token_expires_at.isoformat()
+        return {
+            'ok': False,
+            'error': status,
+            'policy': policy_payload,
+        }
 
     # 取得最近一次回合的度量（tokens/cost 等）
     def last_metrics(self) -> dict | None:
@@ -1396,6 +1490,7 @@ class ChatRouter:
         self._audit(action="event.tool_result", session_id=session_id, details={"tool": tool, "keys": list(result.keys()), "duration_ms": duration_ms})
         payload = {"tool": tool, "result": result, "duration_ms": duration_ms}
         self._write_part(session_id=session_id, type_="tool_result", payload=payload)
+        self._record_tool_policy_result(session_id=session_id, tool=tool, status='success', result=result, duration_ms=duration_ms)
 
     def write_event_tool_error(self, *, session_id: str, tool: str, error: str) -> None:
         duration_ms = None
@@ -1408,6 +1503,56 @@ class ChatRouter:
         self._log.error("event.tool_error", session_id=session_id, tool=tool, error=error, duration_ms=duration_ms)
         self._audit(action="event.tool_error", session_id=session_id, details={"tool": tool, "error": error, "duration_ms": duration_ms})
         self._write_part(session_id=session_id, type_="tool_error", payload={"tool": tool, "error": error, "duration_ms": duration_ms})
+        self._record_tool_policy_result(session_id=session_id, tool=tool, status='error', result={'error': error}, duration_ms=duration_ms)
+
+    def _record_tool_policy_result(self, *, session_id: str, tool: str, status: str, result: dict, duration_ms: int | None) -> None:
+        # 目的：將策略判斷與工具最終結果寫入稽核表。
+        # 為什麼：治理層需要 who/agent/tool/risk/status 的完整追溯資料。
+        if not bool(getattr(settings, 'TOOL_EXEC_POLICY_ENABLED', True)):
+            return
+        if not hasattr(self, '_db') or self._db is None:
+            return
+        decision = self._active_tool_policy_decisions.pop((session_id, str(tool or '').strip()), None)
+        if decision is None:
+            return
+        cost_estimate = self._extract_cost_estimate(result)
+        self._tool_policy_service.record_audit(
+            db=self._db,
+            decision=decision,
+            user_id=self._current_user_id,
+            agent_id=self._current_agent_id,
+            conversation_id=self._current_conversation_id or session_id,
+            tool_name=str(tool or '').strip(),
+            status=status,
+            payload_keys=list((result or {}).keys()),
+            deny_reason=None if status == 'success' else str((result or {}).get('error') or ''),
+            cost_estimate=cost_estimate,
+            latency_ms=duration_ms,
+            details={'stage': 'after_execute'},
+        )
+
+    def _extract_cost_estimate(self, result: dict) -> Decimal | None:
+        if not isinstance(result, dict):
+            return None
+        for key in ('cost_estimate', 'cost_usd', 'cost'):
+            raw_value = result.get(key)
+            if raw_value is None:
+                continue
+            try:
+                return Decimal(str(raw_value))
+            except Exception:
+                continue
+        inner = result.get('result')
+        if isinstance(inner, dict):
+            for key in ('cost_estimate', 'cost_usd', 'cost'):
+                raw_value = inner.get(key)
+                if raw_value is None:
+                    continue
+                try:
+                    return Decimal(str(raw_value))
+                except Exception:
+                    continue
+        return None
 
     def write_event_step_finish(self, *, session_id: str) -> None:
         self._log.info("event.step_finish", session_id=session_id)

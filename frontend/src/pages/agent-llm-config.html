@@ -62,31 +62,6 @@
     </section>
 
     <section class="card" style="margin-bottom:1rem;">
-      <h3>RAG 設定</h3>
-      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
-        <label style="display:flex;align-items:center;gap:6px;">
-          <input id="rag-enabled" type="checkbox"> 啟用 RAG
-        </label>
-        <div style="flex:1;min-width:280px;">
-          <label for="rag-sources">檢索來源（逗號分隔）</label>
-          <input id="rag-sources" type="text" placeholder="例如：knowledge_base, faq_docs">
-        </div>
-        <div style="width:120px;">
-          <label for="rag-topk">topK</label>
-          <input id="rag-topk" type="number" min="1" max="50" value="5">
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;">
-        <div style="flex:1;min-width:260px;">
-          <label for="rag-test-query">測試檢索 Query</label>
-          <input id="rag-test-query" type="text" placeholder="例如：公司差旅報銷流程是什麼？">
-        </div>
-        <button id="btn-test-rag" class="btn" type="button">測試檢索</button>
-      </div>
-      <pre id="rag-test-result" class="code" style="display:none;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:8px;"></pre>
-    </section>
-
-    <section class="card" style="margin-bottom:1rem;">
       <h3>Skills</h3>
       <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
         <div style="flex:1;min-width:260px;">
@@ -236,12 +211,6 @@
     const functionProfileSelect = document.getElementById('function-profile-select');
     const functionProfileName = document.getElementById('function-profile-name');
     const refreshFunctionsBtn = document.getElementById('btn-refresh-functions');
-    const ragEnabledInput = document.getElementById('rag-enabled');
-    const ragSourcesInput = document.getElementById('rag-sources');
-    const ragTopKInput = document.getElementById('rag-topk');
-    const ragTestQueryInput = document.getElementById('rag-test-query');
-    const ragTestBtn = document.getElementById('btn-test-rag');
-    const ragTestResult = document.getElementById('rag-test-result');
     const auditCard = document.getElementById('audit-card');
     const auditOutput = document.getElementById('audit-output');
     const refreshAuditBtn = document.getElementById('btn-refresh-audit');
@@ -277,32 +246,6 @@
       clear: ''
     };
 
-    function setRagInputsFromState() {
-      // 目的：將 state.rag_config 映射回表單欄位。
-      // 為什麼：避免載入後 UI 與狀態不一致，導致儲存覆蓋錯誤。
-      const ragCfg = state.rag_config || { enabled: false, sources: [], topK: 5 };
-      ragEnabledInput.checked = !!ragCfg.enabled;
-      ragSourcesInput.value = Array.isArray(ragCfg.sources) ? ragCfg.sources.join(', ') : '';
-      ragTopKInput.value = String(ragCfg.topK || 5);
-    }
-
-    function syncRagStateFromInputs() {
-      // 目的：將 RAG 表單欄位正規化後寫回 state。
-      // 為什麼：集中處理 topK 範圍與 sources 格式，降低重複驗證邏輯。
-      const parsedTopK = Number.parseInt(String(ragTopKInput.value || '5'), 10);
-      const topK = Number.isFinite(parsedTopK) ? Math.min(50, Math.max(1, parsedTopK)) : 5;
-      const sources = String(ragSourcesInput.value || '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-      state.rag_config = {
-        enabled: !!ragEnabledInput.checked,
-        sources,
-        topK,
-      };
-      ragTopKInput.value = String(topK);
-    }
-
     function applyReadOnlyState() {
       // 目的：依權限切換頁面為可編輯或唯讀。
       // 為什麼：在同一頁支援 read-only 與可編輯角色，避免誤操作與 403 體驗。
@@ -321,10 +264,6 @@
         '#insert-var',
         '#btn-insert-var',
         '#toolcall-guide',
-        '#rag-enabled',
-        '#rag-sources',
-        '#rag-topk',
-        '#btn-test-rag',
         '#save',
       ];
       interactiveSelectors.forEach((selector) => {
@@ -515,7 +454,6 @@
             toolcallTemplateSuggest(key);
           }
         } catch {}
-        setRagInputsFromState();
         renderMcp();
         renderSkills();
         // 載入管理清單
@@ -551,44 +489,6 @@
         showError(e.message || '載入失敗');
       }
     }
-
-    ragEnabledInput.addEventListener('change', () => {
-      syncRagStateFromInputs();
-      schedulePreview();
-    });
-    ragSourcesInput.addEventListener('input', () => {
-      syncRagStateFromInputs();
-      schedulePreview();
-    });
-    ragTopKInput.addEventListener('change', () => {
-      syncRagStateFromInputs();
-      schedulePreview();
-    });
-
-    ragTestBtn.addEventListener('click', async () => {
-      // 目的：在儲存前快速驗證 RAG 來源與檢索結果。
-      // 為什麼：縮短設定錯誤的回饋時間，避免使用者來回切頁檢查。
-      try {
-        syncRagStateFromInputs();
-        const payload = {
-          query: String(ragTestQueryInput.value || '').trim(),
-          sources: Array.isArray(state.rag_config.sources) ? state.rag_config.sources : [],
-          topK: state.rag_config.topK || 5,
-        };
-        const res = await agentIntegrationApi.testAgentRag(agentId, payload);
-        ragTestResult.style.display = 'block';
-        ragTestResult.textContent = JSON.stringify(res, null, 2);
-        if (res && res.ok) {
-          showSuccess('RAG 測試完成');
-        } else {
-          showError((res && res.error) || 'RAG 測試失敗');
-        }
-      } catch (error) {
-        ragTestResult.style.display = 'block';
-        ragTestResult.textContent = String((error && error.message) || 'RAG 測試失敗');
-        showError((error && error.message) || 'RAG 測試失敗');
-      }
-    });
 
     // 僅允許從清單加入/移除參照
     mcpList.addEventListener('click', async (e) => {
@@ -840,7 +740,6 @@
     saveBtn.addEventListener('click', async () => {
       if (!canUpdateIntegrations) return;
       try {
-        syncRagStateFromInputs();
         const ragConfig = state.rag_config || { enabled: false, sources: [], topK: 5 };
         const globalDatasetIds = Array.isArray(state.rag_dataset_ids.global_dataset_ids) ? state.rag_dataset_ids.global_dataset_ids.map(String) : [];
         const privateDatasetIds = Array.isArray(state.rag_dataset_ids.private_dataset_ids) ? state.rag_dataset_ids.private_dataset_ids.map(String) : [];

@@ -211,6 +211,62 @@
       </div>
     </section>
 
+    <section class="card">
+      <h3>執行策略（execution_policy）</h3>
+      <div class="form-grid-3">
+        <div class="form-group">
+          <label for="policy_risk_level">風險等級</label>
+          <select id="policy_risk_level">
+            <option value="safe">safe</option>
+            <option value="restricted">restricted</option>
+            <option value="dangerous">dangerous</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="policy_cost_class">成本分類</label>
+          <select id="policy_cost_class">
+            <option value="free">free</option>
+            <option value="billable">billable</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>&nbsp;</label>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+            <input type="checkbox" id="policy_requires_confirmation"> 需要人工確認
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="policy_allow_scopes">允許 Agent Scope（逗號分隔）</label>
+        <input id="policy_allow_scopes" type="text" placeholder="master,public,tasked,private">
+        <small style="color:var(--text-secondary);">留白時會使用預設：master、public、tasked、private</small>
+      </div>
+      <div class="form-grid-3">
+        <div class="form-group">
+          <label for="policy_daily_calls">每位使用者每日上限（可選）</label>
+          <input id="policy_daily_calls" type="number" min="1" step="1" placeholder="例如：50">
+        </div>
+        <div class="form-group">
+          <label for="policy_monthly_calls">每位使用者每月上限（可選）</label>
+          <input id="policy_monthly_calls" type="number" min="1" step="1" placeholder="例如：500">
+        </div>
+        <div class="form-group">
+          <label for="policy_monthly_cost_usd">每位使用者每月成本上限 USD（可選）</label>
+          <input id="policy_monthly_cost_usd" type="number" min="0.01" step="0.01" placeholder="例如：20.00">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="policy_group_daily_calls">每群組每日上限（可選）</label>
+          <input id="policy_group_daily_calls" type="number" min="1" step="1" placeholder="例如：200">
+        </div>
+        <div class="form-group">
+          <label for="policy_group_monthly_calls">每群組每月上限（可選）</label>
+          <input id="policy_group_monthly_calls" type="number" min="1" step="1" placeholder="例如：3000">
+        </div>
+      </div>
+    </section>
+
     <!-- 操作按鈕 -->
     <div class="btn-row" style="border-top:none;padding-top:0;margin-top:8px;">
       <button id="save" class="btn btn-primary" type="button">儲存</button>
@@ -272,21 +328,50 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
+    (async () => {
+    const capabilities = await getCapabilities({ forceRefresh: true });
+    const canReadMcp = hasPermission(capabilities, 'mcp.read');
+    const canCreateMcp = hasPermission(capabilities, 'mcp.create');
+    const canUpdateMcp = hasPermission(capabilities, 'mcp.update');
+
+    const u = new URL(window.location.href);
+    const id = u.searchParams.get('id');
+    const isEditMode = !!id;
+    if ((isEditMode && !canReadMcp) || (!isEditMode && !canCreateMcp)) {
       showError('僅限管理者存取');
       setTimeout(() => { window.location.href = '/pages/chat.html'; }, 1200);
       throw new Error('forbidden');
     }
-
-    const u = new URL(window.location.href);
-    const id = u.searchParams.get('id');
+    const canSaveMcp = isEditMode ? canUpdateMcp : canCreateMcp;
+    const canOperateMcp = isEditMode && canUpdateMcp;
     const $ = (sel) => document.getElementById(sel);
+
+    if (!canSaveMcp) {
+      const saveButton = $('save');
+      if (saveButton) {
+        saveButton.disabled = true;
+      }
+      const discoverButton = $('discover-schema');
+      if (discoverButton) {
+        discoverButton.disabled = true;
+      }
+      const testButton = $('test');
+      if (testButton) {
+        testButton.disabled = true;
+      }
+      const clearHistoryButton = $('btn-clear-history');
+      if (clearHistoryButton) {
+        clearHistoryButton.disabled = true;
+      }
+      document.querySelectorAll('input, textarea, select').forEach((element) => {
+        element.disabled = true;
+      });
+    }
 
     // ========== 分頁切換 ==========
     function setActiveTab(mode) {
@@ -340,6 +425,7 @@
         $('env').value = r.env ? JSON.stringify(r.env, null, 2) : '';
         $('input_schema').value = (r.input_schema && typeof r.input_schema === 'object')
           ? JSON.stringify(r.input_schema, null, 2) : '';
+        fillExecutionPolicy(r.execution_policy);
 
         setActiveTab((r.transport || 'remote') === 'remote' ? 'remote' : 'local');
 
@@ -384,7 +470,69 @@
       return parsed;
     }
 
+    function normalizeScopeList(rawValue) {
+      const parsedScopes = String(rawValue || '').split(',').map((scopeItem) => scopeItem.trim()).filter(Boolean);
+      if (!parsedScopes.length) return ['master', 'public', 'tasked', 'private'];
+      return Array.from(new Set(parsedScopes));
+    }
+
+    function parsePositiveIntOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number.parseInt(normalizedValue, 10);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正整數`);
+      return parsedValue;
+    }
+
+    function parsePositiveNumberOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number(normalizedValue);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正數`);
+      return parsedValue;
+    }
+
+    function parseExecutionPolicy() {
+      const rateLimitProfile = {};
+      const dailyLimit = parsePositiveIntOrNull($('policy_daily_calls').value, '每日上限');
+      const monthlyLimit = parsePositiveIntOrNull($('policy_monthly_calls').value, '每月上限');
+      const groupDailyLimit = parsePositiveIntOrNull($('policy_group_daily_calls').value, '群組每日上限');
+      const groupMonthlyLimit = parsePositiveIntOrNull($('policy_group_monthly_calls').value, '群組每月上限');
+      const monthlyCostLimitUsd = parsePositiveNumberOrNull($('policy_monthly_cost_usd').value, '每月成本上限 USD');
+      if (dailyLimit !== null) rateLimitProfile.per_user_daily_calls = dailyLimit;
+      if (monthlyLimit !== null) rateLimitProfile.per_user_monthly_calls = monthlyLimit;
+      if (groupDailyLimit !== null) rateLimitProfile.per_group_daily_calls = groupDailyLimit;
+      if (groupMonthlyLimit !== null) rateLimitProfile.per_group_monthly_calls = groupMonthlyLimit;
+      if (monthlyCostLimitUsd !== null) rateLimitProfile.monthly_cost_usd = monthlyCostLimitUsd;
+      return {
+        risk_level: $('policy_risk_level').value || 'safe',
+        cost_class: $('policy_cost_class').value || 'free',
+        requires_confirmation: !!$('policy_requires_confirmation').checked,
+        allow_scopes: normalizeScopeList($('policy_allow_scopes').value),
+        rate_limit_profile: rateLimitProfile,
+      };
+    }
+
+    function fillExecutionPolicy(rawPolicy) {
+      const policy = (rawPolicy && typeof rawPolicy === 'object') ? rawPolicy : {};
+      const allowScopes = Array.isArray(policy.allow_scopes) ? policy.allow_scopes : ['master', 'public', 'tasked', 'private'];
+      const rateLimitProfile = (policy.rate_limit_profile && typeof policy.rate_limit_profile === 'object') ? policy.rate_limit_profile : {};
+      $('policy_risk_level').value = String(policy.risk_level || 'safe');
+      $('policy_cost_class').value = String(policy.cost_class || 'free');
+      $('policy_requires_confirmation').checked = !!policy.requires_confirmation;
+      $('policy_allow_scopes').value = allowScopes.map((scopeItem) => String(scopeItem || '').trim()).filter(Boolean).join(',');
+      $('policy_daily_calls').value = rateLimitProfile.per_user_daily_calls ? String(rateLimitProfile.per_user_daily_calls) : '';
+      $('policy_monthly_calls').value = rateLimitProfile.per_user_monthly_calls ? String(rateLimitProfile.per_user_monthly_calls) : '';
+      $('policy_group_daily_calls').value = rateLimitProfile.per_group_daily_calls ? String(rateLimitProfile.per_group_daily_calls) : '';
+      $('policy_group_monthly_calls').value = rateLimitProfile.per_group_monthly_calls ? String(rateLimitProfile.per_group_monthly_calls) : '';
+      $('policy_monthly_cost_usd').value = rateLimitProfile.monthly_cost_usd ? String(rateLimitProfile.monthly_cost_usd) : '';
+    }
+
     async function save() {
+      if (!canSaveMcp) {
+        showError('你沒有儲存 MCP 的權限');
+        return;
+      }
       try {
         const transport = $('transport').value;
         const commandValue = $('command').value.trim();
@@ -409,12 +557,14 @@
           args: [],
           env: {},
           input_schema: {},
+          execution_policy: {},
         };
 
         body.auth = parseJsonObjectField('auth_json', 'Auth');
         body.args = parseJsonArrayField('args', 'Args');
         body.env = parseJsonObjectField('env', 'Env');
         body.input_schema = parseJsonObjectField('input_schema', 'input_schema');
+        body.execution_policy = parseExecutionPolicy();
 
         if (id) {
           await api.put(`/mcps/${id}`, body);
@@ -433,6 +583,10 @@
 
     // ========== 自動載入 Schema ==========
     $('discover-schema').addEventListener('click', async () => {
+      if (!canSaveMcp) {
+        showError('你沒有更新 MCP 的權限');
+        return;
+      }
       try {
         const payload = {
           name: $('name').value.trim(),
@@ -491,6 +645,10 @@
 
     // ========== 測試連線 ==========
     $('test').addEventListener('click', async () => {
+      if (!canOperateMcp) {
+        showError('你沒有測試 MCP 的權限');
+        return;
+      }
       try {
         if (!id) {
           showError('請先儲存後再測試');
@@ -544,6 +702,10 @@
 
     // ========== 清除歷史記錄 ==========
     $('btn-clear-history').addEventListener('click', async () => {
+      if (!canOperateMcp) {
+        showError('你沒有清除 MCP 測試紀錄的權限');
+        return;
+      }
       if (!id) {
         showError('尚未儲存，無法清除');
         return;
@@ -953,6 +1115,9 @@
 
     // ========== 初始化 ==========
     load();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
+    });
   </script>
 </body>
 </html>

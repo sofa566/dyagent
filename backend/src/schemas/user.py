@@ -6,6 +6,7 @@ import uuid
 class UserBase(BaseModel):
     username: str
     email: EmailStr
+    enabled: bool = True
 
 
 class UserCreate(UserBase):

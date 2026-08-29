@@ -48,6 +48,12 @@
   <script type="module">
     import { api, auth, showError, showSuccess } from '/main.js';
 
+    const SYSTEM_ROLE_CODES = ['admin', 'agent_admin', 'user'];
+    const state = {
+      roles: [],
+      selectedRoleId: '',
+    };
+
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
@@ -64,6 +70,49 @@
       setTimeout(()=> window.location.href='/pages/users.html', 1500);
     }
 
+    function findRoleById(roleId) {
+      return state.roles.find(roleItem => String(roleItem.id) === String(roleId));
+    }
+
+    function findRoleByCode(roleCode) {
+      return state.roles.find(roleItem => String(roleItem.code) === String(roleCode));
+    }
+
+    function getDefaultRoleId() {
+      const userRole = findRoleByCode('user');
+      if (userRole) {
+        return String(userRole.id);
+      }
+      const firstRole = state.roles[0];
+      return firstRole ? String(firstRole.id) : '';
+    }
+
+    function renderRoleOptions(selectedRoleId = '') {
+      const roleSelectElement = document.getElementById('role');
+      if (!state.roles.length) {
+        roleSelectElement.innerHTML = '<option value="">目前沒有可用角色</option>';
+        roleSelectElement.value = '';
+        state.selectedRoleId = '';
+        return;
+      }
+      roleSelectElement.innerHTML = state.roles
+        .map(roleItem => `<option value="${String(roleItem.id)}">${String(roleItem.code)} (${String(roleItem.name || roleItem.code)})</option>`)
+        .join('');
+      const matchedRole = findRoleById(selectedRoleId);
+      const nextRoleId = matchedRole ? String(matchedRole.id) : getDefaultRoleId();
+      roleSelectElement.value = nextRoleId;
+      state.selectedRoleId = nextRoleId;
+    }
+
+    async function loadRoles() {
+      const rolesResponse = await api.get('/access/roles');
+      const roleList = Array.isArray(rolesResponse.roles) ? rolesResponse.roles : [];
+      state.roles = roleList
+        .filter(roleItem => !!roleItem.enabled)
+        .sort((leftRole, rightRole) => String(leftRole.code || '').localeCompare(String(rightRole.code || '')));
+      renderRoleOptions(getDefaultRoleId());
+    }
+
     async function loadUser() {
       try {
         const res = await api.get('/users');
@@ -72,24 +121,47 @@
         if (!u) { showError('找不到使用者'); return; }
         document.getElementById('username').value = u.username || '';
         document.getElementById('email').value = u.email || '';
-        document.getElementById('role').value = u.role || 'user';
+
+        const bindingPayload = await api.get(`/access/users/${encodeURIComponent(userId)}/bindings`);
+        const bindingRoleIds = Array.isArray(bindingPayload.role_ids) ? bindingPayload.role_ids : [];
+        const primaryRole = findRoleByCode(u.role || '');
+        if (primaryRole && bindingRoleIds.includes(String(primaryRole.id))) {
+          renderRoleOptions(String(primaryRole.id));
+          return;
+        }
+        const firstMatchedRoleId = bindingRoleIds.find(roleId => !!findRoleById(roleId));
+        renderRoleOptions(firstMatchedRoleId ? String(firstMatchedRoleId) : getDefaultRoleId());
       } catch (e) {
         showError(e.message || '載入使用者失敗');
       }
     }
 
+    document.getElementById('role').addEventListener('change', (event) => {
+      state.selectedRoleId = String(event.target.value || '');
+    });
+
     document.getElementById('user-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
-        const role = document.getElementById('role').value;
-        await api.put(`/users/${userId}/role?role=${encodeURIComponent(role)}`);
+        const selectedRole = findRoleById(state.selectedRoleId);
+        if (!selectedRole) {
+          showError('請先選擇角色');
+          return;
+        }
+
+        if (SYSTEM_ROLE_CODES.includes(String(selectedRole.code))) {
+          await api.put(`/users/${userId}/role?role=${encodeURIComponent(String(selectedRole.code))}`);
+        }
+        await api.post(`/access/users/${encodeURIComponent(userId)}/roles`, {
+          role_ids: [String(selectedRole.id)],
+        });
         showSuccess('角色已更新');
       } catch (e) {
         showError(e.message || '更新失敗');
       }
     });
 
-    loadUser();
+    Promise.all([loadRoles()]).then(() => loadUser());
   </script>
 </body>
 </html>

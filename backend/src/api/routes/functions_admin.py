@@ -10,11 +10,13 @@ from pathlib import Path
 from src.core.database import get_db
 from src.models import FunctionProfile, User
 from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_role, Role, check_permission
+from src.middleware.rbac import require_permission, check_permission
+from src.services.tool_policy_service import ToolPolicyService
 from src.api.errors import not_found_error, validation_error, forbidden_error
 
 
 router = APIRouter()
+tool_policy_service = ToolPolicyService()
 
 
 def _parse_claude_skill(content: str) -> dict[str, str]:
@@ -81,13 +83,14 @@ def _to_dict(row: FunctionProfile) -> dict[str, Any]:
         'parameters': row.parameters,  # JSON Schema
         'handler_type': row.handler_type or 'internal',
         'handler_config': row.handler_config,
+        'execution_policy': tool_policy_service.normalize_policy(row.execution_policy if isinstance(row.execution_policy, dict) else {}),
         'created_at': row.created_at.isoformat() if row.created_at else None,
         'updated_at': row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
 @router.post('/functions/import-claude-skill')
-@require_role([Role.ADMIN])
+@require_permission('functions.create')
 async def import_claude_skill(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -211,7 +214,7 @@ def _parse_claude_skill_zip(content: bytes) -> dict[str, Any]:
 
 
 @router.post('/functions/import-claude-skill-zip')
-@require_role([Role.ADMIN])
+@require_permission('functions.create')
 async def import_claude_skill_zip(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -249,7 +252,7 @@ async def import_claude_skill_zip(
 
 
 @router.post('/functions/import-claude-skill-zip/create')
-@require_role([Role.ADMIN])
+@require_permission('functions.create')
 async def create_from_claude_skill_zip(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -304,7 +307,7 @@ async def create_from_claude_skill_zip(
 
 
 @router.get('/functions')
-@require_role([Role.ADMIN])
+@require_permission('functions.read')
 async def list_functions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -318,14 +321,14 @@ async def list_selectable_functions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         raise forbidden_error()
     rows = db.query(FunctionProfile).filter(FunctionProfile.enabled == True).order_by(FunctionProfile.created_at.desc()).all()  # noqa: E712
     return {'functions': [_to_dict(r) for r in rows]}
 
 
 @router.post('/functions')
-@require_role([Role.ADMIN])
+@require_permission('functions.create')
 async def create_function(
     payload: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -374,6 +377,7 @@ async def create_function(
         parameters=parameters,
         handler_type=handler_type if handler_type in ('internal', 'webhook', 'mcp') else 'internal',
         handler_config=handler_config,
+        execution_policy=tool_policy_service.normalize_policy((payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}),
     )
     db.add(row)
     db.commit()
@@ -382,7 +386,7 @@ async def create_function(
 
 
 @router.get('/functions/{function_id}')
-@require_role([Role.ADMIN])
+@require_permission('functions.read')
 async def get_function(
     function_id: str,
     db: Session = Depends(get_db),
@@ -395,7 +399,7 @@ async def get_function(
 
 
 @router.put('/functions/{function_id}')
-@require_role([Role.ADMIN])
+@require_permission('functions.update')
 async def update_function(
     function_id: str,
     payload: dict[str, Any] = Body(...),
@@ -446,6 +450,11 @@ async def update_function(
     if 'handler_config' in (payload or {}):
         row.handler_config = (payload or {}).get('handler_config')
 
+    if 'execution_policy' in (payload or {}):
+        row.execution_policy = tool_policy_service.normalize_policy(
+            (payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}
+        )
+
     # 驗證：至少需有 template 或 parameters
     if not str(row.template or '').strip() and not row.parameters:
         raise validation_error('需保留 template 或 parameters')
@@ -456,7 +465,7 @@ async def update_function(
 
 
 @router.delete('/functions/{function_id}')
-@require_role([Role.ADMIN])
+@require_permission('functions.delete')
 async def delete_function(
     function_id: str,
     db: Session = Depends(get_db),

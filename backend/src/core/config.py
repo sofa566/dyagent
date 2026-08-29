@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     QDRANT_URL: str = 'http://localhost:6333'
 
+    RAG_INDEX_MAX_CONCURRENCY: int = 1
+
     SECRET_KEY: str = 'your-secret-key-change-in-production'
     ALGORITHM: str = 'HS256'
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
@@ -66,6 +68,11 @@ class Settings(BaseSettings):
     # LLM 成本估算表（JSON）
     # 格式：{"provider:model": {"input_per_1k": 0.005, "output_per_1k": 0.015}}
     LLM_COST_TABLE_JSON: str = ''
+
+    # 工具策略層開關
+    TOOL_EXEC_POLICY_ENABLED: bool = True
+    TOOL_EXEC_REQUIRE_CONFIRM_FOR_DANGEROUS: bool = True
+    TOOL_CONFIRM_TOKEN_TTL_SECONDS: int = 300
 
     # 聊天歷史上下文注入（同一會話連貫）
     CHAT_HISTORY_MODE: str = 'recent'  # off | recent

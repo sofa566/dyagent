@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 from passlib.context import CryptContext
 from passlib.hash import bcrypt_sha256, pbkdf2_sha256
 from sqlalchemy.orm import Session
@@ -66,6 +66,12 @@ def decode_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload
+    except ExpiredSignatureError:
+        logger.warning('token_decode_expired')
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Token has expired',
+        )
     except JWTError as e:
         logger.error('token_decode_error', error=str(e))
         raise HTTPException(
@@ -90,6 +96,8 @@ async def get_current_user(
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise forbidden_error('User not found')
+    if not bool(getattr(user, 'enabled', True)):
+        raise forbidden_error('User disabled')
 
     return user
 

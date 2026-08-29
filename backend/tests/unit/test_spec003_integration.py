@@ -65,16 +65,19 @@ class TestRagBindingsApi:
         db.refresh(second_agent)
 
         private_dataset_res = client.post(
-            f'/api/agents/{agent.id}/rag/datasets',
+            '/api/rag/datasets',
             headers={'Authorization': f'Bearer {admin_token}'},
             json={
                 'name': 'agent-a-private-ds',
+                'scope': 'agent_private',
+                'agent_id': str(agent.id),
                 'sensitivity': 'restricted',
                 'enabled': True,
             },
         )
         assert private_dataset_res.status_code == 200
         private_dataset_id = private_dataset_res.json()['dataset']['id']
+        assert private_dataset_res.json()['dataset']['agent_id'] == str(agent.id)
 
         global_dataset_res = client.post(
             '/api/rag/datasets',
@@ -346,7 +349,10 @@ class TestRouterAndLlmTurn:
         response = client.get(
             f'/api/agents/{agent.id}/chat/stream',
             headers={'Authorization': f'Bearer {admin_token}'},
-            params={'message': message_with_dataset_context},
+            params={
+                'message': message_with_dataset_context,
+                'selected_dataset_ids': '0052dc8c-4dfc-4cff-b812-aca0f32b051d',
+            },
         )
 
         assert response.status_code == 200
@@ -421,7 +427,10 @@ class TestRouterAndLlmTurn:
         response = client.get(
             f'/api/agents/{agent.id}/chat/stream',
             headers={'Authorization': f'Bearer {admin_token}'},
-            params={'message': message_with_dataset_context},
+            params={
+                'message': message_with_dataset_context,
+                'selected_dataset_ids': '0052dc8c-4dfc-4cff-b812-aca0f32b051d',
+            },
         )
 
         assert response.status_code == 200

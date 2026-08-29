@@ -79,6 +79,24 @@ class TestAgentsCreate:
         assert data['enabled'] is True
         assert data['is_router'] is False
 
+    def test_create_private_agent_admin(self, client, admin_user, admin_token):
+        response = client.post(
+            '/api/agents',
+            headers={'Authorization': f'Bearer {admin_token}'},
+            params={
+                'name': 'Private Agent',
+                'description': 'Private worker agent',
+                'model_type': 'cloud',
+                'agent_class': 'private',
+                'enabled': True,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data['agent_class'] == 'private'
+        assert data['enabled'] is True
+        assert data['is_router'] is False
+
 
 class TestAgentsGet:
     def test_get_agent_admin(self, client, admin_user, admin_token, agent):

@@ -19,6 +19,23 @@
       outline: none;
       border-color: var(--primary-color);
     }
+
+    .rag-setting-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr) 140px auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    @media (max-width: 980px) {
+      .rag-setting-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .rag-setting-grid .btn {
+        width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
@@ -39,6 +56,31 @@
     </div>
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
+
+    <section class="card" style="margin-bottom:1rem;">
+      <h3>RAG 設定</h3>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+        <label style="display:flex;align-items:center;gap:6px;margin:0;">
+          <input id="rag-enabled" type="checkbox"> 啟用 RAG
+        </label>
+      </div>
+      <div class="rag-setting-grid">
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="rag-sources">檢索來源（逗號分隔）</label>
+          <input id="rag-sources" type="text" placeholder="例如：knowledge_base, faq_docs">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="rag-test-query">測試檢索 Query</label>
+          <input id="rag-test-query" type="text" placeholder="例如：公司差旅報銷流程是什麼？">
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="rag-topk">topK</label>
+          <input id="rag-topk" type="number" min="1" max="50" value="5">
+        </div>
+        <button id="btn-test-rag" class="btn" type="button" style="height:42px;">測試檢索</button>
+      </div>
+      <pre id="rag-test-result" class="code" style="display:none;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:8px;"></pre>
+    </section>
 
     <!-- Section 1: 公有資料集加入 -->
     <section class="card" style="margin-bottom:1rem;">
@@ -141,7 +183,10 @@
             <tr>
               <th>檔案名稱</th>
               <th style="width:100px;">大小</th>
+              <th style="width:120px;">索引狀態</th>
+              <th style="width:90px;">進度</th>
               <th style="width:160px;">上傳時間</th>
+              <th style="width:90px;">操作</th>
             </tr>
           </thead>
           <tbody id="upload-file-list"></tbody>
@@ -227,10 +272,17 @@
       globalDatasets: [],       // 全域公有資料集選項
       privateDatasets: [],      // 當前代理者的私有資料集
       boundGlobalIds: [],       // 已綁定的公有資料集 ID
+      ragConfig: { enabled: false, sources: [], topK: 5 },
     };
+    let uploadPollingTimer = null;
 
     // DOM 元素
     const pageTitle = document.getElementById('page-title');
+    const ragEnabledInput = document.getElementById('rag-enabled');
+    const ragSourcesInput = document.getElementById('rag-sources');
+    const ragTopKInput = document.getElementById('rag-topk');
+    const ragTestQueryInput = document.getElementById('rag-test-query');
+    const ragTestResult = document.getElementById('rag-test-result');
     const globalDatasetSelect = document.getElementById('global-dataset-select');
     const globalDatasetList = document.getElementById('global-dataset-list');
     const globalCountEl = document.getElementById('global-count');
@@ -264,6 +316,80 @@
     function formatDate(isoString) {
       if (!isoString) return '-';
       return new Date(isoString).toLocaleString('zh-TW');
+    }
+
+    function resolveDatasetDisplayName(datasetId) {
+      const normalizedId = String(datasetId || '');
+      const globalDataset = state.globalDatasets.find((item) => String(item.id) === normalizedId);
+      if (globalDataset && globalDataset.name) {
+        return String(globalDataset.name);
+      }
+      const privateDataset = state.privateDatasets.find((item) => String(item.id) === normalizedId);
+      if (privateDataset && privateDataset.name) {
+        return String(privateDataset.name);
+      }
+      return normalizedId;
+    }
+
+    function formatIndexStatusLabel(status, stage) {
+      const normalizedStatus = String(status || '').trim().toLowerCase();
+      const normalizedStage = String(stage || '').trim();
+      if (normalizedStatus === 'ready') {
+        return '完成';
+      }
+      if (normalizedStatus === 'failed') {
+        return '失敗';
+      }
+      if (normalizedStatus === 'queued') {
+        return '排隊中';
+      }
+      if (normalizedStatus === 'indexing') {
+        return normalizedStage ? `索引中（${normalizedStage}）` : '索引中';
+      }
+      if (normalizedStatus === 'uploaded') {
+        return '已上傳';
+      }
+      return normalizedStatus || '-';
+    }
+
+    function stopUploadPolling() {
+      if (uploadPollingTimer) {
+        clearTimeout(uploadPollingTimer);
+        uploadPollingTimer = null;
+      }
+    }
+
+    function scheduleUploadPolling() {
+      stopUploadPolling();
+      uploadPollingTimer = setTimeout(async () => {
+        if (!currentUploadDatasetId) {
+          return;
+        }
+        await loadDocuments(currentUploadDatasetId);
+      }, 2000);
+    }
+
+    function setRagInputsFromState() {
+      const ragConfig = state.ragConfig || { enabled: false, sources: [], topK: 5 };
+      ragEnabledInput.checked = !!ragConfig.enabled;
+      ragSourcesInput.value = Array.isArray(ragConfig.sources) ? ragConfig.sources.join(', ') : '';
+      ragTopKInput.value = String(ragConfig.topK || 5);
+    }
+
+    function syncRagStateFromInputs() {
+      const parsedTopK = Number.parseInt(String(ragTopKInput.value || '5'), 10);
+      const topK = Number.isFinite(parsedTopK) ? Math.min(50, Math.max(1, parsedTopK)) : 5;
+      const sources = String(ragSourcesInput.value || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      state.ragConfig = {
+        enabled: !!ragEnabledInput.checked,
+        sources,
+        topK,
+      };
+      ragTopKInput.value = String(topK);
     }
 
     // ========== 公有資料集綁定 ==========
@@ -308,6 +434,98 @@
       showSuccess('已加入公有資料集');
     });
 
+    ragEnabledInput.addEventListener('change', syncRagStateFromInputs);
+    ragSourcesInput.addEventListener('input', syncRagStateFromInputs);
+    ragTopKInput.addEventListener('change', syncRagStateFromInputs);
+
+    document.getElementById('btn-test-rag').addEventListener('click', async () => {
+      try {
+        syncRagStateFromInputs();
+        const queryText = String(ragTestQueryInput.value || '').trim();
+        if (!queryText) {
+          showError('請先輸入測試檢索 Query');
+          return;
+        }
+
+        const privateDatasetIds = (state.privateDatasets || []).map((item) => String(item.id || '')).filter(Boolean);
+        const globalDatasetIds = (state.boundGlobalIds || []).map((item) => String(item || '')).filter(Boolean);
+        const targetDatasetIds = Array.from(new Set([...globalDatasetIds, ...privateDatasetIds]));
+        if (targetDatasetIds.length === 0) {
+          showError('目前沒有可測試的資料集，請先綁定公有資料集或建立私有資料集');
+          return;
+        }
+
+        const topK = Number.parseInt(String(state.ragConfig.topK || 5), 10);
+        const safeTopK = Number.isFinite(topK) ? Math.min(50, Math.max(1, topK)) : 5;
+        const payload = {
+          query: queryText,
+          limit: safeTopK,
+        };
+
+        const datasetResults = [];
+        for (const datasetId of targetDatasetIds) {
+          try {
+            const response = await api.post(`/rag/datasets/${encodeURIComponent(datasetId)}/search`, payload);
+            datasetResults.push({
+              dataset_id: datasetId,
+              dataset_name: resolveDatasetDisplayName(datasetId),
+              ok: !!(response && response.ok),
+              collection: response && response.collection ? String(response.collection) : '',
+              warning: response && response.warning ? String(response.warning) : '',
+              error: response && response.error ? String(response.error) : '',
+              total_found: Number(response && response.total_found) || 0,
+              elapsed_ms: Number(response && response.elapsed_ms) || 0,
+              results: Array.isArray(response && response.results) ? response.results : [],
+            });
+          } catch (error) {
+            datasetResults.push({
+              dataset_id: datasetId,
+              dataset_name: resolveDatasetDisplayName(datasetId),
+              ok: false,
+              collection: '',
+              warning: '',
+              error: String((error && error.message) || '測試失敗'),
+              total_found: 0,
+              elapsed_ms: 0,
+              results: [],
+            });
+          }
+        }
+
+        const mergedResults = datasetResults
+          .flatMap((item) => (item.results || []).map((row) => ({
+            ...row,
+            dataset_id: item.dataset_id,
+            dataset_name: item.dataset_name,
+            collection: item.collection,
+          })))
+          .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
+          .slice(0, safeTopK);
+
+        const response = {
+          ok: datasetResults.some((item) => item.ok),
+          query: queryText,
+          topK: safeTopK,
+          total_datasets: datasetResults.length,
+          total_hits: datasetResults.reduce((acc, item) => acc + Number(item.total_found || 0), 0),
+          datasets: datasetResults,
+          results: mergedResults,
+        };
+
+        ragTestResult.style.display = 'block';
+        ragTestResult.textContent = JSON.stringify(response, null, 2);
+        if (response.ok) {
+          showSuccess('RAG 測試完成');
+          return;
+        }
+        showError('目前沒有可用索引結果，請確認檔案索引狀態是否已完成');
+      } catch (error) {
+        ragTestResult.style.display = 'block';
+        ragTestResult.textContent = String((error && error.message) || 'RAG 測試失敗');
+        showError((error && error.message) || 'RAG 測試失敗');
+      }
+    });
+
     // ========== 私有資料集表單 Modal ==========
     let editingPrivateId = '';
 
@@ -328,8 +546,6 @@
       e.preventDefault();
       const payload = {
         name: document.getElementById('modal-name').value.trim(),
-        scope: 'agent_private',
-        agent_id: agentId,
         sensitivity: document.getElementById('modal-sensitivity').value,
         enabled: document.getElementById('modal-enabled').checked,
         vector_backend: document.getElementById('modal-vector-backend').value.trim(),
@@ -344,7 +560,11 @@
           await api.put(`/rag/datasets/${encodeURIComponent(editingPrivateId)}`, payload);
           showSuccess('已更新私有資料集');
         } else {
-          await api.post('/rag/datasets', payload);
+          await api.post('/rag/datasets', {
+            ...payload,
+            scope: 'agent_private',
+            agent_id: String(agentId),
+          });
           showSuccess('已建立私有資料集');
         }
         closeModal(datasetModal);
@@ -374,6 +594,7 @@
     // ========== 上傳/文件列表 Modal ==========
     let currentUploadDatasetId = '';
     const uploadFileInput = document.getElementById('upload-file-input');
+    const uploadFileList = document.getElementById('upload-file-list');
 
     async function openUploadModal(datasetId, datasetName) {
       currentUploadDatasetId = datasetId;
@@ -389,24 +610,70 @@
       try {
         const res = await api.get(`/rag/datasets/${encodeURIComponent(datasetId)}/documents`);
         const docs = res.documents || [];
+        const hasIndexingJob = docs.some((item) => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase()));
         if (docs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">尚無上傳文件</td></tr>';
         } else {
           tbody.innerHTML = docs.map(doc => `
             <tr>
               <td>${escapeHtml(doc.filename)}</td>
               <td>${formatBytes(doc.size_bytes)}</td>
+              <td>${escapeHtml(formatIndexStatusLabel(doc.status, doc.stage))}</td>
+              <td>${typeof doc.progress === 'number' ? `${Math.max(0, Math.min(100, Number(doc.progress)))}%` : '-'}</td>
               <td>${formatDate(doc.uploaded_at)}</td>
+              <td>
+                <button
+                  class="btn btn-danger"
+                  type="button"
+                  data-delete-file="${escapeHtml(doc.file_key || '')}"
+                  data-file-name="${escapeHtml(doc.filename || '')}"
+                  ${['queued', 'indexing'].includes(String(doc.status || '').toLowerCase()) ? 'disabled title="索引中不可刪除"' : ''}
+                  style="padding:4px 8px;font-size:0.85rem;"
+                >刪除</button>
+              </td>
             </tr>
           `).join('');
         }
-        summary.textContent = `共 ${docs.length} 個檔案`;
+        const readyCount = docs.filter((item) => String(item.status || '').toLowerCase() === 'ready').length;
+        const failedCount = docs.filter((item) => String(item.status || '').toLowerCase() === 'failed').length;
+        const queuedCount = docs.filter((item) => ['queued', 'indexing'].includes(String(item.status || '').toLowerCase())).length;
+        summary.textContent = `共 ${docs.length} 個檔案（完成 ${readyCount}、索引中 ${queuedCount}、失敗 ${failedCount}）`;
+        if (hasIndexingJob) {
+          scheduleUploadPolling();
+        } else {
+          stopUploadPolling();
+        }
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
+        stopUploadPolling();
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--error-color);">載入文件列表失敗</td></tr>';
         summary.textContent = '';
         showError(err.message || '載入文件列表失敗');
       }
     }
+
+    uploadFileList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) {
+        return;
+      }
+      const fileKey = String(target.getAttribute('data-delete-file') || '').trim();
+      if (!fileKey || !currentUploadDatasetId) {
+        return;
+      }
+      const fileName = String(target.getAttribute('data-file-name') || '').trim() || fileKey;
+      const confirmed = window.confirm(`確定刪除文件「${fileName}」嗎？`);
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        await api.delete(`/rag/datasets/${encodeURIComponent(currentUploadDatasetId)}/documents/${encodeURIComponent(fileKey)}`);
+        showSuccess(`已刪除文件：${fileName}`);
+        await loadDocuments(currentUploadDatasetId);
+      } catch (error) {
+        showError((error && error.message) || '刪除文件失敗');
+      }
+    });
 
     document.getElementById('upload-btn').addEventListener('click', () => {
       uploadFileInput.value = '';
@@ -440,8 +707,12 @@
           }
 
           const data = await response.json();
-          if (data.status !== 'ready') {
+          if (data.status === 'failed') {
             showError(`${file.name}: ${data.message || '索引失敗'}`);
+          } else if (data.status === 'ready') {
+            showSuccess(`${file.name}: 文件已索引完成`);
+          } else {
+            showSuccess(`${file.name}: ${data.message || '文件已上傳，索引中'}`);
           }
         } catch (err) {
           showError(`${file.name}: ${err.message}`);
@@ -454,6 +725,8 @@
     });
 
     document.getElementById('upload-modal-close').addEventListener('click', () => {
+      stopUploadPolling();
+      currentUploadDatasetId = '';
       closeModal(uploadModal);
     });
 
@@ -622,9 +895,17 @@
       try {
         const res = await api.get(`/agents/${agentId}/integrations`);
         const ragDatasetIds = res.rag_dataset_ids || {};
+        state.ragConfig = (res.rag_config && typeof res.rag_config === 'object')
+          ? {
+            enabled: !!res.rag_config.enabled,
+            sources: Array.isArray(res.rag_config.sources) ? res.rag_config.sources : [],
+            topK: Number.isFinite(Number(res.rag_config.topK)) ? Number(res.rag_config.topK) : 5,
+          }
+          : { enabled: false, sources: [], topK: 5 };
         state.boundGlobalIds = Array.isArray(ragDatasetIds.global_dataset_ids)
           ? ragDatasetIds.global_dataset_ids.map(String)
           : [];
+        setRagInputsFromState();
         renderGlobalDatasetList();
       } catch (err) {
         showError(err.message || '載入代理者設定失敗');
@@ -645,6 +926,7 @@
     // ========== 儲存 ==========
     document.getElementById('btn-save').addEventListener('click', async () => {
       try {
+        syncRagStateFromInputs();
         // 取得當前代理者設定
         const currentRes = await api.get(`/agents/${agentId}/integrations`);
 
@@ -654,7 +936,7 @@
         const payload = {
           mcp_config: currentRes.mcp_config || [],
           skills: currentRes.skills || [],
-          rag_config: currentRes.rag_config || { enabled: false, sources: [], topK: 5 },
+          rag_config: state.ragConfig || { enabled: false, sources: [], topK: 5 },
           functions_definition_template: currentRes.functions_definition_template || '',
           toolcall_guide: currentRes.toolcall_guide || '',
           skill_examples: currentRes.skill_examples || {},

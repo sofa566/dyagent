@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from src.api.errors import (
     general_exception_handler,
 )
-from src.api.routes import agents, auth, chat, logs, mcp, rag, users, admin_dashboard, skill_ui
+from src.api.routes import agents, auth, chat, logs, mcp, rag, users, admin_dashboard, skill_ui, access_control
 from src.api.routes import mcps_admin, skills_admin
 from src.api.routes import functions_admin
 from src.core.config import settings
@@ -11,6 +11,7 @@ from src.core.logging import get_logger
 from src.models import *
 from src.services.qdrant_service import qdrant_service
 from src.services.redis_service import redis_service
+from src.services.access_control_service import access_control_service
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -130,6 +131,7 @@ async def lifespan(app: FastAPI):
     try:
         message = first_user(db)
         print(message)
+        access_control_service.ensure_system_roles(db)
         _ensure_weather_skill_open_meteo(db)
         _seed_router_agent(db)
     finally:
@@ -163,6 +165,7 @@ app.include_router(chat.router, prefix='/api', tags=['聊天'])
 app.include_router(mcp.router, prefix='/api', tags=['MCP'])
 app.include_router(rag.router, prefix='/api', tags=['RAG'])
 app.include_router(users.router, prefix='/api', tags=['使用者'])
+app.include_router(access_control.router, prefix='/api', tags=['權限管理'])
 app.include_router(logs.router, prefix='/api', tags=['日誌'])
 app.include_router(admin_dashboard.router, prefix='/api', tags=['管理儀表板'])
 app.include_router(mcps_admin.router, prefix='/api', tags=['MCP 管理'])

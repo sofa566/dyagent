@@ -39,67 +39,71 @@
     </div>
   </main>
   <script type="module">
-    import { api, auth, showError } from '/main.js';
+    import { api, auth, showError, getCapabilities, hasAnyPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
-
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
-      window.location.href = '/pages/chat.html';
-    }
-
-    const levelFilter = document.getElementById('level-filter');
-
-    async function loadLogs(level = '') {
-      try {
-        let url = '/logs?limit=50';
-        if (level) {
-          url += `&level=${level}`;
-        }
-        const response = await api.get(url);
-        const container = document.getElementById('logs-list');
-        
-        if (response.logs.length === 0) {
-          container.innerHTML = '<p>尚無日誌記錄</p>';
-          return;
-        }
-
-        container.innerHTML = `
-          <table>
-            <thead>
-              <tr>
-                <th>時間</th>
-                <th>級別</th>
-                <th>動作</th>
-                <th>資源類型</th>
-                <th>使用者 ID</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${response.logs.map(log => `
-                <tr>
-                  <td>${new Date(log.timestamp).toLocaleString()}</td>
-                  <td><span class="badge badge-${log.level}">${log.level}</span></td>
-                  <td>${log.action}</td>
-                  <td>${log.resource_type || '-'}</td>
-                  <td>${log.user_id ? log.user_id.substring(0, 8) + '...' : '-'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `;
-      } catch (error) {
-        showError(error.message);
+    (async () => {
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      if (!hasAnyPermission(capabilities, ['logs.read'])) {
+        window.location.href = '/pages/chat.html';
+        return;
       }
-    }
 
-    levelFilter.addEventListener('change', (e) => {
-      loadLogs(e.target.value);
+      const levelFilter = document.getElementById('level-filter');
+
+      async function loadLogs(level = '') {
+        try {
+          let url = '/logs?limit=50';
+          if (level) {
+            url += `&level=${level}`;
+          }
+          const response = await api.get(url);
+          const container = document.getElementById('logs-list');
+          
+          if (response.logs.length === 0) {
+            container.innerHTML = '<p>尚無日誌記錄</p>';
+            return;
+          }
+
+          container.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  <th>時間</th>
+                  <th>級別</th>
+                  <th>動作</th>
+                  <th>資源類型</th>
+                  <th>使用者 ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${response.logs.map(log => `
+                  <tr>
+                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td><span class="badge badge-${log.level}">${log.level}</span></td>
+                    <td>${log.action}</td>
+                    <td>${log.resource_type || '-'}</td>
+                    <td>${log.user_id ? log.user_id.substring(0, 8) + '...' : '-'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        } catch (error) {
+          showError(error.message);
+        }
+      }
+
+      levelFilter.addEventListener('change', (e) => {
+        loadLogs(e.target.value);
+      });
+
+      loadLogs();
+    })().catch((error) => {
+      showError((error && error.message) || '初始化失敗');
     });
-
-    loadLogs();
   </script>
 </body>
 </html>

@@ -1,11 +1,12 @@
 import uuid
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.api.errors import not_found_error, validation_error
 from src.core.database import get_db
+from src.core.logging import get_logger
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
 from src.models import (
@@ -17,6 +18,7 @@ from src.models import (
     User,
     Workspace,
 )
+from src.services.access_control_service import access_control_service
 from src.services.chat_router import ChatRouter
 from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
@@ -24,17 +26,82 @@ from src.services.mcp_client import MCPClient
 from src.services.qdrant_service import qdrant_service
 
 router = APIRouter()
+logger = get_logger(__name__)
+AGENT_PRIVATE_DATASET_DEPRECATED_SUNSET = 'Tue, 31 Mar 2027 00:00:00 GMT'
 
 
-def _can_read_agent_integrations(current_user: User) -> bool:
+def _mark_agent_private_dataset_api_deprecated(*, response: Response, operation: str, agent_id: str, dataset_id: str | None = None) -> None:
+    # 目的：標記舊私有資料集 API 已進入退場期並提供替代路徑。
+    # 為什麼：讓客戶端可在回應層感知 deprecated 訊號，逐步切換到 /api/rag/datasets。
+    response.headers['Deprecation'] = 'true'
+    response.headers['Sunset'] = AGENT_PRIVATE_DATASET_DEPRECATED_SUNSET
+    response.headers['Link'] = '</api/rag/datasets>; rel="successor-version"'
+    response.headers['X-Deprecated-Reason'] = 'use /api/rag/datasets with scope=agent_private'
+    logger.warning(
+        'agents.private_dataset_api_deprecated_called',
+        operation=str(operation or ''),
+        agent_id=str(agent_id or ''),
+        dataset_id=str(dataset_id or ''),
+    )
+
+
+def _can_read_agent_integrations(current_user: User, db: Session) -> bool:
     """目的：統一判斷代理者整合設定的讀取權限。
     為什麼：US3 要求一般 user 具唯讀能力，需與 update 權限邏輯分離。
     """
     return bool(
-        check_permission(current_user, 'read_agent')
-        or check_permission(current_user, 'update_agent')
-        or check_permission(current_user, 'chat')
+        check_permission(current_user, 'read_agent', db=db)
+        or check_permission(current_user, 'update_agent', db=db)
+        or check_permission(current_user, 'chat', db=db)
     )
+
+
+def _build_agent_execute_permission_key(agent_id: str) -> str:
+    return f'entity.agent.{agent_id}.execute'
+
+
+def _build_agent_execute_permission_keys(*, agent: Agent) -> set[str]:
+    """目的：產生某代理可對應的 execute 權限鍵集合。
+    為什麼：相容既有以 agent_id 或 agent_name 建立的權限鍵。
+    """
+    permission_keys: set[str] = set()
+    agent_id = str(getattr(agent, 'id', '') or '').strip()
+    if agent_id:
+        permission_keys.add(_build_agent_execute_permission_key(agent_id))
+    agent_name = str(getattr(agent, 'name', '') or '').strip()
+    if agent_name:
+        permission_keys.add(f'entity.agent.{agent_name}.execute')
+    return permission_keys
+
+
+def _build_dataset_execute_permission_keys(*, dataset: RagDataset) -> set[str]:
+    # 目的：產生資料集可對應的 execute 權限鍵集合。
+    # 為什麼：刪除資料集時需同步清理既有 id/name 形式的歷史權限鍵。
+    permission_keys: set[str] = set()
+    dataset_id = str(getattr(dataset, 'id', '') or '').strip()
+    if dataset_id:
+        permission_keys.add(f'entity.dataset.{dataset_id}.execute')
+    dataset_name = str(getattr(dataset, 'name', '') or '').strip()
+    if dataset_name:
+        permission_keys.add(f'entity.dataset.{dataset_name}.execute')
+    return permission_keys
+
+
+def _resolve_user_private_agent_access_set(db: Session, current_user: User) -> set[str]:
+    """目的：解析目前使用者可存取的 private agent execute 權限鍵集合。
+    為什麼：private 類型代理僅允許具實體 execute 權限者可見與使用。
+    """
+    try:
+        capability = access_control_service.resolve_effective_capability(db, current_user)
+        permission_keys = {str(key) for key in (capability.permissions or [])}
+    except Exception:
+        permission_keys = set()
+
+    private_agent_permissions: set[str] = set()
+    for permission_key in permission_keys:
+        if permission_key.startswith('entity.agent.') and permission_key.endswith('.execute'):
+            private_agent_permissions.add(permission_key)
+    return private_agent_permissions
 
 
 @router.get('/agents/public')
@@ -47,8 +114,18 @@ async def list_public_agents(
     - 僅需通過身份驗證；不再要求 `read_agent`/`chat` 權限，避免一般使用者 403。
     - 僅回傳基本資訊供前端選擇。
     """
-    # 僅驗證登入；不做額外權限限制
-    agents = db.query(Agent).filter(Agent.enabled == True).all()  # noqa: E712
+    # 僅驗證登入；private 仍需綁定實體 execute 權限。
+    private_access_set = _resolve_user_private_agent_access_set(db, current_user)
+    agent_rows = db.query(Agent).filter(Agent.enabled == True).all()  # noqa: E712
+    agents: list[Agent] = []
+    for agent in agent_rows:
+        agent_class = str(getattr(agent, 'agent_class', 'tasked') or 'tasked').strip().lower()
+        if agent_class != 'private':
+            agents.append(agent)
+            continue
+        permission_keys = _build_agent_execute_permission_keys(agent=agent)
+        if any(key in private_access_set for key in permission_keys):
+            agents.append(agent)
     agents = sorted(agents, key=lambda x: (0 if bool(getattr(x, 'is_router', False)) else 1, str(x.name or '')))
     return {
         'agents': [
@@ -71,7 +148,7 @@ async def get_agent_integrations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not _can_read_agent_integrations(current_user):
+    if not _can_read_agent_integrations(current_user, db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -218,7 +295,7 @@ async def get_agent_integrations(
         'function_profile_id': function_profile_id,
         'rag_dataset_ids': rag_dataset_ids,
         'can_read': True,
-        'can_update': bool(check_permission(current_user, 'update_agent')),
+        'can_update': bool(check_permission(current_user, 'update_agent', db=db)),
     }
 
 
@@ -229,7 +306,7 @@ async def update_agent_integrations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -406,7 +483,7 @@ async def list_agent_integrations_audit(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_logs'):
+    if not check_permission(current_user, 'read_logs', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -447,7 +524,7 @@ async def get_agent_prompt(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not check_permission(current_user, 'read_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     try:
@@ -479,7 +556,7 @@ async def update_agent_prompt(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     try:
@@ -504,7 +581,7 @@ async def bind_agent_function_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     try:
@@ -546,14 +623,17 @@ async def bind_agent_function_profile(
     }
 
 
-@router.post('/agents/{agent_id}/rag/datasets')
+@router.post('/agents/{agent_id}/rag/datasets', deprecated=True)
 async def create_agent_private_dataset(
     agent_id: str,
+    response: Response,
     payload: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if response is not None:
+        _mark_agent_private_dataset_api_deprecated(response=response, operation='create', agent_id=agent_id)
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     try:
@@ -583,7 +663,117 @@ async def create_agent_private_dataset(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return {'ok': True, 'dataset': {'id': str(row.id), 'name': row.name, 'scope': row.scope, 'agent_id': str(row.agent_id)}}
+    return {
+        'ok': True,
+        'dataset': {'id': str(row.id), 'name': row.name, 'scope': row.scope, 'agent_id': str(row.agent_id)},
+        'deprecated': True,
+        'replacement': '/api/rag/datasets',
+    }
+
+
+@router.put('/agents/{agent_id}/rag/datasets/{dataset_id}', deprecated=True)
+async def update_agent_private_dataset(
+    agent_id: str,
+    dataset_id: str,
+    response: Response,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if response is not None:
+        _mark_agent_private_dataset_api_deprecated(response=response, operation='update', agent_id=agent_id, dataset_id=dataset_id)
+    if not check_permission(current_user, 'update_agent', db=db):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+        uuid.UUID(str(dataset_id))
+    except ValueError as error:
+        raise not_found_error('RagDataset', dataset_id) from error
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    dataset_row = db.query(RagDataset).filter(
+        RagDataset.id == dataset_id,
+        RagDataset.scope == 'agent_private',
+        RagDataset.agent_id == agent.id,
+    ).first()
+    if dataset_row is None:
+        raise not_found_error('RagDataset', dataset_id)
+
+    if 'name' in (payload or {}):
+        dataset_name = str((payload or {}).get('name') or '').strip()
+        if not dataset_name:
+            raise validation_error('name 不可為空')
+        dataset_row.name = dataset_name
+
+    if 'sensitivity' in (payload or {}):
+        sensitivity = str((payload or {}).get('sensitivity') or '').strip()
+        if sensitivity not in {'normal', 'confidential', 'restricted'}:
+            raise validation_error('sensitivity 僅允許 normal/confidential/restricted')
+        dataset_row.sensitivity = sensitivity
+
+    if 'vector_backend' in (payload or {}):
+        dataset_row.vector_backend = str((payload or {}).get('vector_backend') or '').strip() or None
+    if 'index_name' in (payload or {}):
+        dataset_row.index_name = str((payload or {}).get('index_name') or '').strip() or None
+    if 'enabled' in (payload or {}):
+        dataset_row.enabled = bool((payload or {}).get('enabled'))
+
+    db.commit()
+    db.refresh(dataset_row)
+    return {
+        'ok': True,
+        'dataset': {
+            'id': str(dataset_row.id),
+            'name': dataset_row.name,
+            'scope': dataset_row.scope,
+            'agent_id': str(dataset_row.agent_id),
+            'enabled': bool(dataset_row.enabled),
+        },
+        'deprecated': True,
+        'replacement': '/api/rag/datasets/{dataset_id}',
+    }
+
+
+@router.delete('/agents/{agent_id}/rag/datasets/{dataset_id}', deprecated=True)
+async def delete_agent_private_dataset(
+    agent_id: str,
+    dataset_id: str,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if response is not None:
+        _mark_agent_private_dataset_api_deprecated(response=response, operation='delete', agent_id=agent_id, dataset_id=dataset_id)
+    if not check_permission(current_user, 'update_agent', db=db):
+        from src.api.errors import forbidden_error
+        raise forbidden_error()
+    try:
+        uuid.UUID(str(agent_id))
+        uuid.UUID(str(dataset_id))
+    except ValueError as error:
+        raise not_found_error('RagDataset', dataset_id) from error
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise not_found_error('Agent', agent_id)
+
+    dataset_row = db.query(RagDataset).filter(
+        RagDataset.id == dataset_id,
+        RagDataset.scope == 'agent_private',
+        RagDataset.agent_id == agent.id,
+    ).first()
+    if dataset_row is None:
+        raise not_found_error('RagDataset', dataset_id)
+
+    permission_keys_to_remove = _build_dataset_execute_permission_keys(dataset=dataset_row)
+    db.delete(dataset_row)
+    access_control_service.remove_permission_keys(db, sorted(permission_keys_to_remove))
+    db.commit()
+    return {'ok': True, 'id': str(dataset_id), 'deprecated': True, 'replacement': '/api/rag/datasets/{dataset_id}'}
 
 
 @router.put('/agents/{agent_id}/rag/bindings')
@@ -593,7 +783,7 @@ async def bind_agent_rag_datasets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
     try:
@@ -641,7 +831,7 @@ async def test_agent_mcp(
     current_user: User = Depends(get_current_user),
 ):
     # 使用 update_agent 權限作為最低門檻（設定頁測試）
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -718,7 +908,7 @@ async def test_agent_rag(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -777,7 +967,7 @@ async def list_agents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not check_permission(current_user, 'read_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -814,15 +1004,15 @@ async def create_agent(
 ):
     if model_config is None:
         model_config = {}
-    if not check_permission(current_user, 'create_agent'):
+    if not check_permission(current_user, 'create_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
     if not name or len(name.strip()) == 0:
         raise validation_error('Agent name is required')
     normalized_class = str(agent_class or 'tasked').strip().lower()
-    if normalized_class not in {'master', 'public', 'tasked'}:
-        raise validation_error('agent_class must be master/public/tasked')
+    if normalized_class not in {'master', 'public', 'tasked', 'private'}:
+        raise validation_error('agent_class must be master/public/tasked/private')
     if normalized_class == 'master':
         enabled = True
 
@@ -869,7 +1059,7 @@ async def get_agent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not check_permission(current_user, 'read_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -917,7 +1107,7 @@ async def update_agent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -973,8 +1163,8 @@ async def update_agent(
         agent.model_type = mt
     if agent_class is not None:
         normalized_class = str(agent_class).strip().lower()
-        if normalized_class not in {'master', 'public', 'tasked'}:
-            raise validation_error('agent_class must be master/public/tasked')
+        if normalized_class not in {'master', 'public', 'tasked', 'private'}:
+            raise validation_error('agent_class must be master/public/tasked/private')
         agent.agent_class = normalized_class
         agent.is_router = normalized_class == 'master'
         if normalized_class == 'master':
@@ -1022,7 +1212,7 @@ async def delete_agent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'delete_agent'):
+    if not check_permission(current_user, 'delete_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -1048,7 +1238,7 @@ async def update_agent_llm_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -1096,7 +1286,7 @@ async def test_agent_llm(
     current_user: User = Depends(get_current_user),
 ):
     # 使用 chat 權限作為測試的最低門檻
-    if not check_permission(current_user, 'chat'):
+    if not check_permission(current_user, 'chat', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 
@@ -1143,10 +1333,11 @@ async def test_agent_llm(
 async def health_agent_llm(
     agent_id: str,
     payload: dict | None = Body(None),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     # 使用 chat 權限作為測試的最低門檻
-    if not check_permission(current_user, 'chat'):
+    if not check_permission(current_user, 'chat', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
 

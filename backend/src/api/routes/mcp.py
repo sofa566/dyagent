@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends, Query
 import hashlib
 from typing import Any
+
+from sqlalchemy.orm import Session
+
+from src.core.database import get_db
 from src.models import User
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
@@ -12,8 +16,11 @@ router = APIRouter()
 
 
 @router.get('/mcp/servers')
-async def list_mcp_servers(current_user: User = Depends(get_current_user)):
-    if not check_permission(current_user, 'read_agent'):
+async def list_mcp_servers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not check_permission(current_user, 'read_agent', db=db):
         raise forbidden_error()
 
     urls = [u.strip() for u in (settings.MCP_WHITELIST or '').split(',') if u.strip()]
@@ -28,9 +35,10 @@ async def list_mcp_servers(current_user: User = Depends(get_current_user)):
 async def connect_mcp(
     server_url: str,
     auth_token: str | None = None,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'update_agent'):
+    if not check_permission(current_user, 'update_agent', db=db):
         raise forbidden_error()
 
     client = MCPClient()
@@ -51,9 +59,10 @@ async def connect_mcp(
 async def list_mcp_tools(
     server_id: str | None = Query(None),
     base_url: str | None = Query(None),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not check_permission(current_user, 'read_agent'):
+    if not check_permission(current_user, 'read_agent', db=db):
         raise forbidden_error()
 
     url = None

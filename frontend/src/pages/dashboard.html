@@ -6,6 +6,11 @@
   <title>儀表板 - dyagent</title>
   <link rel="stylesheet" href="/styles/main.css">
   <style>
+    .tab-bar { display: inline-flex; border: 1px solid var(--border-color); border-radius: var(--radius); overflow: hidden; margin: 8px 0 14px; }
+    .tab-btn { border: none; background: #fff; color: var(--text-secondary); padding: 8px 14px; cursor: pointer; }
+    .tab-btn.active { background: var(--primary-color); color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
     .stat { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; background: #fff; }
     .stat .label { color: var(--text-secondary); font-size: 0.85rem; }
@@ -19,6 +24,35 @@
     table.metrics th, table.metrics td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
     table.metrics th { color: var(--text-secondary); font-weight: 600; }
     table.metrics th.num, table.metrics td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    table.logs { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    table.logs th, table.logs td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
+    table.logs th { color: var(--text-secondary); font-weight: 600; }
+    .audit-filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+    .audit-filters label { margin-bottom: 0; font-weight: 500; color: var(--text-primary); }
+    .audit-filters select,
+    #level-filter {
+      padding: 0.75rem;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      background: #fff;
+      box-sizing: border-box;
+    }
+    .audit-filters select { min-width: 150px; }
+    .audit-filters select:focus,
+    #level-filter:focus {
+      outline: none;
+      border-color: var(--primary-color);
+    }
+    .pill-dangerous { color:#991b1b; font-weight:600; }
+    .pill-restricted { color:#b45309; font-weight:600; }
+    .pill-safe { color:#166534; font-weight:600; }
+    .audit-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:8px; margin-bottom:10px; }
+    .audit-detail-toggle { cursor:pointer; color: var(--primary-color); text-decoration: underline; }
+    .audit-detail-row td { background:#f8fafc; }
+    .audit-detail-pre { margin:0; white-space:pre-wrap; word-break:break-word; font-size:0.83rem; }
+    .audit-anomaly-ok { color:#166534; font-weight:600; margin-bottom:8px; }
+    .audit-anomaly-alert { color:#991b1b; font-weight:700; margin-bottom:8px; }
   </style>
 </head>
 <body>
@@ -35,63 +69,112 @@
       </div>
     </nav>
     <main class="container">
-      <h2>系統監控儀表板</h2>
-      <div id="user-info" class="card">
-        <p>歡迎使用 dyagent</p>
+      <h2>系統監控中心</h2>
+
+      <div class="tab-bar" id="dashboard-tab-bar">
+        <button id="tab-monitor" class="tab-btn active" type="button">系統監控儀表板</button>
+        <button id="tab-logs" class="tab-btn" type="button">系統日誌</button>
       </div>
 
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <strong>即時狀態</strong>
-          <div class="mono" id="updated-at">更新中...</div>
+      <section id="monitor-panel" class="tab-panel active">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <strong>即時狀態</strong>
+            <div class="mono" id="updated-at">更新中...</div>
+          </div>
+          <div id="services" class="stats-grid"></div>
         </div>
-        <div id="services" class="stats-grid"></div>
-      </div>
 
-      <div class="card">
-        <h3 class="section-title">系統資源</h3>
-        <div id="resources" class="stats-grid"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">系統資源</h3>
+          <div id="resources" class="stats-grid"></div>
+        </div>
 
-      <div class="card">
-        <h3 class="section-title">代理者 / 使用者 / 流量</h3>
-        <div id="core-stats" class="stats-grid"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">代理者 / 使用者 / 流量</h3>
+          <div id="core-stats" class="stats-grid"></div>
+        </div>
 
-      <div class="card">
-        <h3 class="section-title">LLM / ReAct 使用狀態（近 24 小時）</h3>
-        <div id="llm-stats" class="stats-grid"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">LLM / ReAct 使用狀態（近 24 小時）</h3>
+          <div id="llm-stats" class="stats-grid"></div>
+        </div>
 
-      <div class="card">
-        <h3 class="section-title">代理者 Token / Cost（近 24 小時）</h3>
-        <div id="agent-llm-breakdown" class="table-wrap"></div>
-      </div>
+        <div class="card">
+          <h3 class="section-title">代理者 Token / Cost（近 24 小時）</h3>
+          <div id="agent-llm-breakdown" class="table-wrap"></div>
+        </div>
 
-      <div class="actions">
-        <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
-        <a href="/pages/chat.html" class="btn btn-primary">前往聊天</a>
-        <button id="refresh-btn" class="btn btn-secondary" type="button">立即刷新</button>
-      </div>
+        <div class="card">
+          <h3 class="section-title">工具策略稽核（近 7 天）</h3>
+          <div class="audit-filters">
+            <label for="audit-status-filter">狀態：</label>
+            <select id="audit-status-filter">
+              <option value="">全部</option>
+              <option value="denied">denied</option>
+              <option value="success">success</option>
+              <option value="error">error</option>
+            </select>
+            <label for="audit-risk-filter">風險：</label>
+            <select id="audit-risk-filter">
+              <option value="">全部</option>
+              <option value="dangerous">dangerous</option>
+              <option value="restricted">restricted</option>
+              <option value="safe">safe</option>
+            </select>
+            <button id="audit-refresh-btn" class="btn btn-secondary" type="button">更新稽核</button>
+          </div>
+          <div id="tool-policy-audit-summary" class="audit-summary-grid"></div>
+          <div id="tool-policy-anomaly" class="audit-anomaly-ok">近 24h 突增：尚未載入</div>
+          <div id="tool-policy-top-risk-tools" class="mono" style="margin-bottom:8px;"></div>
+          <div id="tool-policy-audits" class="table-wrap"></div>
+        </div>
+
+        <div class="actions">
+          <a href="/pages/agent-list.html" class="btn btn-secondary">管理代理者</a>
+          <a href="/pages/chat.html" class="btn btn-primary">前往聊天</a>
+          <button id="refresh-btn" class="btn btn-secondary" type="button">立即刷新</button>
+        </div>
+      </section>
+
+      <section id="logs-panel" class="tab-panel">
+        <div class="card">
+          <div class="form-group">
+            <label for="level-filter">日誌級別：</label>
+            <select id="level-filter">
+              <option value="">全部</option>
+              <option value="debug">Debug</option>
+              <option value="info">Info</option>
+              <option value="warning">Warning</option>
+              <option value="error">Error</option>
+            </select>
+          </div>
+        </div>
+        <div id="logs-list" class="card"><p>載入中...</p></div>
+      </section>
     </main>
   </div>
   <script type="module">
-    import { api, auth } from '/main.js';
+    import { api, auth, getCapabilities, hasAnyPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
     }
 
-    const user = auth.getUser();
-    if (!user || user.role !== 'admin') {
-      window.location.href = '/pages/chat.html';
-    }
+    let logsLoaded = false;
+    let hasMonitorPermission = false;
+    let hasLogsPermission = false;
+    let hasLoadedToolAudits = false;
+    let latestToolPolicyOverview = null;
 
-    if (user && user.role === 'admin') {
-      document.getElementById('user-info').innerHTML = `
-        <p>歡迎，<strong>${user.username}</strong>！</p>
-        <span class="badge badge-admin">admin</span>
-      `;
+    function setActiveTab(tabName) {
+      document.getElementById('tab-monitor').classList.toggle('active', tabName === 'monitor');
+      document.getElementById('tab-logs').classList.toggle('active', tabName === 'logs');
+      document.getElementById('monitor-panel').classList.toggle('active', tabName === 'monitor');
+      document.getElementById('logs-panel').classList.toggle('active', tabName === 'logs');
+      if (tabName === 'logs' && hasLogsPermission && !logsLoaded) {
+        loadLogs();
+      }
     }
 
     function mkStat(label, value) {
@@ -110,6 +193,7 @@
       const users = data.users || {};
       const traffic = data.traffic || {};
       const llm = data.llm || {};
+      latestToolPolicyOverview = (data && typeof data.tool_policy === 'object' && data.tool_policy) ? data.tool_policy : null;
       const llmBreakdown = Array.isArray(llm.agent_breakdown_24h) ? llm.agent_breakdown_24h : [];
 
       document.getElementById('updated-at').textContent =
@@ -192,6 +276,189 @@
       }
     }
 
+    function getRiskClass(riskLevel) {
+      const value = String(riskLevel || '').trim();
+      if (value === 'dangerous') return 'pill-dangerous';
+      if (value === 'restricted') return 'pill-restricted';
+      return 'pill-safe';
+    }
+
+    function escapeHtml(rawText) {
+      return String(rawText || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function buildAuditSummaryRows(rows, toolPolicyOverview) {
+      const overview = (toolPolicyOverview && typeof toolPolicyOverview === 'object') ? toolPolicyOverview : null;
+      if (overview) {
+        const deniedRate = Number(overview.denied_rate_7d || 0);
+        const highRiskRate = Number(overview.high_risk_rate_7d || 0);
+        const dangerousCount = Number(overview.dangerous_7d || 0);
+        const restrictedCount = Number(overview.restricted_7d || 0);
+        const denied24h = Number(overview.denied_24h || 0);
+        const deniedPrev24h = Number(overview.denied_prev_24h || 0);
+        return [
+          mkStat('稽核筆數', Number(overview.total_7d || 0)),
+          mkStat('拒絕率', `${deniedRate.toFixed(1)}%`),
+          mkStat('高風險占比', `${highRiskRate.toFixed(1)}%`),
+          mkStat('dangerous / restricted', `${dangerousCount} / ${restrictedCount}`),
+          mkStat('拒絕（近24h/前24h）', `${denied24h} / ${deniedPrev24h}`),
+        ];
+      }
+      const totalCount = rows.length;
+      const deniedCount = rows.filter((row) => String(row.status || '') === 'denied').length;
+      const dangerousCount = rows.filter((row) => String(row.risk_level || '') === 'dangerous').length;
+      const restrictedCount = rows.filter((row) => String(row.risk_level || '') === 'restricted').length;
+      const deniedRate = totalCount > 0 ? ((deniedCount / totalCount) * 100) : 0;
+      const highRiskRate = totalCount > 0 ? (((dangerousCount + restrictedCount) / totalCount) * 100) : 0;
+      return [
+        mkStat('稽核筆數', totalCount),
+        mkStat('拒絕率', `${deniedRate.toFixed(1)}%`),
+        mkStat('高風險占比', `${highRiskRate.toFixed(1)}%`),
+        mkStat('dangerous / restricted', `${dangerousCount} / ${restrictedCount}`),
+        mkStat('拒絕（近24h/前24h）', '-'),
+      ];
+    }
+
+    function renderToolPolicyAnomaly(toolPolicyOverview) {
+      const container = document.getElementById('tool-policy-anomaly');
+      const overview = (toolPolicyOverview && typeof toolPolicyOverview === 'object') ? toolPolicyOverview : null;
+      if (!overview) {
+        container.className = 'audit-anomaly-ok';
+        container.textContent = '近 24h 突增：無資料';
+        return;
+      }
+      const isAnomaly = Boolean(overview.anomaly_spike_24h);
+      const denied24h = Number(overview.denied_24h || 0);
+      const deniedPrev24h = Number(overview.denied_prev_24h || 0);
+      const ratioRaw = overview.denied_ratio_24h_vs_prev_24h;
+      const ratioText = (typeof ratioRaw === 'number' && Number.isFinite(ratioRaw)) ? `${ratioRaw.toFixed(2)}x` : 'n/a';
+      const delta = Number(overview.denied_delta_24h || 0);
+      const deltaSign = delta > 0 ? '+' : '';
+      if (isAnomaly) {
+        container.className = 'audit-anomaly-alert';
+        container.textContent = `近 24h 突增告警：拒絕 ${denied24h}（前24h ${deniedPrev24h}，變化 ${deltaSign}${delta}，倍率 ${ratioText}）`;
+      } else {
+        container.className = 'audit-anomaly-ok';
+        container.textContent = `近 24h 無異常突增：拒絕 ${denied24h}（前24h ${deniedPrev24h}，變化 ${deltaSign}${delta}，倍率 ${ratioText}）`;
+      }
+    }
+
+    function renderTopRiskTools(rows, toolPolicyOverview) {
+      const container = document.getElementById('tool-policy-top-risk-tools');
+      const overview = (toolPolicyOverview && typeof toolPolicyOverview === 'object') ? toolPolicyOverview : null;
+      if (overview && Array.isArray(overview.top_risk_tools_7d)) {
+        const topItemsFromOverview = overview.top_risk_tools_7d
+          .filter((item) => item && typeof item === 'object')
+          .map((item, index) => `${index + 1}. ${String(item.tool_name || '<unknown>')}（${Number(item.count || 0)}）`)
+          .slice(0, 5);
+        if (topItemsFromOverview.length > 0) {
+          container.textContent = `高風險工具 Top 5：${topItemsFromOverview.join('、')}`;
+          return;
+        }
+      }
+      const riskRows = rows.filter((row) => {
+        const risk = String(row.risk_level || '');
+        return risk === 'dangerous' || risk === 'restricted';
+      });
+      if (!riskRows.length) {
+        container.textContent = '高風險工具 Top N：目前無資料';
+        return;
+      }
+      const counterMap = new Map();
+      for (const row of riskRows) {
+        const toolName = String(row.tool_name || '-');
+        counterMap.set(toolName, Number(counterMap.get(toolName) || 0) + 1);
+      }
+      const topItems = Array.from(counterMap.entries())
+        .sort((left, right) => Number(right[1]) - Number(left[1]))
+        .slice(0, 5)
+        .map(([toolName, count], index) => `${index + 1}. ${toolName}（${count}）`);
+      container.textContent = `高風險工具 Top 5：${topItems.join('、')}`;
+    }
+
+    function renderToolExecutionAudits(payload) {
+      const summaryContainer = document.getElementById('tool-policy-audit-summary');
+      const container = document.getElementById('tool-policy-audits');
+      const rows = Array.isArray(payload.items) ? payload.items : [];
+      summaryContainer.innerHTML = buildAuditSummaryRows(rows, latestToolPolicyOverview).join('');
+      renderToolPolicyAnomaly(latestToolPolicyOverview);
+      renderTopRiskTools(rows, latestToolPolicyOverview);
+      if (!rows.length) {
+        container.innerHTML = '<div class="mono">目前無符合條件的工具稽核紀錄</div>';
+        return;
+      }
+      const htmlRows = rows.map((row) => {
+        const createdAt = row.created_at ? new Date(row.created_at).toLocaleString() : '-';
+        const risk = String(row.risk_level || '-');
+        const status = String(row.status || '-');
+        const denyReason = String(row.deny_reason || '') || '-';
+        const userText = row.user_id ? `${String(row.user_id).slice(0, 8)}...` : '-';
+        const costText = (typeof row.cost_estimate === 'number' && Number.isFinite(row.cost_estimate)) ? Number(row.cost_estimate).toFixed(6) : '-';
+        const detailText = JSON.stringify(row.details || {}, null, 2);
+        const payloadText = JSON.stringify(row.payload_keys || [], null, 2);
+        const detailBlock = `{\n  "details": ${detailText},\n  "payload_keys": ${payloadText}\n}`;
+        const escapedDetailBlock = escapeHtml(detailBlock);
+        const detailRowId = `audit-detail-${String(row.id || '').replace(/[^a-zA-Z0-9_-]/g, '')}`;
+        return `<tr>
+          <td>${createdAt}</td>
+          <td>${row.tool_name || '-'}</td>
+          <td><span class="${getRiskClass(risk)}">${risk}</span></td>
+          <td>${status}</td>
+          <td>${denyReason}</td>
+          <td>${userText}</td>
+          <td class="num">${costText}</td>
+          <td><span class="audit-detail-toggle" data-detail-row-id="${detailRowId}">查看</span></td>
+        </tr>
+        <tr id="${detailRowId}" class="audit-detail-row" style="display:none;">
+          <td colspan="8"><pre class="audit-detail-pre">${escapedDetailBlock}</pre></td>
+        </tr>`;
+      }).join('');
+      container.innerHTML = `
+        <table class="metrics">
+          <thead>
+            <tr>
+              <th>時間</th>
+              <th>工具</th>
+              <th>風險</th>
+              <th>狀態</th>
+              <th>拒絕原因</th>
+              <th>使用者</th>
+              <th class="num">成本估算</th>
+              <th>詳情</th>
+            </tr>
+          </thead>
+          <tbody>${htmlRows}</tbody>
+        </table>
+      `;
+      container.querySelectorAll('[data-detail-row-id]').forEach((toggleNode) => {
+        toggleNode.addEventListener('click', () => {
+          const rowId = String(toggleNode.getAttribute('data-detail-row-id') || '').trim();
+          if (!rowId) return;
+          const targetRow = document.getElementById(rowId);
+          if (!targetRow) return;
+          const isHidden = targetRow.style.display === 'none';
+          targetRow.style.display = isHidden ? '' : 'none';
+          toggleNode.textContent = isHidden ? '收合' : '查看';
+        });
+      });
+    }
+
+    async function loadToolExecutionAudits() {
+      const statusFilter = document.getElementById('audit-status-filter').value;
+      const riskFilter = document.getElementById('audit-risk-filter').value;
+      const query = new URLSearchParams({ days: '7', limit: '20' });
+      if (statusFilter) query.set('status', statusFilter);
+      if (riskFilter) query.set('risk_level', riskFilter);
+      const payload = await api.get(`/admin/tool-execution-audits?${query.toString()}`);
+      renderToolExecutionAudits(payload || {});
+      hasLoadedToolAudits = true;
+    }
+
     async function loadOverview() {
       const data = await api.get('/admin/dashboard/overview');
       renderOverview(data);
@@ -200,6 +467,7 @@
     async function refreshWithGuard() {
       try {
         await loadOverview();
+        await loadToolExecutionAudits();
       } catch (e) {
         document.getElementById('updated-at').textContent = `載入失敗：${(e && e.message) || 'unknown'}`;
       }
@@ -247,8 +515,104 @@
       }
     }
 
-    document.getElementById('refresh-btn').addEventListener('click', refreshWithGuard);
-    runRealtimeOrFallback();
+    async function loadLogs(level = '') {
+      try {
+        let url = '/logs?limit=50';
+        if (level) {
+          url += `&level=${level}`;
+        }
+        const response = await api.get(url);
+        const container = document.getElementById('logs-list');
+
+        if (!Array.isArray(response.logs) || response.logs.length === 0) {
+          container.innerHTML = '<p>尚無日誌記錄</p>';
+          logsLoaded = true;
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="table-wrap">
+            <table class="logs">
+              <thead>
+                <tr>
+                  <th>時間</th>
+                  <th>級別</th>
+                  <th>動作</th>
+                  <th>資源類型</th>
+                  <th>使用者 ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${response.logs.map(log => `
+                  <tr>
+                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td>${log.level}</td>
+                    <td>${log.action}</td>
+                    <td>${log.resource_type || '-'}</td>
+                    <td>${log.user_id ? `${String(log.user_id).substring(0, 8)}...` : '-'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+        logsLoaded = true;
+      } catch (e) {
+        document.getElementById('logs-list').innerHTML = `<p>載入失敗：${(e && e.message) || 'unknown'}</p>`;
+      }
+    }
+
+    async function initializeDashboardPage() {
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      hasMonitorPermission = hasAnyPermission(capabilities, ['dashboard.read']);
+      hasLogsPermission = hasAnyPermission(capabilities, ['logs.read']);
+      if (!hasMonitorPermission && !hasLogsPermission) {
+        window.location.href = '/pages/chat.html';
+        return;
+      }
+
+      const monitorTab = document.getElementById('tab-monitor');
+      const logsTab = document.getElementById('tab-logs');
+
+      if (!hasMonitorPermission) {
+        monitorTab.style.display = 'none';
+        document.getElementById('monitor-panel').classList.remove('active');
+      } else {
+        monitorTab.addEventListener('click', () => setActiveTab('monitor'));
+        document.getElementById('refresh-btn').addEventListener('click', refreshWithGuard);
+        document.getElementById('audit-refresh-btn').addEventListener('click', async () => {
+          try {
+            await loadToolExecutionAudits();
+          } catch (error) {
+            document.getElementById('tool-policy-audits').innerHTML = `<div class="mono">稽核載入失敗：${(error && error.message) || 'unknown'}</div>`;
+          }
+        });
+        document.getElementById('audit-status-filter').addEventListener('change', async () => {
+          if (!hasLoadedToolAudits) return;
+          await loadToolExecutionAudits();
+        });
+        document.getElementById('audit-risk-filter').addEventListener('change', async () => {
+          if (!hasLoadedToolAudits) return;
+          await loadToolExecutionAudits();
+        });
+        await refreshWithGuard();
+        runRealtimeOrFallback();
+      }
+
+      if (!hasLogsPermission) {
+        logsTab.style.display = 'none';
+        document.getElementById('logs-panel').classList.remove('active');
+      } else {
+        logsTab.addEventListener('click', () => setActiveTab('logs'));
+        document.getElementById('level-filter').addEventListener('change', (event) => {
+          loadLogs(event.target.value);
+        });
+      }
+
+      setActiveTab(hasMonitorPermission ? 'monitor' : 'logs');
+    }
+
+    initializeDashboardPage();
 
     // 登出事件由 /main.js 統一掛載，並提供確認視窗
   </script>
