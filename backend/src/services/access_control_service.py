@@ -21,7 +21,6 @@ from src.models import (
     UserRoleBinding,
 )
 
-
 logger = get_logger(__name__)
 
 
@@ -342,6 +341,9 @@ class AccessControlService:
                 continue
             entity_type = str(key_parts[1])
             entity_identifier = str(key_parts[2])
+            if entity_type not in {'dataset', 'agent'}:
+                removable_permission_keys.append(key)
+                continue
             try:
                 uuid.UUID(entity_identifier)
             except Exception:

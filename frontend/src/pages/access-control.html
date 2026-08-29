@@ -865,13 +865,13 @@
       if (String(permissionKey || '') === 'read_logs') {
         return 'logs.read';
       }
-      const matched = String(permissionKey || '').match(/^entity\.(agent|dataset|skill)\.([^.]+)\.execute$/);
+      const matched = String(permissionKey || '').match(/^entity\.(agent|dataset)\.([^.]+)\.execute$/);
       if (!matched) {
         return String(permissionKey || '');
       }
       const entityType = String(matched[1]);
       const entityId = String(matched[2]);
-      const deletedTypeLabel = entityType === 'agent' ? '代理者' : entityType === 'dataset' ? '資料集' : '技能';
+      const deletedTypeLabel = entityType === 'agent' ? '代理者' : '資料集';
       const entityName = entityNameMap.get(`${entityType}:${entityId}`) || `已刪除${deletedTypeLabel}`;
       return `entity.${entityType}.${entityName}.execute`;
     }

@@ -557,10 +557,14 @@
       }
       try {
         if (editingPrivateId) {
-          await api.put(`/agents/${encodeURIComponent(agentId)}/rag/datasets/${encodeURIComponent(editingPrivateId)}`, payload);
+          await api.put(`/rag/datasets/${encodeURIComponent(editingPrivateId)}`, payload);
           showSuccess('已更新私有資料集');
         } else {
-          await api.post(`/agents/${encodeURIComponent(agentId)}/rag/datasets`, payload);
+          await api.post('/rag/datasets', {
+            ...payload,
+            scope: 'agent_private',
+            agent_id: String(agentId),
+          });
           showSuccess('已建立私有資料集');
         }
         closeModal(datasetModal);
@@ -810,7 +814,7 @@
     document.getElementById('delete-confirm').addEventListener('click', async () => {
       if (!deleteTargetId) return;
       try {
-        await api.delete(`/agents/${encodeURIComponent(agentId)}/rag/datasets/${encodeURIComponent(deleteTargetId)}`);
+        await api.delete(`/rag/datasets/${encodeURIComponent(deleteTargetId)}`);
         showSuccess('已刪除私有資料集');
         closeModal(deleteModal);
         await loadPrivateDatasets();

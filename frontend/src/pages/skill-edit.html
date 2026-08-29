@@ -132,7 +132,7 @@
         <input id="policy_allow_scopes" type="text" placeholder="master,public,tasked,private">
         <small style="color:var(--text-secondary);">留白時會使用預設：master、public、tasked、private</small>
       </div>
-      <div class="form-grid">
+      <div class="form-grid-3">
         <div class="form-group">
           <label for="policy_daily_calls">每位使用者每日上限（可選）</label>
           <input id="policy_daily_calls" type="number" min="1" step="1" placeholder="例如：50">
@@ -140,6 +140,20 @@
         <div class="form-group">
           <label for="policy_monthly_calls">每位使用者每月上限（可選）</label>
           <input id="policy_monthly_calls" type="number" min="1" step="1" placeholder="例如：500">
+        </div>
+        <div class="form-group">
+          <label for="policy_monthly_cost_usd">每位使用者每月成本上限 USD（可選）</label>
+          <input id="policy_monthly_cost_usd" type="number" min="0.01" step="0.01" placeholder="例如：20.00">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="policy_group_daily_calls">每群組每日上限（可選）</label>
+          <input id="policy_group_daily_calls" type="number" min="1" step="1" placeholder="例如：200">
+        </div>
+        <div class="form-group">
+          <label for="policy_group_monthly_calls">每群組每月上限（可選）</label>
+          <input id="policy_group_monthly_calls" type="number" min="1" step="1" placeholder="例如：3000">
         </div>
       </div>
     </section>
@@ -391,12 +405,26 @@
       return parsedValue;
     }
 
+    function parsePositiveNumberOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number(normalizedValue);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正數`);
+      return parsedValue;
+    }
+
     function parseExecutionPolicy() {
       const rateLimitProfile = {};
       const dailyLimit = parsePositiveIntOrNull($('policy_daily_calls').value, '每日上限');
       const monthlyLimit = parsePositiveIntOrNull($('policy_monthly_calls').value, '每月上限');
+      const groupDailyLimit = parsePositiveIntOrNull($('policy_group_daily_calls').value, '群組每日上限');
+      const groupMonthlyLimit = parsePositiveIntOrNull($('policy_group_monthly_calls').value, '群組每月上限');
+      const monthlyCostLimitUsd = parsePositiveNumberOrNull($('policy_monthly_cost_usd').value, '每月成本上限 USD');
       if (dailyLimit !== null) rateLimitProfile.per_user_daily_calls = dailyLimit;
       if (monthlyLimit !== null) rateLimitProfile.per_user_monthly_calls = monthlyLimit;
+      if (groupDailyLimit !== null) rateLimitProfile.per_group_daily_calls = groupDailyLimit;
+      if (groupMonthlyLimit !== null) rateLimitProfile.per_group_monthly_calls = groupMonthlyLimit;
+      if (monthlyCostLimitUsd !== null) rateLimitProfile.monthly_cost_usd = monthlyCostLimitUsd;
       return {
         risk_level: $('policy_risk_level').value || 'safe',
         cost_class: $('policy_cost_class').value || 'free',
@@ -416,6 +444,9 @@
       $('policy_allow_scopes').value = allowScopes.map((scopeItem) => String(scopeItem || '').trim()).filter(Boolean).join(',');
       $('policy_daily_calls').value = rateLimitProfile.per_user_daily_calls ? String(rateLimitProfile.per_user_daily_calls) : '';
       $('policy_monthly_calls').value = rateLimitProfile.per_user_monthly_calls ? String(rateLimitProfile.per_user_monthly_calls) : '';
+      $('policy_group_daily_calls').value = rateLimitProfile.per_group_daily_calls ? String(rateLimitProfile.per_group_daily_calls) : '';
+      $('policy_group_monthly_calls').value = rateLimitProfile.per_group_monthly_calls ? String(rateLimitProfile.per_group_monthly_calls) : '';
+      $('policy_monthly_cost_usd').value = rateLimitProfile.monthly_cost_usd ? String(rateLimitProfile.monthly_cost_usd) : '';
     }
 
     // ========== 類型切換 ==========

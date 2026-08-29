@@ -297,6 +297,20 @@
                 <input id="policy-monthly-calls" type="number" min="1" step="1" placeholder="例如：500">
               </div>
             </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="policy-group-daily-calls">每群組每日上限（可選）</label>
+                <input id="policy-group-daily-calls" type="number" min="1" step="1" placeholder="例如：200">
+              </div>
+              <div class="form-group">
+                <label for="policy-group-monthly-calls">每群組每月上限（可選）</label>
+                <input id="policy-group-monthly-calls" type="number" min="1" step="1" placeholder="例如：3000">
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="policy-monthly-cost-usd">每位使用者每月成本上限 USD（可選）</label>
+              <input id="policy-monthly-cost-usd" type="number" min="0.01" step="0.01" placeholder="例如：20.00">
+            </div>
           </div>
 
           <!-- 格式選擇 -->
@@ -454,6 +468,9 @@
     const policyAllowScopesInput = $('policy-allow-scopes');
     const policyDailyCallsInput = $('policy-daily-calls');
     const policyMonthlyCallsInput = $('policy-monthly-calls');
+    const policyGroupDailyCallsInput = $('policy-group-daily-calls');
+    const policyGroupMonthlyCallsInput = $('policy-group-monthly-calls');
+    const policyMonthlyCostUsdInput = $('policy-monthly-cost-usd');
 
     let editingId = '';
 
@@ -543,12 +560,26 @@
       return parsedValue;
     }
 
+    function parsePositiveNumberOrNull(rawValue, labelText) {
+      const normalizedValue = String(rawValue || '').trim();
+      if (!normalizedValue) return null;
+      const parsedValue = Number(normalizedValue);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) throw new Error(`${labelText} 需為正數`);
+      return parsedValue;
+    }
+
     function parseExecutionPolicy() {
       const rateLimitProfile = {};
       const dailyLimit = parsePositiveIntOrNull(policyDailyCallsInput.value, '每日上限');
       const monthlyLimit = parsePositiveIntOrNull(policyMonthlyCallsInput.value, '每月上限');
+      const groupDailyLimit = parsePositiveIntOrNull(policyGroupDailyCallsInput.value, '群組每日上限');
+      const groupMonthlyLimit = parsePositiveIntOrNull(policyGroupMonthlyCallsInput.value, '群組每月上限');
+      const monthlyCostLimitUsd = parsePositiveNumberOrNull(policyMonthlyCostUsdInput.value, '每月成本上限 USD');
       if (dailyLimit !== null) rateLimitProfile.per_user_daily_calls = dailyLimit;
       if (monthlyLimit !== null) rateLimitProfile.per_user_monthly_calls = monthlyLimit;
+      if (groupDailyLimit !== null) rateLimitProfile.per_group_daily_calls = groupDailyLimit;
+      if (groupMonthlyLimit !== null) rateLimitProfile.per_group_monthly_calls = groupMonthlyLimit;
+      if (monthlyCostLimitUsd !== null) rateLimitProfile.monthly_cost_usd = monthlyCostLimitUsd;
       return {
         risk_level: policyRiskLevelInput.value || 'safe',
         cost_class: policyCostClassInput.value || 'free',
@@ -568,6 +599,9 @@
       policyAllowScopesInput.value = allowScopes.map((scopeItem) => String(scopeItem || '').trim()).filter(Boolean).join(',');
       policyDailyCallsInput.value = rateLimitProfile.per_user_daily_calls ? String(rateLimitProfile.per_user_daily_calls) : '';
       policyMonthlyCallsInput.value = rateLimitProfile.per_user_monthly_calls ? String(rateLimitProfile.per_user_monthly_calls) : '';
+      policyGroupDailyCallsInput.value = rateLimitProfile.per_group_daily_calls ? String(rateLimitProfile.per_group_daily_calls) : '';
+      policyGroupMonthlyCallsInput.value = rateLimitProfile.per_group_monthly_calls ? String(rateLimitProfile.per_group_monthly_calls) : '';
+      policyMonthlyCostUsdInput.value = rateLimitProfile.monthly_cost_usd ? String(rateLimitProfile.monthly_cost_usd) : '';
     }
 
     // JSON 驗證

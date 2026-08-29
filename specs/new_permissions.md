@@ -356,9 +356,9 @@
 - [x] `dangerous` 工具二次確認（前後端 MVP 流程）。
 - [x] 儀表板接入策略統計（7 天統計、Top 風險工具、24h 突增指標）。
 - [x] 將二次確認升級為一次性確認 token（含 TTL 與防重放），取代目前 `_policy_confirmed` 單旗標。
-- [ ] 補齊群組層與成本層配額（`per_group_*`、`monthly_cost_usd`）與對應拒絕碼。
+- [x] 補齊群組層與成本層配額（`per_group_*`、`monthly_cost_usd`）與對應拒絕碼。
 - [x] 為策略層補齊管理 UI（MCP/Skills/Functions 編輯頁可直接設定 `execution_policy`，不只 API）。
 - [x] 儀表板工具策略稽核篩選下拉樣式統一（對齊 MCP 編輯頁表單風格）。
-- [ ] 將舊私有資料集 API（`/agents/{agent_id}/rag/datasets*`）標記 deprecated 並逐步退場。
-- [ ] 清理工具執行 RBAC 舊鍵與相容邏輯（相容期結束後移除，避免治理混淆）。
-- [ ] 補齊策略稽核與異常告警文件（操作手冊、拒絕碼對照、回滾流程）。
+- [x] 將舊私有資料集 API（`/agents/{agent_id}/rag/datasets*`）標記 deprecated 並逐步退場。
+- [x] 清理工具執行 RBAC 舊鍵與相容邏輯（相容期結束後移除，避免治理混淆）。
+- [x] 補齊策略稽核與異常告警文件（操作手冊、拒絕碼對照、回滾流程）。
