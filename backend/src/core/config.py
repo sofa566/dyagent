@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     CHAT_HISTORY_MAX_MESSAGES: int = 8
     CHAT_HISTORY_MAX_TOKENS: int = 2500
     CHAT_HISTORY_INCLUDE_TOOL_TEXT: bool = False
+    CHAT_RAG_DEFAULT_TOP_K: int = 5
 
     # 記憶層設定
     # AGENT_MEMORY_PROVIDER: off | mock | mem0_oss | mem0_platform

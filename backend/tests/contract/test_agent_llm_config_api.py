@@ -14,7 +14,6 @@ def test_agent_integrations_get_contract_fields(client, db, admin_token, agent):
     db.add_all([skill, mcp, dataset])
     db.commit()
     agent.model_config = {'skill_ids': [str(skill.id)], 'mcp_ids': [str(mcp.id)]}
-    agent.rag_config = {'enabled': True, 'sources': ['kb'], 'topK': 5, 'global_dataset_ids': [str(dataset.id)], 'private_dataset_ids': []}
     db.commit()
 
     response = client.get(f'/api/agents/{agent.id}/integrations', headers={'Authorization': f'Bearer {admin_token}'})
@@ -26,6 +25,9 @@ def test_agent_integrations_get_contract_fields(client, db, admin_token, agent):
     assert isinstance(data.get('rag_config'), dict)
     assert isinstance(data.get('can_update'), bool)
     assert data.get('can_read') is True
+    assert data.get('mcp_ids') == []
+    assert data.get('skill_ids') == []
+    assert data.get('rag_config') == {}
 
 
 def test_agent_integrations_put_contract_fields(client, db, admin_token, agent):
@@ -48,18 +50,18 @@ def test_agent_integrations_put_contract_fields(client, db, admin_token, agent):
 
     assert response.status_code == 200
     data = response.json()
-    assert data['mcp_ids'] == [str(mcp.id)]
-    assert data['skill_ids'] == [str(skill.id)]
-    assert data['rag_config']['topK'] == 7
+    assert data['mcp_ids'] == []
+    assert data['skill_ids'] == []
+    assert data['rag_config'] == {}
 
 
-def test_agent_integrations_put_reject_invalid_topk(client, admin_token, agent):
+def test_agent_integrations_put_ignores_legacy_rag_config(client, admin_token, agent):
     response = client.put(
         f'/api/agents/{agent.id}/integrations',
         headers={'Authorization': f'Bearer {admin_token}'},
         json={'rag_config': {'enabled': True, 'sources': [], 'topK': 99}},
     )
-    assert response.status_code == 400
+    assert response.status_code == 200
 
 
 def test_agent_mcp_test_supports_mcp_id(client, db, admin_token, agent):

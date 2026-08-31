@@ -161,15 +161,6 @@ async def get_agent_integrations(
     if not agent:
         raise not_found_error('Agent', agent_id)
 
-    def _default_mcp(value):
-        # 正規化為 list 以簡化前端處理
-        if isinstance(value, list):
-            return value
-        if isinstance(value, dict):
-            # 若為物件，視為 map，取值為陣列
-            return list(value.values())
-        return []
-
     # 讀取 functions_definition_template（回退相容 toolcall_guide）
     tc_guide = ''
     provider = ''
@@ -195,68 +186,31 @@ async def get_agent_integrations(
         provider = ''
         skill_examples = {}
 
-    # 解析 skills 名單：優先 skill_ids，再合併 agent.skills 去重；同時提供 schema 摘要
+    # 工具改為全域可用；此處回傳可用技能清單與 schema 供前端顯示。
     skills_out: list[str] = []
     skill_schemas: dict[str, dict] = {}
     try:
-        cfg = agent.model_config if isinstance(agent.model_config, dict) else {}
-        sids = list((cfg or {}).get('skill_ids') or []) if isinstance(cfg, dict) else []
-        if sids:
-            rows = db.query(SkillEntry).filter(SkillEntry.id.in_(sids)).all()
-            for r in rows:
-                if bool(r.enabled) and isinstance(r.name, str) and r.name.strip():
-                    nm = r.name.strip()
-                    if nm not in skills_out:
-                        skills_out.append(nm)
-                    try:
-                        if isinstance(getattr(r, 'input_schema', None), dict):
-                            skill_schemas[nm] = r.input_schema or {}
-                    except Exception:
-                        pass
-        # 兼容：合併 agent.skills 中的字串
-        for s in (agent.skills or []):
-            if isinstance(s, str) and s.strip() and s not in skills_out:
-                skills_out.append(s.strip())
-        # 若有名稱但未從 id 抓到 schema，可再以名稱查一次（非嚴格）
-        if skills_out:
-            miss = [n for n in skills_out if n not in skill_schemas]
-            if miss:
-                rows2 = db.query(SkillEntry).filter(SkillEntry.name.in_(miss)).all()
-                for r in rows2:
-                    try:
-                        if isinstance(getattr(r, 'input_schema', None), dict):
-                            skill_schemas[r.name] = r.input_schema or {}
-                    except Exception:
-                        pass
+        rows = db.query(SkillEntry).filter(SkillEntry.enabled == True).all()  # noqa: E712
+        for row in rows:
+            skill_name = str(getattr(row, 'name', '') or '').strip()
+            if not skill_name:
+                continue
+            skills_out.append(skill_name)
+            if isinstance(getattr(row, 'input_schema', None), dict):
+                skill_schemas[skill_name] = row.input_schema or {}
     except Exception:
-        skills_out = agent.skills or []
+        skills_out = []
         skill_schemas = {}
 
-    # 蒐集 MCP schemas：優先 model_config.mcp_ids 對應的全域設定，其次合併 inline mcp_config
+    # 蒐集全域啟用 MCP schema（工具公用，不再依 Agent 綁定）。
     mcp_schemas: dict[str, dict] = {}
     try:
-        from src.models import MCPConnection
-        cfg2 = agent.model_config if isinstance(agent.model_config, dict) else {}
-        mids = list((cfg2 or {}).get('mcp_ids') or []) if isinstance(cfg2, dict) else []
-        if mids:
-            rows = db.query(MCPConnection).filter(MCPConnection.id.in_(mids)).all()
-            for r in rows:
-                if bool(r.enabled) and isinstance(r.name, str) and r.name.strip():
-                    mcp_schemas[f"mcp:{r.name.strip()}"] = getattr(r, 'input_schema', {}) or {}
-        # inline 覆蓋
-        mraw = agent.mcp_config or []
-        if isinstance(mraw, dict):
-            mlist = list(mraw.values())
-        elif isinstance(mraw, list):
-            mlist = mraw
-        else:
-            mlist = []
-        for c in (mlist or []):
-            if isinstance(c, dict) and c.get('name'):
-                nm = str(c.get('name')).strip()
-                sc = c.get('input_schema') if isinstance(c.get('input_schema'), dict) else {}
-                if nm and sc:
-                    mcp_schemas[f"mcp:{nm}"] = sc
+        rows = db.query(MCPConnection).filter(MCPConnection.enabled == True).all()  # noqa: E712
+        for row in rows:
+            mcp_name = str(getattr(row, 'name', '') or '').strip()
+            if not mcp_name:
+                continue
+            mcp_schemas[f'mcp:{mcp_name}'] = getattr(row, 'input_schema', {}) or {}
     except Exception:
         mcp_schemas = {}
 
@@ -271,29 +225,20 @@ async def get_agent_integrations(
     if function_profile_id is None and getattr(agent, 'function_profile_id', None) is not None:
         function_profile_id = str(agent.function_profile_id)
 
-    rag_dataset_ids = {'global_dataset_ids': [], 'private_dataset_ids': []}
-    try:
-        cfg3 = agent.rag_config if isinstance(agent.rag_config, dict) else {}
-        rag_dataset_ids['global_dataset_ids'] = list(cfg3.get('global_dataset_ids') or [])
-        rag_dataset_ids['private_dataset_ids'] = list(cfg3.get('private_dataset_ids') or [])
-    except Exception:
-        pass
-
     return {
-        'mcp_config': _default_mcp(agent.mcp_config or {}),
-        'skills': skills_out,
-        'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
+        'mcp_config': [],
+        'skills': [],
+        'rag_config': {},
         'functions_definition_template': tc_guide,
         'toolcall_guide': tc_guide,
         'model_provider': provider or '',
         'skill_examples': skill_examples,
         'skill_schemas': skill_schemas,
         'mcp_schemas': mcp_schemas,
-        # 參照式設定（來自全域管理清單）
-        'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
-        'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
+        'mcp_ids': [],
+        'skill_ids': [],
         'function_profile_id': function_profile_id,
-        'rag_dataset_ids': rag_dataset_ids,
+        'rag_dataset_ids': {'global_dataset_ids': [], 'private_dataset_ids': []},
         'can_read': True,
         'can_update': bool(check_permission(current_user, 'update_agent', db=db)),
     }
@@ -320,72 +265,21 @@ async def update_agent_integrations(
         raise not_found_error('Agent', agent_id)
 
     before_model_config = dict(agent.model_config or {}) if isinstance(agent.model_config, dict) else {}
-    before_rag_config = dict(agent.rag_config or {}) if isinstance(agent.rag_config, dict) else {}
     before_snapshot = {
-        'mcp_count': len(agent.mcp_config or []),
-        'skills': list(agent.skills or []),
-        'mcp_ids': list(before_model_config.get('mcp_ids') or []),
-        'skill_ids': list(before_model_config.get('skill_ids') or []),
         'function_profile_id': before_model_config.get('function_profile_id'),
-        'rag_enabled': bool(before_rag_config.get('enabled', False)),
-        'rag_sources': list(before_rag_config.get('sources') or []),
-        'rag_topk': int(before_rag_config.get('topK', 5) or 5),
+        'toolcall_guide': str(before_model_config.get('functions_definition_template') or before_model_config.get('toolcall_guide') or ''),
     }
 
     # 讀取欄位並做基本驗證
-    mcp_cfg = payload.get('mcp_config', []) if isinstance(payload, dict) else []
-    skills = payload.get('skills', []) if isinstance(payload, dict) else []
-    rag_cfg = payload.get('rag_config', {}) if isinstance(payload, dict) else {}
     function_profile_id = payload.get('function_profile_id') if isinstance(payload, dict) else None
-    mcp_ids = payload.get('mcp_ids', []) if isinstance(payload, dict) else []
-    skill_ids = payload.get('skill_ids', []) if isinstance(payload, dict) else []
-
-    if mcp_cfg is not None and not isinstance(mcp_cfg, list):
-        raise validation_error('mcp_config 必須為陣列')
-    if skills is not None and not isinstance(skills, list):
-        raise validation_error('skills 必須為陣列')
-    if rag_cfg is not None and not isinstance(rag_cfg, dict):
-        raise validation_error('rag_config 必須為物件')
     if function_profile_id is not None and not isinstance(function_profile_id, str):
         raise validation_error('function_profile_id 必須為字串')
-    if mcp_ids is not None and not isinstance(mcp_ids, list):
-        raise validation_error('mcp_ids 必須為陣列')
-    if skill_ids is not None and not isinstance(skill_ids, list):
-        raise validation_error('skill_ids 必須為陣列')
-
-    # 基礎清理
-    def _clean_skill(name: str) -> str:
-        return (name or '').strip()[:64]
-
-    skills_clean = []
-    seen = set()
-    for s in (skills or []):
-        if not isinstance(s, str):
-            continue
-        n = _clean_skill(s)
-        if n and n not in seen:
-            seen.add(n)
-            skills_clean.append(n)
-
-    # rag 預設值
-    rag_out = {
-        'enabled': bool((rag_cfg or {}).get('enabled', False)),
-        'sources': list((rag_cfg or {}).get('sources', []) or []),
-        'topK': int((rag_cfg or {}).get('topK', 5) or 5),
-        'global_dataset_ids': list((rag_cfg or {}).get('global_dataset_ids', []) or []),
-        'private_dataset_ids': list((rag_cfg or {}).get('private_dataset_ids', []) or []),
-    }
-    if rag_out['topK'] < 1 or rag_out['topK'] > 50:
-        raise validation_error('rag_config.topK 必須介於 1..50')
 
     if isinstance(function_profile_id, str) and function_profile_id.strip():
         profile = db.query(FunctionProfile).filter(FunctionProfile.id == function_profile_id.strip(), FunctionProfile.enabled == True).first()  # noqa: E712
         if not profile:
             raise validation_error('function_profile_id 無效或未啟用')
 
-    agent.mcp_config = mcp_cfg or []
-    agent.skills = skills_clean
-    agent.rag_config = rag_out
     # 寫入 functions_definition_template（回退相容 toolcall_guide）至 model_config
     try:
         guide = None
@@ -401,20 +295,22 @@ async def update_agent_integrations(
             cfg['toolcall_guide'] = guide
         if isinstance(function_profile_id, str):
             cfg['function_profile_id'] = function_profile_id.strip() or None
-        # 儲存參照式清單（保持彈性：允許同時存在 mcp_config 與 mcp_ids；由準備階段合併）
-        if isinstance(mcp_ids, list):
-            cfg['mcp_ids'] = [str(x) for x in mcp_ids if isinstance(x, str) and x]
-        if isinstance(skill_ids, list):
-            cfg['skill_ids'] = [str(x) for x in skill_ids if isinstance(x, str) and x]
         # 寫入 skills 的示例參數（限制於當前啟用/選取的 skills）
         sk_ex = (payload or {}).get('skill_examples') if isinstance(payload, dict) else None
         if isinstance(sk_ex, dict):
-            # 僅保留在 skills_clean 內的鍵；值可為字串(JSON)或物件
+            # 僅保留目前仍啟用技能名稱；值可為字串(JSON)或物件
+            enabled_names = {
+                str(row.name or '').strip()
+                for row in db.query(SkillEntry).filter(SkillEntry.enabled == True).all()  # noqa: E712
+                if str(row.name or '').strip()
+            }
             filtered = {}
             for k, v in sk_ex.items():
-                if k in skills_clean and (isinstance(v, str | dict)):
+                if str(k or '').strip() in enabled_names and (isinstance(v, str | dict)):
                     filtered[k] = v
             cfg['skill_examples'] = filtered
+        cfg.pop('mcp_ids', None)
+        cfg.pop('skill_ids', None)
         agent.model_config = cfg
         flag_modified(agent, 'model_config')
     except Exception:
@@ -431,16 +327,9 @@ async def update_agent_integrations(
     try:
         from src.models import Log
         after_model_config = dict(agent.model_config or {}) if isinstance(agent.model_config, dict) else {}
-        after_rag_config = dict(agent.rag_config or {}) if isinstance(agent.rag_config, dict) else {}
         after_snapshot = {
-            'mcp_count': len(agent.mcp_config or []),
-            'skills': list(agent.skills or []),
-            'mcp_ids': list(after_model_config.get('mcp_ids') or []),
-            'skill_ids': list(after_model_config.get('skill_ids') or []),
             'function_profile_id': after_model_config.get('function_profile_id'),
-            'rag_enabled': bool(after_rag_config.get('enabled', False)),
-            'rag_sources': list(after_rag_config.get('sources') or []),
-            'rag_topk': int(after_rag_config.get('topK', 5) or 5),
+            'toolcall_guide': str(after_model_config.get('functions_definition_template') or after_model_config.get('toolcall_guide') or ''),
         }
         changed_fields: list[str] = []
         for field_name in before_snapshot.keys():
@@ -465,13 +354,13 @@ async def update_agent_integrations(
         db.rollback()
 
     return {
-        'mcp_config': agent.mcp_config or [],
-        'skills': agent.skills or [],
-        'rag_config': agent.rag_config or {'enabled': False, 'sources': [], 'topK': 5},
+        'mcp_config': [],
+        'skills': [],
+        'rag_config': {},
         'functions_definition_template': ((agent.model_config or {}).get('functions_definition_template') if isinstance(agent.model_config, dict) else None) or ((agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else ''),
         'toolcall_guide': ((agent.model_config or {}).get('functions_definition_template') if isinstance(agent.model_config, dict) else None) or ((agent.model_config or {}).get('toolcall_guide') if isinstance(agent.model_config, dict) else ''),
-        'mcp_ids': (agent.model_config or {}).get('mcp_ids', []) if isinstance(agent.model_config, dict) else [],
-        'skill_ids': (agent.model_config or {}).get('skill_ids', []) if isinstance(agent.model_config, dict) else [],
+        'mcp_ids': [],
+        'skill_ids': [],
         'function_profile_id': (agent.model_config or {}).get('function_profile_id') if isinstance(agent.model_config, dict) else None,
     }
 
@@ -783,6 +672,8 @@ async def bind_agent_rag_datasets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # 目的：保留舊端點相容回應，不再執行 Agent 與資料集綁定。
+    # 為什麼：資料集授權已改由 entity.dataset.* 控制，聊天檢索以請求 selected_dataset_ids 決定。
     if not check_permission(current_user, 'update_agent', db=db):
         from src.api.errors import forbidden_error
         raise forbidden_error()
@@ -793,34 +684,14 @@ async def bind_agent_rag_datasets(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise not_found_error('Agent', agent_id)
-
-    global_ids = [str(x) for x in list((payload or {}).get('global_dataset_ids') or []) if x]
-    private_ids = [str(x) for x in list((payload or {}).get('private_dataset_ids') or []) if x]
-
-    if global_ids:
-        rows = db.query(RagDataset).filter(RagDataset.id.in_(global_ids)).all()
-        if len(rows) != len(set(global_ids)):
-            raise validation_error('global_dataset_ids 含無效 id')
-        for r in rows:
-            if r.scope != 'global':
-                raise validation_error('global_dataset_ids 只能綁定 scope=global')
-    if private_ids:
-        rows = db.query(RagDataset).filter(RagDataset.id.in_(private_ids)).all()
-        if len(rows) != len(set(private_ids)):
-            raise validation_error('private_dataset_ids 含無效 id')
-        for r in rows:
-            if r.scope != 'agent_private' or str(r.agent_id) != str(agent.id):
-                raise validation_error('private_dataset_ids 僅能綁定本代理者私有資料集')
-
-    rag_cfg = agent.rag_config if isinstance(agent.rag_config, dict) else {}
-    out = dict(rag_cfg)
-    out['global_dataset_ids'] = global_ids
-    out['private_dataset_ids'] = private_ids
-    agent.rag_config = out
-    flag_modified(agent, 'rag_config')
-    db.commit()
-    db.refresh(agent)
-    return {'ok': True, 'agent_id': str(agent.id), 'global_dataset_ids': global_ids, 'private_dataset_ids': private_ids}
+    return {
+        'ok': True,
+        'deprecated': True,
+        'agent_id': str(agent.id),
+        'global_dataset_ids': [],
+        'private_dataset_ids': [],
+        'message': '已停用 Agent 資料集綁定；請改用 entity.dataset.* 權限與聊天 selected_dataset_ids。',
+    }
 
 
 @router.post('/agents/{agent_id}/mcp-test')
@@ -845,7 +716,7 @@ async def test_agent_mcp(
         raise not_found_error('Agent', agent_id)
 
     # 目的：允許以 mcp_id 或 inline connection 兩種方式測試 MCP。
-    # 為什麼：LLM 設定頁主要綁定 mcp_ids，不應要求前端重組完整連線資料。
+    # 為什麼：即使工具改為全域可用，管理頁仍需要便利的連線自檢入口。
     payload_obj = payload if isinstance(payload, dict) else {}
     conn = payload_obj.get('connection') if isinstance(payload_obj.get('connection'), dict) else None
     mcp_id = str(payload_obj.get('mcp_id') or '').strip()
@@ -931,11 +802,7 @@ async def test_agent_rag(
         k = 5 if k <= 0 or k > 50 else k
     except Exception:
         k = 5
-    rag_cfg = agent.rag_config if isinstance(agent.rag_config, dict) else {}
-    cfg_sources = list((rag_cfg or {}).get('sources', []) or [])
     collection_sources = [str(s).strip() for s in (sources or []) if isinstance(s, str) and str(s).strip()]
-    if not collection_sources:
-        collection_sources = [str(s).strip() for s in cfg_sources if isinstance(s, str) and str(s).strip()]
 
     default_collection = f"agent_{str(agent_id).replace('-', '')}_docs"
     if default_collection not in collection_sources:
@@ -1083,10 +950,10 @@ async def get_agent(
         'enabled': bool(getattr(agent, 'enabled', True)),
         'is_router': bool(getattr(agent, 'is_router', False)),
         'model_config': agent.model_config,
-        'mcp_config': agent.mcp_config,
-        'skills': agent.skills,
-        'tools': agent.tools,
-        'rag_config': agent.rag_config,
+        'mcp_config': [],
+        'skills': [],
+        'tools': [],
+        'rag_config': {},
         'workspace_id': str(agent.workspace_id),
         'created_at': agent.created_at.isoformat() if agent.created_at else None,
         'updated_at': agent.updated_at.isoformat() if agent.updated_at else None,
@@ -1256,8 +1123,8 @@ async def update_agent_llm_config(
     if not isinstance(model_config, dict):
         raise validation_error('model_config must be an object')
 
-    # 目的：只更新 LLM 設定欄位，不覆蓋既有 integrations 設定。
-    # 為什麼：不同頁面會分開寫 model_config，若整包覆蓋會清空 skill_ids/mcp_ids 等資料。
+    # 目的：只更新 LLM 設定欄位，不覆蓋其它 model_config 內容。
+    # 為什麼：不同頁面分開編輯時需避免互相覆寫，維持設定穩定。
     existing_config = agent.model_config if isinstance(agent.model_config, dict) else {}
     merged_config = dict(existing_config)
     for key, value in model_config.items():

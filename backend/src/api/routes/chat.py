@@ -42,6 +42,7 @@ from src.models.events import EventPart
 from src.services.access_control_service import access_control_service
 from src.services.chat_attachment_service import chat_attachment_service
 from src.services.chat_router import ChatRouter
+from src.services.cost_usage_service import cost_usage_service
 from src.services.embedding_service import embedding_service
 from src.services.llm_client import LLMClient
 from src.services.memory_service import memory_service
@@ -331,14 +332,22 @@ def _build_capability_prompt(
         if isinstance(c, dict) and c.get("enabled")
     ])
     skills_names = ",".join(agent_ctx.get("skills", []))
-    rag = agent_ctx.get('rag', {}) or {}
-    rag_prefix = f"\n[RAG] sources={','.join(rag.get('sources', []) or [])} topK={int(rag.get('topK', 5) or 5)}" if rag.get('enabled') else ''
+    runtime = rag_runtime if isinstance(rag_runtime, dict) else {}
+    rag_selected_ids = [str(item) for item in list(runtime.get('selected_dataset_ids') or []) if str(item or '').strip()]
+    rag_effective_ids = [str(item) for item in list(runtime.get('effective_dataset_ids') or []) if str(item or '').strip()]
+    rag_top_k = int(runtime.get('top_k') or getattr(settings, 'CHAT_RAG_DEFAULT_TOP_K', 5) or 5)
+    rag_enabled = bool(rag_selected_ids)
+    rag_prefix = ''
+    if rag_enabled:
+        rag_prefix = (
+            f"\n[RAG] selected_datasets={len(rag_selected_ids)} "
+            f"effective_datasets={len(rag_effective_ids)} topK={rag_top_k}"
+        )
     prefix = f"[Agent Capabilities] skills={skills_names} mcp={mcp_names}{rag_prefix}\n"
     guide = router_obj._render_toolcall_guide(agent_ctx)
     history_text = str(history_context or '').strip()
     memory_text = str(memory_context or '').strip()
     rag_text = str(rag_context or '').strip()
-    runtime = rag_runtime if isinstance(rag_runtime, dict) else {}
     rag_hits = int(runtime.get('hits') or 0)
     rag_guard_text = ''
     if rag_text and rag_hits > 0:
@@ -1683,8 +1692,8 @@ def _pick_public_with_skill(*, db: Session, public_workers: list[Agent], skill_n
 
 
 def _extract_agent_skill_names(*, db: Session, agent: Agent) -> list[str]:
-    """目的：彙整代理綁定技能名稱（id 與名稱混用相容）。
-    為什麼：部分歷史資料把 skills 直接存名稱，需兼容才能正確做技能導向路由。
+    """目的：彙整代理可用技能名稱（目前僅保留 model_config.skill_ids 相容）。
+    為什麼：工具改為全域可用後，仍需兼容舊資料以降低升級期間中斷風險。
     """
     names: list[str] = []
 
@@ -1706,16 +1715,6 @@ def _extract_agent_skill_names(*, db: Session, agent: Agent) -> list[str]:
             rows2 = db.query(SkillEntry).filter(SkillEntry.name.in_(non_id_like), SkillEntry.enabled == True).all()  # noqa: E712
             names.extend([str(r.name or '').strip() for r in rows2 if str(r.name or '').strip()])
 
-    raw_skills = agent.skills if isinstance(agent.skills, list) else []
-    for item in raw_skills:
-        if isinstance(item, str) and item.strip():
-            names.append(item.strip())
-        elif isinstance(item, dict):
-            name = str(item.get('name') or '').strip()
-            if name:
-                names.append(name)
-
-    # 兼容 agent.skills 內直接放技能名稱。
     # 若 DB 尚未有對應技能列，但檔案系統有 SKILL.md，允許保留給動態路由使用。
     text_names = [n for n in names if n]
     if text_names:
@@ -2042,7 +2041,7 @@ def _build_chat_rag_context(
     *,
     db: Session,
     current_user: User,
-    agent: Agent,
+    agent_id: str,
     query: str,
     selected_dataset_ids: list[str],
 ) -> tuple[str, dict[str, Any]]:
@@ -2053,19 +2052,7 @@ def _build_chat_rag_context(
     if not query_text:
         return '', {'enabled': False, 'reason': 'empty_query', 'hits': 0, 'selected_rows': []}
 
-    rag_config = agent.rag_config if isinstance(agent.rag_config, dict) else {}
-    rag_enabled = bool((rag_config or {}).get('enabled', False))
-    if not rag_enabled:
-        return '', {
-            'enabled': False,
-            'reason': 'rag_disabled',
-            'selected_dataset_ids': selected_dataset_ids,
-            'effective_dataset_ids': [],
-            'hits': 0,
-            'selected_rows': [],
-        }
-
-    top_k_value = int((rag_config or {}).get('topK') or 5)
+    top_k_value = int(getattr(settings, 'CHAT_RAG_DEFAULT_TOP_K', 5) or 5)
     top_k = min(20, max(1, top_k_value))
 
     normalized_selected_dataset_ids = _normalize_selected_dataset_ids(selected_dataset_ids)
@@ -2075,13 +2062,14 @@ def _build_chat_rag_context(
             'reason': 'selected_dataset_ids_empty',
             'selected_dataset_ids': [],
             'effective_dataset_ids': [],
+            'top_k': top_k,
             'hits': 0,
             'selected_rows': [],
         }
 
     _log.info(
         'chat.rag.selection_start',
-        agent_id=str(getattr(agent, 'id', '') or ''),
+        agent_id=str(agent_id or ''),
         selected_dataset_ids=normalized_selected_dataset_ids,
         top_k=top_k,
     )
@@ -2099,6 +2087,7 @@ def _build_chat_rag_context(
             'reason': 'no_dataset_candidates',
             'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [],
+            'top_k': top_k,
             'hits': 0,
             'selected_rows': [],
         }
@@ -2142,6 +2131,7 @@ def _build_chat_rag_context(
             'reason': 'no_accessible_datasets',
             'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [],
+            'top_k': top_k,
             'hits': 0,
             'selected_rows': [],
         }
@@ -2155,6 +2145,7 @@ def _build_chat_rag_context(
             'error': str(error),
             'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [str(row.id) for row in effective_rows],
+            'top_k': top_k,
             'hits': 0,
             'selected_rows': [],
         }
@@ -2198,6 +2189,7 @@ def _build_chat_rag_context(
             'reason': 'no_hits',
             'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [str(row.id) for row in effective_rows],
+            'top_k': top_k,
             'hits': 0,
             'selected_rows': [],
         }
@@ -2249,6 +2241,7 @@ def _build_chat_rag_context(
             'reason': 'hits_trimmed_by_limit',
             'selected_dataset_ids': normalized_selected_dataset_ids,
             'effective_dataset_ids': [str(row.id) for row in effective_rows],
+            'top_k': top_k,
             'hits': 0,
             'selected_rows': [],
         }
@@ -2266,6 +2259,7 @@ def _build_chat_rag_context(
         'reason': 'ok',
         'selected_dataset_ids': normalized_selected_dataset_ids,
         'effective_dataset_ids': [str(row.id) for row in effective_rows],
+        'top_k': top_k,
         'hits': len(context_lines) - 2,
         'selected_rows': selected_rows,
     }
@@ -2722,6 +2716,66 @@ async def chat_stream(
     if not conversation:
         conversation = _create_conversation_with_fallback(db=db, agent_id=agent_id, user_id=current_user.id)
 
+    guard_decision = cost_usage_service.evaluate_monthly_guard(
+        db=db,
+        user_id=str(current_user.id),
+        agent_id=str(agent.id),
+    )
+    if not guard_decision.allowed:
+        denial_payload = {
+            'reason': str(guard_decision.reason),
+            'scope_type': guard_decision.scope_type,
+            'scope_id': guard_decision.scope_id,
+            'metric_key': guard_decision.metric_key,
+            'current_value': float(guard_decision.current_value),
+            'limit_value': float(guard_decision.limit_value),
+            'usage_percent': float(guard_decision.usage_percent),
+        }
+        _write_event_part_safe(
+            db=db,
+            conversation_id=str(conversation.id),
+            type_='llm.cost.denied',
+            payload=denial_payload,
+        )
+        _create_llm_turn_record(
+            db=db,
+            conversation_id=str(conversation.id),
+            agent_id=str(agent.id),
+            user_message_id=None,
+            assistant_message_id=None,
+            provider='',
+            model='',
+            tier='',
+            system_prompt_snapshot='',
+            context_snapshot={
+                'entry': 'agents.chat.stream',
+                'policy': denial_payload,
+            },
+            usage={
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'total_tokens': 0,
+                'raw': {},
+            },
+            cost_usd=Decimal('0'),
+            latency_ms=0,
+            status='policy_denied',
+            error=str(guard_decision.reason),
+        )
+
+        async def _gen_cost_denied():
+            yield f"data: {_json.dumps({'type': 'react', 'phase': 'guard', 'message': '成本配額已達上限，本次請求已被拒絕', 'reason_code': guard_decision.reason, 'scope_type': guard_decision.scope_type, 'metric_key': guard_decision.metric_key}, ensure_ascii=False)}\n\n"
+            text = (
+                '本月成本配額已達上限，暫時無法再呼叫模型。'
+                f'（層級：{str(guard_decision.scope_type or "unknown")}, '
+                f'指標：{str(guard_decision.metric_key or "unknown")}, '
+                f'使用率：{guard_decision.usage_percent:.2f}%）'
+            )
+            yield f"data: {{\"type\":\"text\",\"delta\":{_json.dumps(text, ensure_ascii=False)} }}\n\n"
+            yield f"data: {{\"type\":\"done\",\"conversation_id\":{_json.dumps(str(conversation.id))} }}\n\n"
+
+        return StreamingResponse(_gen_cost_denied(), media_type='text/event-stream')
+
     normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
     normalized_selected_dataset_ids = _merge_selected_dataset_ids(
         payload_ids=selected_dataset_ids,
@@ -2820,7 +2874,7 @@ async def chat_stream(
     rag_context, rag_runtime = _build_chat_rag_context(
         db=db,
         current_user=current_user,
-        agent=agent,
+        agent_id=str(agent.id),
         query=message,
         selected_dataset_ids=normalized_selected_dataset_ids,
     )

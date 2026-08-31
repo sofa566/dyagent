@@ -37,10 +37,6 @@ def _make_agent(name: str, description: str = '', is_router: bool = False) -> ty
         is_router=is_router,
         model_type='cloud',
         model_config={},
-        mcp_config={},
-        skills=[],
-        tools=[],
-        rag_config={},
     )
 
 

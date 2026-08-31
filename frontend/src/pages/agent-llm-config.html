@@ -38,8 +38,11 @@
     <div id="error-message" class="error-message"></div>
     <div id="success-message" class="success-message"></div>
     <div id="permission-hint" class="card" style="display:none;margin-bottom:1rem;background:#fff8e6;border-color:#f0d28c;color:#7a5c19;"></div>
+    <div class="card" style="margin-bottom:1rem;background:#f5fbff;border-color:#b7dfff;color:#0f4c75;">
+      工具與資料集已改為全域治理：不再綁定到 Agent。工具執行由 execution_policy 控管，資料集存取由 entity.dataset.* 權限控管。
+    </div>
 
-    <section class="card" style="margin-bottom:1rem;">
+    <section id="legacy-tool-binding" class="card" style="margin-bottom:1rem;display:none;">
       <h3>MCP 連線</h3>
       <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
         <div style="flex:1;min-width:260px;">
@@ -61,7 +64,7 @@
       </div>
     </section>
 
-    <section class="card" style="margin-bottom:1rem;">
+    <section id="legacy-skill-binding" class="card" style="margin-bottom:1rem;display:none;">
       <h3>Skills</h3>
       <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
         <div style="flex:1;min-width:260px;">
@@ -141,7 +144,7 @@
         <code>{{SKILL_TOOLS_BLOCK}}</code>、<code>{{MCP_TOOLS_BLOCK}}</code>、
         <code>{{EXAMPLE_ARGS}}</code>（預設基於首個有示例的 MCP 或通用值）、
         <code>{{EXAMPLE_ARGS_BLOCK}}</code>（每個工具對應的示例 JSON 一行）、
-        <code>{{RAG_ENABLED}}</code>（true/false）、<code>{{RAG_SOURCES}}</code>、<code>{{RAG_TOPK}}</code>、<code>{{RAG_HINTS}}</code>。
+        <code>{{RAG_ENABLED}}</code>（由請求是否帶 selected_dataset_ids 決定）、<code>{{RAG_SOURCES}}</code>、<code>{{RAG_TOPK}}</code>、<code>{{RAG_HINTS}}</code>。
       </p>
       <details id="toolcall-preview" class="card" style="margin-top:8px;">
         <summary>即時渲染預覽</summary>
@@ -660,11 +663,14 @@
       try {
         const raw = (toolcallGuideEl.value || '').toString();
         if (!raw.trim()) { previewOutput.textContent = '(無內容)'; return; }
-        // 以參照清單為準：從 registry 取名稱
-        const sById = Object.fromEntries((window.__skillRegistry||[]).map(s => [s.id, s]));
-        const mById = Object.fromEntries((window.__mcpRegistry||[]).map(m => [m.id, m]));
-        const skills = (state.skill_ids||[]).map(id => (sById[id] && sById[id].name) ? sById[id].name : id);
-        const mcps = (state.mcp_ids||[]).map(id => (mById[id] && mById[id].name) ? `mcp:${mById[id].name}` : `mcp:${id}`);
+        // 工具已改為全域可用：預覽直接使用全域啟用清單。
+        const skills = (window.__skillRegistry || [])
+          .map((item) => String(item && item.name ? item.name : '').trim())
+          .filter(Boolean);
+        const mcps = (window.__mcpRegistry || [])
+          .map((item) => String(item && item.name ? item.name : '').trim())
+          .filter(Boolean)
+          .map((name) => `mcp:${name}`);
         const allowed = [...skills, ...mcps];
         const allowedNames = allowed.length ? allowed.join(', ') : '<none>';
         // EXAMPLE_ARGS：改為固定預設 {}
@@ -673,7 +679,7 @@
         const exampleArgsBlock = allowed.length ? allowed.map(n => `- ${n}: {}`).join('\n') : '- <none>';
         // Schema block：技能的輸入 schema 提示
         const schemaLines = skills.map(n => {
-          const entry = Object.values(sById).find(x => x.name === n);
+          const entry = (window.__skillRegistry || []).find((x) => String((x && x.name) || '') === n);
           const sch = entry && entry.input_schema && typeof entry.input_schema === 'object' ? entry.input_schema : {};
           return `- ${n}: ${JSON.stringify(sch)}`;
         });
@@ -692,18 +698,18 @@
           .replaceAll('{{EXAMPLE_ARGS_BLOCK}}', exampleArgsBlock)
           .replaceAll('{{SCHEMA_BLOCK}}', schemaBlock);
         // RAG 變數
-        const ragEnabled = !!(state.rag_config && state.rag_config.enabled);
-        const ragSources = (state.rag_config && Array.isArray(state.rag_config.sources)) ? state.rag_config.sources.join(', ') : '';
-        const ragTopK = (state.rag_config && typeof state.rag_config.topK !== 'undefined') ? String(state.rag_config.topK) : '';
+        const ragEnabled = false;
+        const ragSources = '<request-selected-datasets>';
+        const ragTopK = 'system_default';
         const ragHints = ragEnabled ? [
           '[RAG 說明]',
           '- 問題與知識檢索高度相關時，先檢索再作答，並於回覆中引用來源或摘要。',
           '- 若查無結果，請明確說明並僅根據可得上下文作答（避免捏造）。',
-        ].join('\n') : '';
+        ].join('\n') : '[RAG 說明]\n- RAG 於聊天請求帶 selected_dataset_ids 時啟用。';
         out = out
           .replaceAll('{{RAG_ENABLED}}', ragEnabled ? 'true' : 'false')
-          .replaceAll('{{RAG_SOURCES}}', ragEnabled ? (ragSources || '<none>') : '<disabled>')
-          .replaceAll('{{RAG_TOPK}}', ragEnabled ? (ragTopK || '5') : '<disabled>')
+          .replaceAll('{{RAG_SOURCES}}', ragSources)
+          .replaceAll('{{RAG_TOPK}}', ragTopK)
           .replaceAll('{{RAG_HINTS}}', ragHints);
         if (out.includes('{{ALLOWED_TOOLS_BLOCK}}')) {
           const blk = allowed.length ? allowed.map(n => `- ${n}`).join('\n') : '- <none>';
@@ -740,41 +746,18 @@
     saveBtn.addEventListener('click', async () => {
       if (!canUpdateIntegrations) return;
       try {
-        const ragConfig = state.rag_config || { enabled: false, sources: [], topK: 5 };
-        const globalDatasetIds = Array.isArray(state.rag_dataset_ids.global_dataset_ids) ? state.rag_dataset_ids.global_dataset_ids.map(String) : [];
-        const privateDatasetIds = Array.isArray(state.rag_dataset_ids.private_dataset_ids) ? state.rag_dataset_ids.private_dataset_ids.map(String) : [];
-        // 僅以參照保存，不允許覆寫
         const payload = {
-          mcp_config: [],
-          skills: state.skills || [],
-          rag_config: { ...ragConfig, global_dataset_ids: globalDatasetIds, private_dataset_ids: privateDatasetIds },
           functions_definition_template: (toolcallGuideEl.value || '').trim(),
           toolcall_guide: (toolcallGuideEl.value || '').trim(),
           skill_examples: {},
-          mcp_ids: state.mcp_ids,
-          skill_ids: state.skill_ids,
           function_profile_id: String(state.function_profile_id || ''),
         };
-        const res = await agentIntegrationApi.updateAgentIntegrations(agentId, payload);
-        const savedMcpIds = Array.isArray(res && res.mcp_ids) ? res.mcp_ids.map(String) : [];
-        const savedSkillIds = Array.isArray(res && res.skill_ids) ? res.skill_ids.map(String) : [];
-        const wantMcpIds = (state.mcp_ids || []).map(String);
-        const wantSkillIds = (state.skill_ids || []).map(String);
-        const sameMcp = JSON.stringify(savedMcpIds) === JSON.stringify(wantMcpIds);
-        const sameSkill = JSON.stringify(savedSkillIds) === JSON.stringify(wantSkillIds);
-        if (!sameMcp || !sameSkill) {
-          showError('儲存未完全生效，請重新整理後再試（mcp_ids/skill_ids 不一致）');
-        } else {
-          await agentIntegrationApi.bindAgentRagDatasets(agentId, {
-            global_dataset_ids: globalDatasetIds,
-            private_dataset_ids: privateDatasetIds,
-          });
-          await loadIntegrationAuditSummary();
-          showSuccess('已儲存');
-          setTimeout(() => {
-            window.location.href = '/pages/agent-list.html';
-          }, 300);
-        }
+        await agentIntegrationApi.updateAgentIntegrations(agentId, payload);
+        await loadIntegrationAuditSummary();
+        showSuccess('已儲存');
+        setTimeout(() => {
+          window.location.href = '/pages/agent-list.html';
+        }, 300);
       } catch (e) {
         showError(e.message || '儲存失敗');
       }

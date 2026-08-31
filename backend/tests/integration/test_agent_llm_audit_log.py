@@ -11,6 +11,7 @@ def test_agent_integrations_update_writes_audit_log_and_summary(client, admin_to
         'mcp_ids': [],
         'skill_ids': [],
         'function_profile_id': None,
+        'toolcall_guide': '請依規範使用工具',
     }
     update_response = client.put(
         f'/api/agents/{agent.id}/integrations',
@@ -32,7 +33,7 @@ def test_agent_integrations_update_writes_audit_log_and_summary(client, admin_to
     assert isinstance(details.get('before'), dict)
     assert isinstance(details.get('after'), dict)
     assert 'changed_fields' in details
-    assert 'skills' in (details.get('changed_fields') or [])
+    assert 'toolcall_guide' in (details.get('changed_fields') or [])
 
 
 def test_non_admin_cannot_read_agent_integrations_audit(client, regular_user_token, agent):

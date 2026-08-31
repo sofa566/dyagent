@@ -28,8 +28,12 @@
     table.logs th, table.logs td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
     table.logs th { color: var(--text-secondary); font-weight: 600; }
     .audit-filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+    .cost-filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
     .audit-filters label { margin-bottom: 0; font-weight: 500; color: var(--text-primary); }
+    .cost-filters label { margin-bottom: 0; font-weight: 500; color: var(--text-primary); }
     .audit-filters select,
+    .cost-filters select,
+    .cost-filters input,
     #level-filter {
       padding: 0.75rem;
       border: 1px solid var(--border-color);
@@ -39,7 +43,11 @@
       box-sizing: border-box;
     }
     .audit-filters select { min-width: 150px; }
+    .cost-filters select,
+    .cost-filters input { min-width: 140px; }
     .audit-filters select:focus,
+    .cost-filters select:focus,
+    .cost-filters input:focus,
     #level-filter:focus {
       outline: none;
       border-color: var(--primary-color);
@@ -106,6 +114,31 @@
         </div>
 
         <div class="card">
+          <h3 class="section-title">LLM 成本治理（本月）</h3>
+          <div class="cost-filters">
+            <label for="cost-days-filter">時間窗：</label>
+            <select id="cost-days-filter">
+              <option value="7">近 7 天</option>
+              <option value="30" selected>近 30 天</option>
+              <option value="90">近 90 天</option>
+            </select>
+            <label for="cost-dimension-filter">維度：</label>
+            <select id="cost-dimension-filter">
+              <option value="group">群組</option>
+              <option value="user">個人</option>
+              <option value="agent" selected>代理者</option>
+            </select>
+            <label for="cost-month-filter">告警月份：</label>
+            <input id="cost-month-filter" type="month">
+            <button id="cost-refresh-btn" class="btn btn-secondary" type="button">更新成本治理</button>
+            <span id="cost-refresh-status" class="mono" style="color: var(--text-secondary);">尚未更新</span>
+          </div>
+          <div id="llm-cost-policy-summary" class="stats-grid"></div>
+          <div id="llm-cost-breakdown" class="table-wrap" style="margin-bottom:8px;"></div>
+          <div id="llm-cost-alerts" class="table-wrap"></div>
+        </div>
+
+        <div class="card">
           <h3 class="section-title">工具策略稽核（近 7 天）</h3>
           <div class="audit-filters">
             <label for="audit-status-filter">狀態：</label>
@@ -166,6 +199,7 @@
     let hasLogsPermission = false;
     let hasLoadedToolAudits = false;
     let latestToolPolicyOverview = null;
+    let hasLoadedCostGovernance = false;
 
     function setActiveTab(tabName) {
       document.getElementById('tab-monitor').classList.toggle('active', tabName === 'monitor');
@@ -448,6 +482,109 @@
       });
     }
 
+    function renderCostGovernance(policyPayload, alertPayload, breakdownPayload) {
+      const policyRows = Array.isArray(policyPayload.items) ? policyPayload.items : [];
+      const alertRows = Array.isArray(alertPayload.items) ? alertPayload.items : [];
+      const breakdownRows = Array.isArray(breakdownPayload.items) ? breakdownPayload.items : [];
+      const breakdownDimension = String((breakdownPayload && breakdownPayload.dimension) || '').trim() || 'agent';
+
+      const warnOnlyCount = policyRows.filter((row) => String(row.enforcement_mode || '') === 'warn_only').length;
+      const hardLimitCount = policyRows.filter((row) => String(row.enforcement_mode || '') === 'hard_limit').length;
+      const enabledCount = policyRows.filter((row) => Boolean(row.enabled)).length;
+      const blockedCount = alertRows.filter((row) => String(row.status || '') === 'blocked').length;
+      const warnedCount = alertRows.filter((row) => String(row.status || '') === 'warned').length;
+
+      document.getElementById('llm-cost-policy-summary').innerHTML = [
+        mkStat('政策總數', policyRows.length),
+        mkStat('啟用政策', enabledCount),
+        mkStat('warn_only / hard_limit', `${warnOnlyCount} / ${hardLimitCount}`),
+        mkStat('本月告警（warned）', warnedCount),
+        mkStat('本月阻擋（blocked）', blockedCount),
+      ].join('');
+
+      const breakdownContainer = document.getElementById('llm-cost-breakdown');
+      if (!breakdownRows.length) {
+        breakdownContainer.innerHTML = '<div class="mono">目前無對應維度的成本明細</div>';
+      } else {
+        const nameHeader = breakdownDimension === 'group' ? '群組' : (breakdownDimension === 'user' ? '使用者' : '代理者');
+        const htmlRows = breakdownRows.slice(0, 20).map((row) => {
+          const name = breakdownDimension === 'group'
+            ? (row.group_name || row.group_code || '-')
+            : (breakdownDimension === 'user'
+              ? (row.username || row.user_id || '-')
+              : (row.agent_name || row.agent_id || '-'));
+          const turns = Number(row.turns || 0);
+          const inputTokens = Number(row.input_tokens || 0);
+          const outputTokens = Number(row.output_tokens || 0);
+          const totalTokens = Number(row.total_tokens || 0);
+          const costUsd = Number(row.cost_usd || 0).toFixed(6);
+          return `<tr>
+            <td>${name}</td>
+            <td class="num">${turns}</td>
+            <td class="num">${inputTokens}</td>
+            <td class="num">${outputTokens}</td>
+            <td class="num">${totalTokens}</td>
+            <td class="num">${costUsd}</td>
+          </tr>`;
+        }).join('');
+
+        breakdownContainer.innerHTML = `
+          <table class="metrics">
+            <thead>
+              <tr>
+                <th>${nameHeader}</th>
+                <th class="num">輪次</th>
+                <th class="num">輸入 Tokens</th>
+                <th class="num">輸出 Tokens</th>
+                <th class="num">總 Tokens</th>
+                <th class="num">Cost (USD)</th>
+              </tr>
+            </thead>
+            <tbody>${htmlRows}</tbody>
+          </table>
+        `;
+      }
+
+      const alertContainer = document.getElementById('llm-cost-alerts');
+      if (!alertRows.length) {
+        alertContainer.innerHTML = '<div class="mono">本月尚無成本告警事件</div>';
+        return;
+      }
+      const htmlRows = alertRows.slice(0, 10).map((row) => {
+        const createdAt = row.created_at ? new Date(row.created_at).toLocaleString() : '-';
+        const scopeType = String(row.scope_type || '-');
+        const metricKey = String(row.metric_key || '-');
+        const threshold = Number(row.threshold_percent || 0);
+        const usagePercent = Number(row.usage_percent || 0).toFixed(2);
+        const status = String(row.status || 'warned');
+        const statusClass = status === 'blocked' ? 'pill-dangerous' : 'pill-restricted';
+        return `<tr>
+          <td>${createdAt}</td>
+          <td>${scopeType}</td>
+          <td>${metricKey}</td>
+          <td class="num">${threshold}%</td>
+          <td class="num">${usagePercent}%</td>
+          <td><span class="${statusClass}">${status}</span></td>
+        </tr>`;
+      }).join('');
+
+      alertContainer.innerHTML = `
+        <table class="metrics">
+          <thead>
+            <tr>
+              <th>時間</th>
+              <th>層級</th>
+              <th>指標</th>
+              <th class="num">門檻</th>
+              <th class="num">使用率</th>
+              <th>狀態</th>
+            </tr>
+          </thead>
+          <tbody>${htmlRows}</tbody>
+        </table>
+      `;
+    }
+
     async function loadToolExecutionAudits() {
       const statusFilter = document.getElementById('audit-status-filter').value;
       const riskFilter = document.getElementById('audit-risk-filter').value;
@@ -464,10 +601,44 @@
       renderOverview(data);
     }
 
+    async function loadCostGovernance() {
+      const days = document.getElementById('cost-days-filter').value || '30';
+      const dimension = document.getElementById('cost-dimension-filter').value || 'agent';
+      const month = document.getElementById('cost-month-filter').value || '';
+      const policyPayload = await api.get('/admin/cost/policies');
+      const alertQuery = new URLSearchParams({ limit: '20' });
+      if (month) alertQuery.set('month', month);
+      const alertPayload = await api.get(`/admin/cost/alerts?${alertQuery.toString()}`);
+      const breakdownPayload = await api.get(`/admin/cost/breakdown?dimension=${encodeURIComponent(dimension)}&days=${encodeURIComponent(days)}&limit=20`);
+      renderCostGovernance(policyPayload || {}, alertPayload || {}, breakdownPayload || {});
+      hasLoadedCostGovernance = true;
+    }
+
+    async function refreshCostGovernanceWithStatus() {
+      const refreshButton = document.getElementById('cost-refresh-btn');
+      const statusNode = document.getElementById('cost-refresh-status');
+      const month = document.getElementById('cost-month-filter').value || '';
+      try {
+        refreshButton.disabled = true;
+        statusNode.textContent = '更新中...';
+        const evaluateQuery = new URLSearchParams();
+        if (month) evaluateQuery.set('month', month);
+        await api.post(`/admin/cost/alerts/evaluate?${evaluateQuery.toString()}`, {});
+        await loadCostGovernance();
+        statusNode.textContent = `已更新：${new Date().toLocaleTimeString()}`;
+      } catch (error) {
+        statusNode.textContent = `更新失敗：${(error && error.message) || 'unknown'}`;
+        throw error;
+      } finally {
+        refreshButton.disabled = false;
+      }
+    }
+
     async function refreshWithGuard() {
       try {
         await loadOverview();
         await loadToolExecutionAudits();
+        await loadCostGovernance();
       } catch (e) {
         document.getElementById('updated-at').textContent = `載入失敗：${(e && e.message) || 'unknown'}`;
       }
@@ -563,6 +734,13 @@
     }
 
     async function initializeDashboardPage() {
+      const now = new Date();
+      const monthText = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const monthInput = document.getElementById('cost-month-filter');
+      if (monthInput && !monthInput.value) {
+        monthInput.value = monthText;
+      }
+
       const capabilities = await getCapabilities({ forceRefresh: true });
       hasMonitorPermission = hasAnyPermission(capabilities, ['dashboard.read']);
       hasLogsPermission = hasAnyPermission(capabilities, ['logs.read']);
@@ -580,6 +758,25 @@
       } else {
         monitorTab.addEventListener('click', () => setActiveTab('monitor'));
         document.getElementById('refresh-btn').addEventListener('click', refreshWithGuard);
+        document.getElementById('cost-refresh-btn').addEventListener('click', async () => {
+          try {
+            await refreshCostGovernanceWithStatus();
+          } catch (error) {
+            document.getElementById('llm-cost-alerts').innerHTML = `<div class="mono">成本治理載入失敗：${(error && error.message) || 'unknown'}</div>`;
+          }
+        });
+        document.getElementById('cost-days-filter').addEventListener('change', async () => {
+          if (!hasLoadedCostGovernance) return;
+          await loadCostGovernance();
+        });
+        document.getElementById('cost-dimension-filter').addEventListener('change', async () => {
+          if (!hasLoadedCostGovernance) return;
+          await loadCostGovernance();
+        });
+        document.getElementById('cost-month-filter').addEventListener('change', async () => {
+          if (!hasLoadedCostGovernance) return;
+          await loadCostGovernance();
+        });
         document.getElementById('audit-refresh-btn').addEventListener('click', async () => {
           try {
             await loadToolExecutionAudits();

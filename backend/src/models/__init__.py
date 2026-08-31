@@ -213,10 +213,6 @@ class Agent(Base):
     is_router = Column(Boolean, nullable=False, default=False)
     model_config = Column(JSON, default=dict)
     function_profile_id = Column(GUID(), ForeignKey('function_profiles.id'), nullable=True)
-    mcp_config = Column(JSON, default=dict)
-    skills = Column(JSON, default=list)
-    tools = Column(JSON, default=list)
-    rag_config = Column(JSON, default=dict)
     workspace_id = Column(GUID(), ForeignKey('workspaces.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -452,6 +448,54 @@ class LlmTurn(Base):
     latency_ms = Column(Integer, nullable=True)
     status = Column(String(20), nullable=False, default='success')
     error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class LlmCostPolicy(Base):
+    # 目的：定義公司/群組/個人/代理者四層成本與 token 預算政策。
+    # 為什麼：將治理門檻持久化，讓告警與阻擋可依同一來源一致判斷。
+    __tablename__ = 'llm_cost_policies'
+    __table_args__ = (
+        UniqueConstraint('scope_type', 'scope_id', name='uq_llm_cost_policy_scope'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    scope_type = Column(String(20), nullable=False)  # company | group | user | agent
+    scope_id = Column(GUID(), nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    enforcement_mode = Column(String(20), nullable=False, default='warn_only')  # warn_only | hard_limit
+    monthly_input_tokens_limit = Column(Integer, nullable=True)
+    monthly_total_tokens_limit = Column(Integer, nullable=True)
+    monthly_cost_usd_limit = Column(Numeric(12, 6), nullable=True)
+    warn_thresholds = Column(JSON, default=list)  # 例如 [50, 80, 100]
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class LlmCostAlertEvent(Base):
+    # 目的：記錄成本門檻告警事件。
+    # 為什麼：治理流程需要可追溯事件來支援觀測、通知與稽核對帳。
+    __tablename__ = 'llm_cost_alert_events'
+    __table_args__ = (
+        UniqueConstraint('policy_id', 'window_start', 'metric_key', 'threshold_percent', name='uq_llm_cost_alert_dedupe'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    policy_id = Column(GUID(), ForeignKey('llm_cost_policies.id'), nullable=False)
+    scope_type = Column(String(20), nullable=False)
+    scope_id = Column(GUID(), nullable=True)
+    metric_key = Column(String(40), nullable=False)  # monthly_input_tokens | monthly_total_tokens | monthly_cost_usd
+    threshold_percent = Column(Integer, nullable=False)
+    current_value = Column(Numeric(18, 6), nullable=False)
+    limit_value = Column(Numeric(18, 6), nullable=False)
+    usage_percent = Column(Numeric(8, 2), nullable=False)
+    enforcement_mode = Column(String(20), nullable=False, default='warn_only')
+    status = Column(String(20), nullable=False, default='warned')  # warned | blocked
+    window_start = Column(DateTime, nullable=False)
+    window_end = Column(DateTime, nullable=False)
+    details = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now)
 
 

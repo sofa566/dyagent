@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.models import MCPConnection, RagDataset, SkillEntry
+from src.models import MCPConnection, SkillEntry
 
 
 def test_agent_llm_config_save_and_reload_flow(client, db, admin_token, agent):
@@ -10,20 +10,12 @@ def test_agent_llm_config_save_and_reload_flow(client, db, admin_token, agent):
     # 為什麼：這是 LLM 設定頁最核心的互動流程，需防止回寫遺漏。
     skill = SkillEntry(name='flow-skill', description='flow', enabled=True)
     mcp = MCPConnection(name='flow-mcp', enabled=True, transport='remote', base_url='https://mcp.flow.test')
-    dataset = RagDataset(name='flow-global', scope='global', enabled=True)
-    db.add_all([skill, mcp, dataset])
+    db.add_all([skill, mcp])
     db.commit()
 
     save_payload = {
         'mcp_config': [],
         'skills': ['custom-flow-skill'],
-        'rag_config': {
-            'enabled': True,
-            'sources': ['flow-kb'],
-            'topK': 6,
-            'global_dataset_ids': [str(dataset.id)],
-            'private_dataset_ids': [],
-        },
         'mcp_ids': [str(mcp.id)],
         'skill_ids': [str(skill.id)],
     }
@@ -40,10 +32,9 @@ def test_agent_llm_config_save_and_reload_flow(client, db, admin_token, agent):
     )
     assert reload_response.status_code == 200
     data = reload_response.json()
-    assert data['mcp_ids'] == [str(mcp.id)]
-    assert data['skill_ids'] == [str(skill.id)]
-    assert data['rag_config']['enabled'] is True
-    assert data['rag_config']['topK'] == 6
+    assert data['mcp_ids'] == []
+    assert data['skill_ids'] == []
+    assert data['rag_config'] == {}
 
 
 def test_agent_llm_config_mcp_test_and_rag_test_flow(client, db, admin_token, agent):

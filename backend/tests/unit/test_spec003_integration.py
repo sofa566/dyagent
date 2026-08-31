@@ -52,6 +52,8 @@ class TestFunctionsApi:
 
 class TestRagBindingsApi:
     def test_private_dataset_cannot_bind_to_other_agent(self, client, db, workspace, admin_user, admin_token, agent):
+        # 目的：驗證舊 rag/bindings 端點已停用，不再做 Agent 資料集綁定判斷。
+        # 為什麼：資料集授權改由 entity.dataset.* 與聊天 selected_dataset_ids 決策。
         from src.models import Agent, RagDataset
 
         second_agent = Agent(
@@ -108,7 +110,11 @@ class TestRagBindingsApi:
                 'private_dataset_ids': [private_dataset_id],
             },
         )
-        assert bind_other_agent.status_code == 400
+        assert bind_other_agent.status_code == 200
+        bind_other_payload = bind_other_agent.json()
+        assert bind_other_payload.get('deprecated') is True
+        assert bind_other_payload.get('global_dataset_ids') == []
+        assert bind_other_payload.get('private_dataset_ids') == []
 
         rows = db.query(RagDataset).all()
         assert len(rows) >= 2

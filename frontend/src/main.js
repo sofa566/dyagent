@@ -12,6 +12,8 @@ try { console.info('[dyagent] API_BASE =', API_BASE); } catch {}
 
 const CAPABILITIES_CACHE_KEY = 'dyagent_capabilities_cache';
 const CAPABILITIES_CACHE_TTL_MS = 15000;
+const MY_COST_USAGE_CACHE_KEY = 'dyagent_my_cost_usage_cache';
+const MY_COST_USAGE_CACHE_TTL_MS = 60000;
 
 
 function getLegacyPermissionsByRole(role) {
@@ -92,6 +94,44 @@ function writeCapabilitiesCache(capabilities) {
 function clearCapabilitiesCache() {
   try {
     sessionStorage.removeItem(CAPABILITIES_CACHE_KEY);
+  } catch {}
+}
+
+
+function readCachedMyCostUsage() {
+  try {
+    const rawCache = sessionStorage.getItem(MY_COST_USAGE_CACHE_KEY);
+    if (!rawCache) {
+      return null;
+    }
+    const cachePayload = JSON.parse(rawCache);
+    const cachedAt = Number(cachePayload && cachePayload.cached_at);
+    if (!cachedAt || Date.now() - cachedAt > MY_COST_USAGE_CACHE_TTL_MS) {
+      return null;
+    }
+    return cachePayload.usage || null;
+  } catch {
+    return null;
+  }
+}
+
+
+function writeMyCostUsageCache(usage) {
+  try {
+    sessionStorage.setItem(
+      MY_COST_USAGE_CACHE_KEY,
+      JSON.stringify({
+        cached_at: Date.now(),
+        usage,
+      }),
+    );
+  } catch {}
+}
+
+
+function clearMyCostUsageCache() {
+  try {
+    sessionStorage.removeItem(MY_COST_USAGE_CACHE_KEY);
   } catch {}
 }
 
@@ -219,6 +259,7 @@ const auth = {
     localStorage.setItem('auth_token', response.token);
     localStorage.setItem('user', JSON.stringify(response.user));
     clearCapabilitiesCache();
+    clearMyCostUsageCache();
     // 非 admin 登入後直接導向聊天頁
     try {
       if (response.user && response.user.role !== 'admin') {
@@ -232,6 +273,7 @@ const auth = {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('user');
     clearCapabilitiesCache();
+    clearMyCostUsageCache();
     window.location.href = '/pages/login.html';
   },
 
@@ -270,6 +312,59 @@ async function getCapabilities(options = {}) {
     writeCapabilitiesCache(fallbackCapabilities);
     return fallbackCapabilities;
   }
+}
+
+
+async function getMyCostUsage(options = {}) {
+  const { forceRefresh = false } = options;
+  if (!auth.isAuthenticated()) {
+    return null;
+  }
+  if (!forceRefresh) {
+    const cachedUsage = readCachedMyCostUsage();
+    if (cachedUsage) {
+      return cachedUsage;
+    }
+  }
+
+  try {
+    const payload = await api.get('/me/cost/usage');
+    const usage = payload && payload.usage ? payload.usage : null;
+    if (usage) {
+      writeMyCostUsageCache(usage);
+    }
+    return usage;
+  } catch {
+    return null;
+  }
+}
+
+
+function formatNumberShort(rawValue) {
+  const value = Number(rawValue || 0);
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+  return value.toLocaleString('zh-TW');
+}
+
+
+function formatCostUsd(rawValue) {
+  const value = Number(rawValue || 0);
+  if (!Number.isFinite(value)) {
+    return '0.000000';
+  }
+  return value.toFixed(6);
+}
+
+
+function escapeHtml(rawText) {
+  return String(rawText || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 
@@ -334,17 +429,53 @@ document.addEventListener('DOMContentLoaded', async () => {
       const roleText = roles.length > 0 ? roles.join('、') : '無角色';
       const groupText = groups.length > 0 ? groups.join('、') : '未分組';
       const username = String((currentUser && currentUser.username) || '使用者').trim() || '使用者';
-      const userMetaText = `歡迎，${username}！ ${roleText}｜${groupText}`;
+      const primaryLineText = `歡迎，${username}！ ${roleText}｜${groupText}`;
+      const secondaryLineText = '總使用 Tokens 載入中...  |  Cost USD 載入中...';
 
       const metaElement = existingMeta || document.createElement('div');
       metaElement.id = 'nav-user-meta';
       metaElement.className = 'nav-user-meta';
-      metaElement.textContent = userMetaText;
-      metaElement.title = userMetaText;
+      metaElement.innerHTML = `
+        <span class="meta-line-primary">${escapeHtml(primaryLineText)}</span>
+        <span class="meta-line-secondary">${escapeHtml(secondaryLineText)}</span>
+      `;
+      metaElement.title = `${primaryLineText}\n${secondaryLineText}`;
 
       if (!existingMeta) {
         navBar.insertBefore(metaElement, navMenu);
       }
+
+      getMyCostUsage()
+        .then((usage) => {
+          if (!usage) {
+            const fallbackPrimaryLineText = `歡迎，${username}！ ${roleText}｜${groupText}`;
+            const fallbackSecondaryLineText = '總使用 Tokens -  |  Cost USD -';
+            metaElement.innerHTML = `
+              <span class="meta-line-primary">${escapeHtml(fallbackPrimaryLineText)}</span>
+              <span class="meta-line-secondary">${escapeHtml(fallbackSecondaryLineText)}</span>
+            `;
+            metaElement.title = `${fallbackPrimaryLineText}\n${fallbackSecondaryLineText}`;
+            return;
+          }
+          const totalTokens = formatNumberShort(usage.total_tokens || 0);
+          const costUsd = formatCostUsd(usage.cost_usd || 0);
+          const loadedPrimaryLineText = `歡迎，${username}！ ${roleText}｜${groupText}`;
+          const loadedSecondaryLineText = `總使用 Tokens ${totalTokens}  |  Cost USD ${costUsd}`;
+          metaElement.innerHTML = `
+            <span class="meta-line-primary">${escapeHtml(loadedPrimaryLineText)}</span>
+            <span class="meta-line-secondary">${escapeHtml(loadedSecondaryLineText)}</span>
+          `;
+          metaElement.title = `${loadedPrimaryLineText}\n${loadedSecondaryLineText}`;
+        })
+        .catch(() => {
+          const fallbackPrimaryLineText = `歡迎，${username}！ ${roleText}｜${groupText}`;
+          const fallbackSecondaryLineText = '總使用 Tokens -  |  Cost USD -';
+          metaElement.innerHTML = `
+            <span class="meta-line-primary">${escapeHtml(fallbackPrimaryLineText)}</span>
+            <span class="meta-line-secondary">${escapeHtml(fallbackSecondaryLineText)}</span>
+          `;
+          metaElement.title = `${fallbackPrimaryLineText}\n${fallbackSecondaryLineText}`;
+        });
     } catch {}
   }
 

@@ -400,93 +400,51 @@ class ChatRouter:
                             self._skill_examples = cfg.get("skill_examples") or {}
                     except Exception:
                         self._skill_examples = {}
-                    # 1) 以 id 參照的 MCP：從全域表解析
+                    # 工具執行採全域可用 + 策略控管，不再依 Agent 綁定 mcp_ids / mcp_config。
                     mcp_list: list[dict] = []
                     try:
-                        ids = []
-                        if isinstance(getattr(ag, 'model_config', None), dict):
-                            ids = list((ag.model_config or {}).get('mcp_ids') or [])
-                        if ids:
-                            rows = db.query(MCPConnection).filter(MCPConnection.id.in_(ids)).all()
-                            for r in rows:
-                                if not bool(r.enabled):
-                                    continue
-                                mcp_list.append({
-                                    'name': r.name,
-                                    'enabled': True,
-                                    'transport': r.transport,
-                                    'base_url': r.base_url,
-                                    'auth': r.auth,
-                                    'progress_field': r.progress_field,
-                                    'eta_field': r.eta_field,
-                                    'command': r.command,
-                                    'args': r.args,
-                                    'env': r.env,
-                                    'input_schema': getattr(r, 'input_schema', {}) or {},
-                                })
+                        rows = db.query(MCPConnection).filter(MCPConnection.enabled == True).all()  # noqa: E712
+                        for r in rows:
+                            name = str(getattr(r, 'name', '') or '').strip()
+                            if not name:
+                                continue
+                            mcp_list.append({
+                                'name': name,
+                                'enabled': True,
+                                'transport': r.transport,
+                                'base_url': r.base_url,
+                                'auth': r.auth,
+                                'progress_field': r.progress_field,
+                                'eta_field': r.eta_field,
+                                'command': r.command,
+                                'args': r.args,
+                                'env': r.env,
+                                'input_schema': getattr(r, 'input_schema', {}) or {},
+                            })
                     except Exception:
-                        pass
-                    # 2) 舊版/自訂 MCP：僅在未使用 mcp_ids（無 registry 參照）時才採用 inline
-                    try:
-                        using_ids = bool((getattr(ag, 'model_config', {}) or {}).get('mcp_ids'))
-                    except Exception:
-                        using_ids = False
-                    if not using_ids:
-                        try:
-                            mcp_raw = ag.mcp_config or []
-                            if isinstance(mcp_raw, dict):
-                                mcp_inline = list(mcp_raw.values())
-                            elif isinstance(mcp_raw, list):
-                                mcp_inline = mcp_raw
-                            else:
-                                mcp_inline = []
-                            # 以 name 作為 key 合併（inline 覆蓋 registry）
-                            merged: dict[str, dict] = {}
-                            for c in mcp_list:
-                                if isinstance(c, dict) and c.get('name'):
-                                    merged[str(c.get('name'))] = dict(c)
-                            for c in mcp_inline:
-                                if isinstance(c, dict) and c.get('name'):
-                                    merged[str(c.get('name'))] = dict(c)
-                            mcp_list = [v for v in merged.values() if v.get('enabled')]
-                        except Exception:
-                            pass
+                        mcp_list = []
                     agent_ctx["mcp"] = [c for c in (mcp_list or []) if isinstance(c, dict) and c.get("enabled")]
 
-                    # Skills：合併 id 參照與字串名單
+                    # 工具執行採全域可用 + 策略控管，不再依 Agent 綁定 skill_ids / skills。
                     skills_names: list[str] = []
                     try:
-                        if isinstance(getattr(ag, 'model_config', None), dict):
-                            sids = list((ag.model_config or {}).get('skill_ids') or [])
-                            if sids:
-                                rows = db.query(SkillEntry).filter(SkillEntry.id.in_(sids)).all()
-                                # 準備 schema 映射
-                                self._skill_schemas = {}
-                                for r in rows:
-                                    if bool(r.enabled) and isinstance(r.name, str) and r.name.strip():
-                                        skills_names.append(r.name.strip())
-                                        try:
-                                            if isinstance(getattr(r, 'input_schema', None), dict):
-                                                self._skill_schemas[r.name.strip()] = r.input_schema
-                                        except Exception:
-                                            pass
+                        rows = db.query(SkillEntry).filter(SkillEntry.enabled == True).all()  # noqa: E712
+                        self._skill_schemas = {}
+                        for r in rows:
+                            skill_name = str(getattr(r, 'name', '') or '').strip()
+                            if not skill_name:
+                                continue
+                            skills_names.append(skill_name)
+                            if isinstance(getattr(r, 'input_schema', None), dict):
+                                self._skill_schemas[skill_name] = r.input_schema
                     except Exception:
-                        pass
-                    # 永遠合併 agent.skills（歷史相容），與 _extract_agent_skill_names 邏輯一致
-                    # 若 skill_ids 已有的名稱重複，dict.fromkeys 去重會保留第一筆
-                    try:
-                        for s in (ag.skills or []):
-                            if isinstance(s, str) and s.strip():
-                                skills_names.append(s.strip())
-                    except Exception:
-                        pass
+                        self._skill_schemas = {}
                     # 去重
                     agent_ctx["skills"] = list(dict.fromkeys(skills_names).keys())
-                    rc = ag.rag_config or {}
                     agent_ctx["rag"] = {
-                        "enabled": bool(rc.get("enabled", False)),
-                        "sources": list(rc.get("sources", []) or []),
-                        "topK": int(rc.get("topK", 5) or 5),
+                        "enabled": False,
+                        "sources": [],
+                        "topK": int(getattr(settings, 'CHAT_RAG_DEFAULT_TOP_K', 5) or 5),
                     }
                     try:
                         cfg = ag.model_config if isinstance(ag.model_config, dict) else {}

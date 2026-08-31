@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from src.api.errors import (
     general_exception_handler,
 )
-from src.api.routes import agents, auth, chat, logs, mcp, rag, users, admin_dashboard, skill_ui, access_control
+from src.api.routes import agents, auth, chat, logs, mcp, rag, users, admin_dashboard, skill_ui, access_control, cost_usage
 from src.api.routes import mcps_admin, skills_admin
 from src.api.routes import functions_admin
 from src.core.config import settings
@@ -54,10 +54,6 @@ def _seed_router_agent(db):
             enabled=True,
             is_router=True,
             model_config={'tier': 'cloud'},
-            mcp_config=[],
-            skills=[],
-            tools=[],
-            rag_config={'enabled': False, 'sources': [], 'topK': 5},
             workspace_id=ws.id,
         )
         db.add(router)
@@ -168,6 +164,7 @@ app.include_router(users.router, prefix='/api', tags=['使用者'])
 app.include_router(access_control.router, prefix='/api', tags=['權限管理'])
 app.include_router(logs.router, prefix='/api', tags=['日誌'])
 app.include_router(admin_dashboard.router, prefix='/api', tags=['管理儀表板'])
+app.include_router(cost_usage.router, prefix='/api', tags=['成本治理'])
 app.include_router(mcps_admin.router, prefix='/api', tags=['MCP 管理'])
 app.include_router(skills_admin.router, prefix='/api', tags=['技能管理'])
 app.include_router(functions_admin.router, prefix='/api', tags=['Functions 管理'])

@@ -21,20 +21,12 @@ class AgentUpdate(BaseModel):
     agent_class: Optional[str] = None
     enabled: Optional[bool] = None
     model_config: Optional[dict] = None
-    mcp_config: Optional[dict] = None
-    skills: Optional[list] = None
-    tools: Optional[list] = None
-    rag_config: Optional[dict] = None
 
 
 class AgentResponse(AgentBase):
     id: str
     is_router: bool
     model_config: dict
-    mcp_config: dict
-    skills: list
-    tools: list
-    rag_config: dict
     workspace_id: str
     created_at: str
     updated_at: str

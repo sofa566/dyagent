@@ -6,29 +6,37 @@ from src.api.routes import chat as chat_routes
 from src.models import RagDataset
 
 
-def test_chat_rag_capability_prompt_respects_enabled_flag(client, db, regular_user_token, agent):
-    # 目的：驗證聊天 prompt 的 RAG 區塊與代理者設定一致。
-    # 為什麼：US2 要求 RAG 啟停與來源一致，避免未啟用時誤注入檢索資訊。
+def test_chat_rag_capability_prompt_uses_selected_dataset_context(client, db, regular_user_token, agent):
+    # 目的：驗證聊天 prompt 的 RAG 區塊以 selected_dataset_ids 決定是否啟用。
+    # 為什麼：RAG 去 Agent 綁定後，檢索範圍應由請求資料集與權限決策，不再看 agent.rag_config。
     captured_prompts: list[str] = []
+
+    dataset = RagDataset(
+        name='全域資料集能力提示',
+        scope='global',
+        sensitivity='normal',
+        enabled=True,
+    )
+    db.add(dataset)
+    db.commit()
 
     async def _fake_stream_complete_async(_llm_client, *, prompt: str, tier: str | None):
         captured_prompts.append(prompt)
         yield '測試回覆'
 
     with patch('src.api.routes.chat._stream_complete_async', new=_fake_stream_complete_async):
-        agent.rag_config = {'enabled': True, 'sources': ['kb-alpha', 'faq'], 'topK': 7}
-        db.commit()
         response_enabled = client.get(
             f'/api/agents/{agent.id}/chat/stream',
             headers={'Authorization': f'Bearer {regular_user_token}'},
-            params={'message': '請回答 RAG 問題'},
+            params={
+                'message': '請回答 RAG 問題',
+                'selected_dataset_ids': [str(dataset.id)],
+            },
         )
         assert response_enabled.status_code == 200
-        assert any('[RAG] sources=kb-alpha,faq topK=7' in prompt for prompt in captured_prompts)
+        assert any('[RAG] selected_datasets=1 effective_datasets=1 topK=5' in prompt for prompt in captured_prompts)
 
         captured_prompts.clear()
-        agent.rag_config = {'enabled': False, 'sources': ['kb-alpha'], 'topK': 7}
-        db.commit()
         response_disabled = client.get(
             f'/api/agents/{agent.id}/chat/stream',
             headers={'Authorization': f'Bearer {regular_user_token}'},
@@ -48,14 +56,6 @@ def test_chat_rag_does_not_fallback_when_selected_dataset_ids_empty(client, db, 
         enabled=True,
     )
     db.add(dataset)
-    db.commit()
-
-    agent.rag_config = {
-        'enabled': True,
-        'sources': ['kb-alpha'],
-        'topK': 5,
-        'global_dataset_ids': [str(dataset.id)],
-    }
     db.commit()
 
     async def _fake_stream_complete_async(_llm_client, *, prompt: str, tier: str | None):
@@ -87,12 +87,6 @@ def test_chat_rag_global_dataset_accessible_without_entity_permission(db, regula
     db.add(dataset)
     db.commit()
 
-    agent.rag_config = {
-        'enabled': True,
-        'topK': 5,
-    }
-    db.commit()
-
     monkeypatch.setattr('src.api.routes.chat.embedding_service.embed_one', lambda _query: [0.01, 0.02, 0.03])
 
     def _fake_search(collection_name, query_vector, limit=5):
@@ -112,7 +106,7 @@ def test_chat_rag_global_dataset_accessible_without_entity_permission(db, regula
     rag_context, rag_runtime = chat_routes._build_chat_rag_context(
         db=db,
         current_user=regular_user,
-        agent=agent,
+        agent_id=str(agent.id),
         query='請根據資料集回答',
         selected_dataset_ids=[str(dataset.id)],
     )
