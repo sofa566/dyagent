@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     TOOL_EXEC_REQUIRE_CONFIRM_FOR_DANGEROUS: bool = True
     TOOL_CONFIRM_TOKEN_TTL_SECONDS: int = 300
 
+    # LINE 通道整合
+    LINE_CHANNEL_SECRET: str = ''
+    LINE_CHANNEL_ACCESS_TOKEN: str = ''
+    LINE_WEBHOOK_VERIFY_SIGNATURE: bool = False
+    LINE_DEFAULT_AGENT_ID: str = ''
+
     # 聊天歷史上下文注入（同一會話連貫）
     CHAT_HISTORY_MODE: str = 'recent'  # off | recent
     CHAT_HISTORY_MAX_MESSAGES: int = 8

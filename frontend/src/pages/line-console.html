@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LINE 對話中心 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .line-console-grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 12px;
+    }
+    .line-session-item {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      background: #fff;
+    }
+    .line-session-item.active {
+      border-color: var(--primary-color);
+      background: #eef7ff;
+    }
+    .line-msg-list {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      min-height: 380px;
+      max-height: 520px;
+      overflow: auto;
+      padding: 10px;
+      background: #fff;
+    }
+    .line-msg {
+      margin-bottom: 10px;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+    }
+    .line-msg.inbound { background: #f7fbf7; }
+    .line-msg.outbound {
+      background: #f7f9ff;
+      border: 1px solid #9bb5e9;
+      border-style: solid;
+    }
+    .line-msg.sender-operator {
+      background: #fff7ef;
+      border: 1px solid #e8a96b;
+      border-style: solid;
+    }
+    .line-msg-meta { color: var(--text-secondary); font-size: 12px; margin-bottom: 4px; }
+    .line-controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+    .line-control {
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      background: #fff;
+    }
+    .line-input-row {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .line-input-row textarea.line-control {
+      flex: 1;
+      min-height: 92px;
+      resize: vertical;
+    }
+    @media (max-width: 900px) {
+      .line-console-grid { grid-template-columns: 1fr; }
+      .line-input-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/line-console.html">LINE 對話中心</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="actions">
+      <h2>LINE 對話中心</h2>
+      <button id="btn-refresh" class="btn">重新整理</button>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div class="line-console-grid">
+      <section class="card">
+        <h3>LINE 使用者會話</h3>
+        <div id="session-list">載入中...</div>
+      </section>
+
+      <section class="card">
+        <h3 id="chat-title">尚未選擇會話</h3>
+        <div class="line-controls">
+          <label for="mode-select">模式</label>
+          <select id="mode-select" class="line-control">
+            <option value="bot">bot（自動回覆）</option>
+            <option value="human">human（人工接手）</option>
+          </select>
+          <button id="btn-save-mode" class="btn">儲存模式</button>
+
+          <label for="agent-select">Agent</label>
+          <select id="agent-select" class="line-control"><option value="">載入中...</option></select>
+          <button id="btn-save-agent" class="btn">指派 Agent</button>
+        </div>
+
+        <div id="msg-list" class="line-msg-list"></div>
+
+        <div class="line-input-row">
+          <textarea id="operator-text" class="line-control" rows="3" placeholder="輸入要推送給 LINE 使用者的訊息"></textarea>
+          <button id="btn-send" class="btn btn-primary">人工送出</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const state = {
+      sessions: [],
+      selectedSessionId: '',
+      selectedSession: null,
+      agents: [],
+    };
+
+    const sessionListEl = document.getElementById('session-list');
+    const msgListEl = document.getElementById('msg-list');
+    const chatTitleEl = document.getElementById('chat-title');
+    const modeSelectEl = document.getElementById('mode-select');
+    const agentSelectEl = document.getElementById('agent-select');
+    const operatorTextEl = document.getElementById('operator-text');
+
+    function renderSessions() {
+      if (!state.sessions.length) {
+        sessionListEl.innerHTML = '<p>目前沒有 LINE 會話。</p>';
+        return;
+      }
+      sessionListEl.innerHTML = state.sessions.map((session) => {
+        const latest = session.latest_message;
+        const latestPreview = latest && latest.content ? String(latest.content).slice(0, 36) : '無訊息';
+        const activeClass = state.selectedSessionId === session.id ? 'active' : '';
+        return `
+          <div class="line-session-item ${activeClass}" data-session-id="${session.id}">
+            <div><strong>${session.line_user_id}</strong></div>
+            <div style="font-size:12px;color:var(--text-secondary);">mode=${session.mode} / status=${session.status}</div>
+            <div style="font-size:12px;color:var(--text-secondary);">${latestPreview}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderAgents() {
+      const options = state.agents.map((agent) => `<option value="${agent.id}">${agent.name}</option>`).join('');
+      agentSelectEl.innerHTML = options || '<option value="">無可用 Agent</option>';
+      if (state.selectedSession && state.selectedSession.assigned_agent_id) {
+        agentSelectEl.value = state.selectedSession.assigned_agent_id;
+      }
+    }
+
+    async function loadAgents() {
+      try {
+        const response = await api.get('/agents/public');
+        state.agents = Array.isArray(response.agents) ? response.agents.filter((agent) => agent && agent.enabled !== false) : [];
+      } catch (error) {
+        state.agents = [];
+        showError(error.message || '載入 Agent 失敗');
+      }
+      renderAgents();
+    }
+
+    function renderMessages(messages) {
+      if (!Array.isArray(messages) || !messages.length) {
+        msgListEl.innerHTML = '<p>尚無訊息。</p>';
+        return;
+      }
+      msgListEl.innerHTML = messages.map((message) => `
+        <div class="line-msg ${message.direction} sender-${message.sender_type}">
+          <div class="line-msg-meta">${message.direction} / ${message.sender_type} / ${message.created_at || ''}</div>
+          <div>${String(message.content || '').replaceAll('<', '&lt;')}</div>
+        </div>
+      `).join('');
+      msgListEl.scrollTop = msgListEl.scrollHeight;
+    }
+
+    async function loadSessions() {
+      const response = await api.get('/line/sessions?limit=100');
+      state.sessions = Array.isArray(response.sessions) ? response.sessions : [];
+      if (!state.selectedSessionId && state.sessions.length) {
+        state.selectedSessionId = state.sessions[0].id;
+      }
+      state.selectedSession = state.sessions.find((session) => session.id === state.selectedSessionId) || null;
+      renderSessions();
+      renderAgents();
+      if (state.selectedSessionId) {
+        await loadMessages(state.selectedSessionId);
+      } else {
+        chatTitleEl.textContent = '尚未選擇會話';
+        renderMessages([]);
+      }
+    }
+
+    async function loadMessages(sessionId) {
+      const response = await api.get(`/line/sessions/${encodeURIComponent(sessionId)}/messages?limit=200`);
+      const session = response.session || {};
+      chatTitleEl.textContent = `會話：${session.line_user_id || sessionId}`;
+      modeSelectEl.value = session.mode || 'bot';
+      state.selectedSession = session;
+      renderAgents();
+      renderMessages(response.messages || []);
+    }
+
+    sessionListEl.addEventListener('click', async (event) => {
+      const target = event.target.closest('[data-session-id]');
+      if (!target) return;
+      state.selectedSessionId = target.getAttribute('data-session-id') || '';
+      renderSessions();
+      try {
+        await loadMessages(state.selectedSessionId);
+      } catch (error) {
+        showError(error.message || '載入訊息失敗');
+      }
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', async () => {
+      try {
+        await loadSessions();
+        showSuccess('已更新 LINE 會話');
+      } catch (error) {
+        showError(error.message || '更新失敗');
+      }
+    });
+
+    document.getElementById('btn-save-mode').addEventListener('click', async () => {
+      if (!state.selectedSessionId) return;
+      try {
+        await api.put(`/line/sessions/${encodeURIComponent(state.selectedSessionId)}/mode`, { mode: modeSelectEl.value });
+        await loadSessions();
+        showSuccess('模式已更新');
+      } catch (error) {
+        showError(error.message || '更新模式失敗');
+      }
+    });
+
+    document.getElementById('btn-save-agent').addEventListener('click', async () => {
+      if (!state.selectedSessionId) return;
+      try {
+        await api.put(`/line/sessions/${encodeURIComponent(state.selectedSessionId)}/agent`, { agent_id: agentSelectEl.value });
+        await loadSessions();
+        showSuccess('Agent 指派已更新');
+      } catch (error) {
+        showError(error.message || '更新 Agent 失敗');
+      }
+    });
+
+    document.getElementById('btn-send').addEventListener('click', async () => {
+      if (!state.selectedSessionId) return;
+      const text = String(operatorTextEl.value || '').trim();
+      if (!text) return;
+      try {
+        await api.post(`/line/sessions/${encodeURIComponent(state.selectedSessionId)}/messages`, { text });
+        operatorTextEl.value = '';
+        await loadMessages(state.selectedSessionId);
+        await loadSessions();
+        showSuccess('已推送訊息');
+      } catch (error) {
+        showError(error.message || '推送訊息失敗');
+      }
+    });
+
+    async function bootstrap() {
+      try {
+        await loadAgents();
+        await loadSessions();
+      } catch (error) {
+        showError(error.message || '初始化失敗');
+      }
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>

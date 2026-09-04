@@ -17,6 +17,7 @@ export default defineConfig({
         'agent-llm': resolve(__dirname, 'src/pages/agent-llm.html'),
         'agent-llm-config': resolve(__dirname, 'src/pages/agent-llm-config.html'),
         'agent-rag-config': resolve(__dirname, 'src/pages/agent-rag-config.html'),
+        'line-console': resolve(__dirname, 'src/pages/line-console.html'),
         chat: resolve(__dirname, 'src/pages/chat.html'),
         dashboard: resolve(__dirname, 'src/pages/dashboard.html'),
         users: resolve(__dirname, 'src/pages/users.html'),
