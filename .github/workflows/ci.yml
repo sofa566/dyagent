@@ -11,6 +11,19 @@ jobs:
     name: Backend Quality
     runs-on: ubuntu-latest
     services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: dyagent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d dyagent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       redis:
         image: redis:7
         ports:
@@ -38,6 +51,7 @@ jobs:
 
       - name: Run backend tests
         env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/dyagent
           REDIS_URL: redis://localhost:6379
           QDRANT_URL: http://localhost:6333
         run: pytest backend/tests/integration/test_renal_care_api.py backend/tests/integration/test_health_education_api.py
