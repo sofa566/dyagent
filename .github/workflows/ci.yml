@@ -11,19 +11,6 @@ jobs:
     name: Backend Quality
     runs-on: ubuntu-latest
     services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: user
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: dyagent
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U user -d dyagent"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
       redis:
         image: redis:7
         ports:
@@ -49,15 +36,15 @@ jobs:
       - name: Ruff check
         run: ruff check .
 
-      - name: Run database migrations
+      - name: Initialize CI database schema
         working-directory: backend
         env:
-          DATABASE_URL: postgresql://user:password@localhost:5432/dyagent
-        run: alembic upgrade head
+          DATABASE_URL: sqlite:////tmp/dyagent-ci.db
+        run: python -c "import src.models; from src.core.database import Base, engine; Base.metadata.create_all(bind=engine)"
 
       - name: Run backend tests
         env:
-          DATABASE_URL: postgresql://user:password@localhost:5432/dyagent
+          DATABASE_URL: sqlite:////tmp/dyagent-ci.db
           REDIS_URL: redis://localhost:6379
           QDRANT_URL: http://localhost:6333
         run: pytest backend/tests/integration/test_renal_care_api.py backend/tests/integration/test_health_education_api.py
