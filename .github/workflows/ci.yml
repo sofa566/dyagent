@@ -49,6 +49,12 @@ jobs:
       - name: Ruff check
         run: ruff check .
 
+      - name: Run database migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/dyagent
+        run: alembic upgrade head
+
       - name: Run backend tests
         env:
           DATABASE_URL: postgresql://user:password@localhost:5432/dyagent
