@@ -1,4 +1,3 @@
-import pytest
 
 
 class TestAuthRegister:
@@ -102,8 +101,8 @@ class TestAuthLogin:
         assert response.status_code == 422
 
     def test_login_disabled_user(self, client, db):
-        from src.models import User
         from src.middleware.auth import get_password_hash
+        from src.models import User
 
         disabled_user = User(
             username='disabled_user',

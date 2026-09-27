@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, Request
@@ -16,11 +17,25 @@ from src.core.database import get_db
 from src.core.logging import get_logger
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
-from src.models import Agent, Conversation, LineChannelSession, LineMessage, Message, User
+from src.models import (
+    Agent,
+    Conversation,
+    LineChannelSession,
+    LineMessage,
+    Message,
+    MonitoringRecord,
+    RenalPatient,
+    User,
+)
 from src.services.chat_router import ChatRouter
+from src.services.line_onboarding_service import line_onboarding_service
+from src.services.redis_service import redis_service
+from src.services.renal_monitoring_service import renal_monitoring_service
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+MONITORING_DRAFT_TTL_SECONDS = 24 * 60 * 60
 
 
 def _verify_line_signature(*, raw_body: bytes, header_signature: str) -> bool:
@@ -40,8 +55,14 @@ def _verify_line_signature(*, raw_body: bytes, header_signature: str) -> bool:
 
 def _require_line_operator_read_permission(*, current_user: User, db: Session) -> None:
     # 目的：限制 LINE 對話後台的讀取權限。
-    # 為什麼：LINE 對話可能含個資，需至少具備聊天權限才可檢視。
-    if not check_permission(current_user, 'chat', db=db):
+    # 為什麼：LINE 對話可能含個資，需綁定到照護/LINE 專用權限才能檢視。
+    can_read = bool(
+        check_permission(current_user, 'line.center', db=db)
+        or check_permission(current_user, 'nursing.line', db=db)
+        or check_permission(current_user, 'read_logs', db=db)
+        or check_permission(current_user, 'update_agent', db=db)
+    )
+    if not can_read:
         raise forbidden_error('無權限檢視 LINE 對話')
 
 
@@ -49,63 +70,13 @@ def _require_line_operator_manage_permission(*, current_user: User, db: Session)
     # 目的：限制 LINE 對話操作（人工回覆、切換模式）權限。
     # 為什麼：避免一般使用者誤發外部訊息給客戶。
     can_manage = bool(
-        check_permission(current_user, 'update_agent', db=db)
+        check_permission(current_user, 'line.center', db=db)
+        or check_permission(current_user, 'nursing.line', db=db)
+        or check_permission(current_user, 'update_agent', db=db)
         or check_permission(current_user, 'read_logs', db=db)
     )
     if not can_manage:
         raise forbidden_error('無權限操作 LINE 對話')
-
-
-def _pick_default_agent(db: Session) -> Agent:
-    # 目的：解析 LINE 對話預設使用的代理者。
-    # 為什麼：LINE 入口需有穩定 fallback，避免 webhook 事件因未綁定代理而失敗。
-    configured_agent_id = str(getattr(settings, 'LINE_DEFAULT_AGENT_ID', '') or '').strip()
-    if configured_agent_id:
-        row = db.query(Agent).filter(Agent.id == configured_agent_id, Agent.enabled == True).first()  # noqa: E712
-        if row is not None:
-            return row
-    router_agent = db.query(Agent).filter(Agent.is_router == True, Agent.enabled == True).first()  # noqa: E712
-    if router_agent is not None:
-        return router_agent
-    fallback_agent = db.query(Agent).filter(Agent.enabled == True).first()  # noqa: E712
-    if fallback_agent is None:
-        raise validation_error('尚無可用 Agent，無法處理 LINE 訊息')
-    return fallback_agent
-
-
-def _get_or_create_line_session(*, db: Session, line_user_id: str) -> LineChannelSession:
-    # 目的：查找或建立 LINE 對話 Session。
-    # 為什麼：需維持同一 LINE 使用者的會話連續性與模式狀態。
-    normalized_line_user_id = str(line_user_id or '').strip()
-    if not normalized_line_user_id:
-        raise validation_error('line_user_id 不可為空')
-
-    session = db.query(LineChannelSession).filter(LineChannelSession.line_user_id == normalized_line_user_id).first()
-    if session is not None:
-        return session
-
-    target_agent = _pick_default_agent(db)
-    conversation = Conversation(
-        user_id=None,
-        agent_id=target_agent.id,
-        title=f'LINE-{normalized_line_user_id[:12]}',
-    )
-    db.add(conversation)
-    db.flush()
-
-    session = LineChannelSession(
-        line_user_id=normalized_line_user_id,
-        conversation_id=conversation.id,
-        assigned_agent_id=target_agent.id,
-        mode='bot',
-        status='active',
-        last_inbound_at=datetime.now(),
-        last_outbound_at=None,
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return session
 
 
 def _store_line_message(
@@ -158,7 +129,7 @@ def _run_agent_reply(*, db: Session, session: LineChannelSession, user_message: 
     # 為什麼：重用既有 ChatRouter 能力，避免為 LINE 另外維護一套對話引擎。
     agent_id = str(session.assigned_agent_id or '').strip()
     if not agent_id:
-        target_agent = _pick_default_agent(db)
+        target_agent = line_onboarding_service.resolve_renal_companion_agent(db)
         agent_id = str(target_agent.id)
         session.assigned_agent_id = target_agent.id
         db.add(session)
@@ -180,6 +151,323 @@ def _run_agent_reply(*, db: Session, session: LineChannelSession, user_message: 
         )
         or ''
     ).strip()
+
+
+def _parse_blood_pressure(text: str) -> tuple[int, int] | None:
+    matched = re.search(r'(\d{2,3})\s*/\s*(\d{2,3})', str(text or ''))
+    if matched is None:
+        return None
+    systolic = int(matched.group(1))
+    diastolic = int(matched.group(2))
+    return systolic, diastolic
+
+
+def _parse_weight_kg(text: str) -> float | None:
+    # 目的：從 LINE 自由格式文字抽取體重（kg）。
+    # 為什麼：病患常用「114/74，70.9」等簡寫，需支援無單位與逗號分隔情境。
+    normalized_text = str(text or '').strip().lower()
+    if not normalized_text:
+        return None
+    keyword_patterns = [
+        r'體重\s*[:：]?\s*(\d{2,3}(?:\.\d{1,2})?)',
+        r'wt\s*[:：]?\s*(\d{2,3}(?:\.\d{1,2})?)',
+        r'weight\s*[:：]?\s*(\d{2,3}(?:\.\d{1,2})?)',
+    ]
+    for pattern in keyword_patterns:
+        matched = re.search(pattern, normalized_text)
+        if matched is not None:
+            return float(matched.group(1))
+
+    unit_patterns = [
+        r'(\d{2,3}(?:\.\d{1,2})?)\s*kg',
+        r'(\d{2,3}(?:\.\d{1,2})?)\s*公斤',
+    ]
+    for pattern in unit_patterns:
+        matched = re.search(pattern, normalized_text)
+        if matched is not None:
+            return float(matched.group(1))
+
+    blood_pressure_match = re.search(r'\d{2,3}\s*/\s*\d{2,3}', normalized_text)
+    text_without_bp = normalized_text
+    if blood_pressure_match is not None:
+        start, end = blood_pressure_match.span()
+        text_without_bp = f'{normalized_text[:start]} {normalized_text[end:]}'
+
+    for matched in re.finditer(r'(?<!\d)(\d{2,3}(?:\.\d{1,2})?)(?!\d)', text_without_bp):
+        matched_value = float(matched.group(1))
+        if matched_value < 20 or matched_value > 250:
+            continue
+        nearby_text = text_without_bp[max(0, matched.start() - 6): matched.end() + 6]
+        if '血糖' in nearby_text or 'glucose' in nearby_text:
+            continue
+        return matched_value
+    return None
+
+
+def _parse_blood_glucose(text: str) -> int | None:
+    patterns = [
+        r'血糖\s*[:：]?\s*(\d{2,3})',
+        r'glucose\s*[:：]?\s*(\d{2,3})',
+    ]
+    normalized_text = str(text or '').lower()
+    for pattern in patterns:
+        matched = re.search(pattern, normalized_text)
+        if matched is not None:
+            return int(matched.group(1))
+    return None
+
+
+def _resolve_monitoring_record_type(now: datetime) -> str:
+    hour = int(now.hour)
+    if hour < 15:
+        return 'MORNING'
+    return 'EVENING'
+
+
+def _build_monitoring_draft_key(*, session: LineChannelSession, record_date: str, record_type: str) -> str:
+    # 目的：產生 LINE 監測暫存 key。
+    # 為什麼：需要在分開傳送時，將同一天同時段資料合併判斷是否可寫入。
+    return f'line:monitoring:draft:{session.id}:{record_date}:{record_type}'
+
+
+async def _load_monitoring_draft(*, session: LineChannelSession, record_date: str, record_type: str) -> dict:
+    # 目的：讀取監測暫存草稿資料。
+    # 為什麼：分訊息回報時必須保留上一則已收集的欄位，避免要求一次輸入全部。
+    draft_key = _build_monitoring_draft_key(session=session, record_date=record_date, record_type=record_type)
+    payload = await redis_service.get_json(draft_key)
+    if not isinstance(payload, dict):
+        return {}
+    measurements = payload.get('measurements') if isinstance(payload.get('measurements'), dict) else {}
+    return {'measurements': measurements}
+
+
+async def _save_monitoring_draft(*, session: LineChannelSession, record_date: str, record_type: str, measurements: dict) -> None:
+    # 目的：保存監測暫存草稿資料。
+    # 為什麼：讓病患可以先傳血壓再補體重，或反向補齊後再完成正式入庫。
+    draft_key = _build_monitoring_draft_key(session=session, record_date=record_date, record_type=record_type)
+    await redis_service.set_json(
+        draft_key,
+        {'measurements': dict(measurements or {})},
+        expire=MONITORING_DRAFT_TTL_SECONDS,
+    )
+
+
+async def _clear_monitoring_draft(*, session: LineChannelSession, record_date: str, record_type: str) -> None:
+    draft_key = _build_monitoring_draft_key(session=session, record_date=record_date, record_type=record_type)
+    await redis_service.delete(draft_key)
+
+
+def _build_measurements_from_text(text: str) -> dict:
+    # 目的：將單則文字統一轉成監測欄位字典。
+    # 為什麼：避免各流程重複撰寫解析邏輯，並確保欄位命名一致。
+    measurements: dict[str, int | float] = {}
+    blood_pressure = _parse_blood_pressure(text)
+    if blood_pressure is not None:
+        measurements['systolic'], measurements['diastolic'] = blood_pressure
+    weight_kg = _parse_weight_kg(text)
+    if weight_kg is not None:
+        measurements['weight_kg'] = weight_kg
+    glucose_value = _parse_blood_glucose(text)
+    if glucose_value is not None:
+        measurements['blood_glucose_mg_dl'] = glucose_value
+    return measurements
+
+
+def _merge_measurements(*, draft_measurements: dict, incoming_measurements: dict) -> dict:
+    merged = dict(draft_measurements or {})
+    for field_name in ('systolic', 'diastolic', 'weight_kg', 'blood_glucose_mg_dl'):
+        if incoming_measurements.get(field_name) is not None:
+            merged[field_name] = incoming_measurements[field_name]
+    return merged
+
+
+def _list_missing_measurements(*, patient: RenalPatient, measurements: dict) -> list[str]:
+    missing_fields: list[str] = []
+    if measurements.get('systolic') is None or measurements.get('diastolic') is None:
+        missing_fields.append('血壓')
+    if measurements.get('weight_kg') is None:
+        missing_fields.append('體重')
+    if bool(getattr(patient, 'is_diabetic', False)) and measurements.get('blood_glucose_mg_dl') is None:
+        missing_fields.append('血糖')
+    return missing_fields
+
+
+def _format_missing_measurement_prompt(*, missing_fields: list[str]) -> str:
+    if not missing_fields:
+        return ''
+    return f"已收到部分資料，還缺 {', '.join(missing_fields)}。請補上後我會立即完成紀錄。"
+
+
+def _find_existing_patient_record(
+    *,
+    db: Session,
+    patient: RenalPatient,
+    recorded_at: datetime,
+    record_type: str,
+) -> MonitoringRecord | None:
+    # 目的：查詢同病患同時段是否已有日常監測紀錄。
+    # 為什麼：避免分開傳送或重送訊息時，產生重複入庫資料。
+    day_start = recorded_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    return (
+        db.query(MonitoringRecord)
+        .filter(
+            MonitoringRecord.patient_id == patient.id,
+            MonitoringRecord.record_type == record_type,
+            MonitoringRecord.submitted_by_role == 'PATIENT',
+            MonitoringRecord.recorded_at >= day_start,
+            MonitoringRecord.recorded_at < day_end,
+        )
+        .order_by(MonitoringRecord.recorded_at.desc())
+        .first()
+    )
+
+
+def _is_same_measurements(*, record: MonitoringRecord, measurements: dict) -> bool:
+    stored_measurements = record.measurements if isinstance(record.measurements, dict) else {}
+    comparable_fields = ('systolic', 'diastolic', 'weight_kg', 'blood_glucose_mg_dl')
+    return all(stored_measurements.get(field_name) == measurements.get(field_name) for field_name in comparable_fields)
+
+
+def _persist_monitoring_record(
+    *,
+    db: Session,
+    patient: RenalPatient,
+    record_type: str,
+    recorded_at: datetime,
+    measurements_payload: dict,
+) -> tuple[bool, str]:
+    # 目的：將完整監測欄位寫入 monitoring_records 並回傳回覆訊息。
+    # 為什麼：將入庫與回覆文案集中在同一函式，降低分支重複與不一致風險。
+    existing_record = _find_existing_patient_record(
+        db=db,
+        patient=patient,
+        recorded_at=recorded_at,
+        record_type=record_type,
+    )
+    if existing_record is not None and _is_same_measurements(record=existing_record, measurements=measurements_payload):
+        systolic = int(measurements_payload.get('systolic') or 0)
+        diastolic = int(measurements_payload.get('diastolic') or 0)
+        weight_kg = float(measurements_payload.get('weight_kg') or 0)
+        glucose_value = measurements_payload.get('blood_glucose_mg_dl')
+        if glucose_value is not None:
+            return True, f'今天同時段已紀錄你的血壓{systolic}/{diastolic}、體重 {weight_kg}kg、血糖 {glucose_value} mg/dL。'
+        return True, f'今天同時段已紀錄你的血壓{systolic}/{diastolic}、體重 {weight_kg}kg。'
+
+    try:
+        renal_monitoring_service.create_monitoring_record(
+            db=db,
+            payload={
+                'patient_id': str(patient.patient_code or ''),
+                'record_type': record_type,
+                'recorded_at': recorded_at.isoformat(),
+                'submitted_by_role': 'PATIENT',
+                'measurements': measurements_payload,
+                'symptoms': {},
+                'confirmed': True,
+            },
+        )
+    except Exception as error:
+        logger.warning('line_monitoring_write_failed', error=str(error)[:300])
+        return False, '已收到你的量測資料，但系統寫入暫時失敗，請稍後再試一次。'
+
+    systolic = int(measurements_payload.get('systolic') or 0)
+    diastolic = int(measurements_payload.get('diastolic') or 0)
+    weight_kg = float(measurements_payload.get('weight_kg') or 0)
+    glucose_value = measurements_payload.get('blood_glucose_mg_dl')
+    if glucose_value is not None:
+        return True, f'收到你的血壓{systolic}/{diastolic}，體重 {weight_kg}kg，血糖 {glucose_value} mg/dL，紀錄完成。'
+    return True, f'收到你的血壓{systolic}/{diastolic}，體重 {weight_kg}kg，紀錄完成。'
+
+
+def _find_bound_patient_for_session(*, db: Session, session: LineChannelSession) -> RenalPatient | None:
+    if session.bound_patient_id:
+        return db.query(RenalPatient).filter(RenalPatient.id == session.bound_patient_id, RenalPatient.enabled == True).first()  # noqa: E712
+    normalized_line_user_id = str(session.line_user_id or '').strip()
+    if not normalized_line_user_id:
+        return None
+    return (
+        db.query(RenalPatient)
+        .filter(RenalPatient.line_user_id == normalized_line_user_id, RenalPatient.enabled == True)  # noqa: E712
+        .first()
+    )
+
+
+async def _try_handle_monitoring_report_message(*, db: Session, session: LineChannelSession, inbound_text: str) -> tuple[bool, str | None]:
+    # 目的：辨識 LINE 文字中的血壓/體重/血糖回報並寫入監測紀錄。
+    # 為什麼：腎友回報屬高頻固定流程，需提供可預期的即時確認而非完全依賴 LLM 自由回覆。
+    patient = _find_bound_patient_for_session(db=db, session=session)
+    if patient is None:
+        return False, None
+
+    incoming_measurements = _build_measurements_from_text(inbound_text)
+    if not incoming_measurements:
+        return False, None
+
+    recorded_at = datetime.now()
+    record_type = _resolve_monitoring_record_type(recorded_at)
+    record_date = recorded_at.date().isoformat()
+    existing_draft = await _load_monitoring_draft(session=session, record_date=record_date, record_type=record_type)
+    draft_measurements = existing_draft.get('measurements') if isinstance(existing_draft, dict) else {}
+    merged_measurements = _merge_measurements(
+        draft_measurements=draft_measurements,
+        incoming_measurements=incoming_measurements,
+    )
+    missing_fields = _list_missing_measurements(patient=patient, measurements=merged_measurements)
+    if missing_fields:
+        await _save_monitoring_draft(
+            session=session,
+            record_date=record_date,
+            record_type=record_type,
+            measurements=merged_measurements,
+        )
+        return True, _format_missing_measurement_prompt(missing_fields=missing_fields)
+
+    write_success, reply_text = _persist_monitoring_record(
+        db=db,
+        patient=patient,
+        record_type=record_type,
+        recorded_at=recorded_at,
+        measurements_payload=merged_measurements,
+    )
+    if write_success:
+        await _clear_monitoring_draft(session=session, record_date=record_date, record_type=record_type)
+    return True, reply_text
+
+
+async def _try_backfill_monitoring_record_from_agent_reply(
+    *,
+    db: Session,
+    session: LineChannelSession,
+    inbound_text: str,
+    assistant_text: str,
+) -> None:
+    # 目的：當訊息已進入 Agent 回覆時，補做監測資料入庫保護。
+    # 為什麼：避免 Agent 已明確回覆血壓/體重，但規則層遺漏導致未入庫。
+    patient = _find_bound_patient_for_session(db=db, session=session)
+    if patient is None:
+        return
+    combined_text = f'{str(inbound_text or "").strip()} {str(assistant_text or "").strip()}'.strip()
+    if not combined_text:
+        return
+
+    merged_measurements = _build_measurements_from_text(combined_text)
+    missing_fields = _list_missing_measurements(patient=patient, measurements=merged_measurements)
+    if missing_fields:
+        return
+
+    recorded_at = datetime.now()
+    record_type = _resolve_monitoring_record_type(recorded_at)
+    write_success, _ = _persist_monitoring_record(
+        db=db,
+        patient=patient,
+        record_type=record_type,
+        recorded_at=recorded_at,
+        measurements_payload=merged_measurements,
+    )
+    if write_success:
+        record_date = recorded_at.date().isoformat()
+        await _clear_monitoring_draft(session=session, record_date=record_date, record_type=record_type)
 
 
 async def _reply_line_message(*, reply_token: str, text: str) -> None:
@@ -239,6 +527,8 @@ async def line_webhook(
     db: Session = Depends(get_db),
     x_line_signature: str = Header(default=''),
 ):
+    # 目的：統一處理 LINE webhook 事件（follow/message/unfollow）。
+    # 為什麼：集中驗簽、去重與事件分派，避免重複邏輯散落在多個入口。
     raw_body = await request.body()
     if bool(getattr(settings, 'LINE_WEBHOOK_VERIFY_SIGNATURE', True)):
         if not _verify_line_signature(raw_body=raw_body, header_signature=x_line_signature):
@@ -250,21 +540,56 @@ async def line_webhook(
     for event in (events if isinstance(events, list) else []):
         if not isinstance(event, dict):
             continue
-        event_type = str(event.get('type') or '').strip()
-        if event_type != 'message':
-            continue
-        message_obj = event.get('message') if isinstance(event.get('message'), dict) else {}
-        if str(message_obj.get('type') or '').strip() != 'text':
+        if await line_onboarding_service.should_skip_event(event=event):
             continue
 
+        event_type = str(event.get('type') or '').strip()
         source_obj = event.get('source') if isinstance(event.get('source'), dict) else {}
         line_user_id = str(source_obj.get('userId') or '').strip()
         reply_token = str(event.get('replyToken') or '').strip()
-        inbound_text = str(message_obj.get('text') or '').strip()
-        if (not line_user_id) or (not inbound_text):
+        if not line_user_id:
             continue
 
-        session = _get_or_create_line_session(db=db, line_user_id=line_user_id)
+        if event_type == 'follow':
+            session, follow_reply = line_onboarding_service.handle_follow_event(db=db, line_user_id=line_user_id)
+            should_send_welcome = await line_onboarding_service.should_send_follow_welcome(line_user_id=line_user_id)
+            if follow_reply and should_send_welcome:
+                _store_line_message(
+                    db=db,
+                    session=session,
+                    direction='outbound',
+                    sender_type='system',
+                    content=follow_reply,
+                )
+                _sync_message_to_conversation(db=db, session=session, role='assistant', content=follow_reply)
+                session.last_outbound_at = datetime.now()
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                if reply_token:
+                    await _reply_line_message(reply_token=reply_token, text=follow_reply)
+                else:
+                    await _push_line_message(to_line_user_id=line_user_id, text=follow_reply)
+            processed += 1
+            continue
+
+        if event_type == 'unfollow':
+            line_onboarding_service.handle_unfollow_event(db=db, line_user_id=line_user_id)
+            processed += 1
+            continue
+
+        if event_type != 'message':
+            continue
+
+        message_obj = event.get('message') if isinstance(event.get('message'), dict) else {}
+        if str(message_obj.get('type') or '').strip() != 'text':
+            continue
+        inbound_text = str(message_obj.get('text') or '').strip()
+        if not inbound_text:
+            continue
+
+        session = line_onboarding_service.get_or_create_line_session(db=db, line_user_id=line_user_id)
+        session = line_onboarding_service.ensure_renal_companion_assignment(db=db, session=session)
         _store_line_message(
             db=db,
             session=session,
@@ -280,11 +605,68 @@ async def line_webhook(
         db.commit()
         db.refresh(session)
 
+        binding_handled, binding_reply = line_onboarding_service.try_auto_bind_patient_from_dialog(
+            db=db,
+            session=session,
+            inbound_text=inbound_text,
+        )
+        if binding_handled:
+            if binding_reply:
+                _store_line_message(
+                    db=db,
+                    session=session,
+                    direction='outbound',
+                    sender_type='system',
+                    content=binding_reply,
+                )
+                _sync_message_to_conversation(db=db, session=session, role='assistant', content=binding_reply)
+                session.last_outbound_at = datetime.now()
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                if reply_token:
+                    await _reply_line_message(reply_token=reply_token, text=binding_reply)
+            processed += 1
+            continue
+
+        monitoring_handled, monitoring_reply = await _try_handle_monitoring_report_message(
+            db=db,
+            session=session,
+            inbound_text=inbound_text,
+        )
+        if monitoring_handled:
+            if monitoring_reply:
+                _store_line_message(
+                    db=db,
+                    session=session,
+                    direction='outbound',
+                    sender_type='system',
+                    content=monitoring_reply,
+                )
+                _sync_message_to_conversation(db=db, session=session, role='assistant', content=monitoring_reply)
+                session.last_outbound_at = datetime.now()
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                if reply_token:
+                    await _reply_line_message(reply_token=reply_token, text=monitoring_reply)
+                else:
+                    await _push_line_message(to_line_user_id=line_user_id, text=monitoring_reply)
+            processed += 1
+            continue
+
         if str(session.mode or 'bot') == 'human':
             processed += 1
             continue
 
         assistant_text = _run_agent_reply(db=db, session=session, user_message=inbound_text)
+        if assistant_text:
+            await _try_backfill_monitoring_record_from_agent_reply(
+                db=db,
+                session=session,
+                inbound_text=inbound_text,
+                assistant_text=assistant_text,
+            )
         if assistant_text:
             _store_line_message(
                 db=db,
@@ -316,6 +698,7 @@ async def list_line_sessions(
     rows = db.query(LineChannelSession).order_by(LineChannelSession.updated_at.desc()).limit(safe_limit).all()
     output = []
     for row in rows:
+        bound_summary = line_onboarding_service.build_bound_patient_summary(db=db, session=row)
         latest_message = db.query(LineMessage).filter(LineMessage.session_id == row.id).order_by(LineMessage.created_at.desc()).first()
         output.append(
             {
@@ -325,6 +708,11 @@ async def list_line_sessions(
                 'assigned_agent_id': str(row.assigned_agent_id) if row.assigned_agent_id else None,
                 'mode': str(row.mode or 'bot'),
                 'status': str(row.status or 'active'),
+                'binding_status': str(row.binding_status or 'pending_name'),
+                'binding_name': str(row.binding_name or ''),
+                'binding_phone': str(row.binding_phone or ''),
+                'bound_at': row.bound_at.isoformat() if row.bound_at else None,
+                'bound_patient': bound_summary,
                 'last_inbound_at': row.last_inbound_at.isoformat() if row.last_inbound_at else None,
                 'last_outbound_at': row.last_outbound_at.isoformat() if row.last_outbound_at else None,
                 'updated_at': row.updated_at.isoformat() if row.updated_at else None,
@@ -367,6 +755,7 @@ async def list_line_session_messages(
         .all()
     )
     rows.reverse()
+    bound_summary = line_onboarding_service.build_bound_patient_summary(db=db, session=session)
     return {
         'session': {
             'id': str(session.id),
@@ -375,6 +764,11 @@ async def list_line_session_messages(
             'assigned_agent_id': str(session.assigned_agent_id) if session.assigned_agent_id else None,
             'mode': str(session.mode or 'bot'),
             'status': str(session.status or 'active'),
+            'binding_status': str(session.binding_status or 'pending_name'),
+            'binding_name': str(session.binding_name or ''),
+            'binding_phone': str(session.binding_phone or ''),
+            'bound_at': session.bound_at.isoformat() if session.bound_at else None,
+            'bound_patient': bound_summary,
         },
         'messages': [
             {

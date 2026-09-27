@@ -1,5 +1,5 @@
-import uuid
 import re
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -67,14 +67,57 @@ LEGACY_PERMISSION_KEYS = [
     'private.rag.read',
     'private.rag.update',
     'private.rag.delete',
+    'renal.create',
+    'renal.read',
+    'renal.update',
+    'renal.delete',
+    'nursing.overview',
+    'nursing.ai_care',
+    'nursing.dialysis',
+    'nursing.trends',
+    'nursing.line',
+    'nursing.tracing',
+    'line.center',
+    'monitoring.compliance.read',
+    'monitoring.reminder.dispatch',
+    'monitoring.reminder.policy.read',
+    'monitoring.reminder.policy.update',
+    'monitoring.reminder.log.read',
+    'monitoring.backfill.run',
+    'monitoring.backfill.read',
+    'health_education.content.read',
+    'health_education.content.create',
+    'health_education.content.update',
+    'health_education.content.delete',
+    'health_education.content.approve',
+    'health_education.content.reject',
+    'health_education.content.send',
+    'health_education.content.schedule',
+    'health_education.log.read',
+    'health_education.import.mcp',
+    'health_education.import.manual',
+    'health_education.source_rule.read',
+    'health_education.source_rule.create',
+    'health_education.source_rule.update',
+    'health_education.source_rule.delete',
+    'scheduler.task.read',
+    'scheduler.task.create',
+    'scheduler.task.update',
+    'scheduler.task.delete',
+    'scheduler.task.run',
+    'scheduler.run.read',
+    'scheduler.template.read',
+    'scheduler.template.create',
+    'scheduler.template.update',
+    'scheduler.template.delete',
 ]
 
 
 def _parse_uuid_or_raise(raw_id: str, resource_name: str):
     try:
         return uuid.UUID(str(raw_id))
-    except ValueError:
-        raise not_found_error(resource_name, raw_id)
+    except ValueError as error:
+        raise not_found_error(resource_name, raw_id) from error
 
 
 def _normalize_group_code(raw_code: str) -> str:

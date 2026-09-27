@@ -1,11 +1,11 @@
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from src.models import User
 from src.core.logging import get_logger
+from src.models import User
 from src.services.access_control_service import LEGACY_ROLE_PERMISSIONS, access_control_service
 
 logger = get_logger(__name__)

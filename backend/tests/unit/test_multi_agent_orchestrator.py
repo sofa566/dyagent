@@ -12,8 +12,6 @@ import types
 import uuid
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.api.routes.chat import (
     _build_execution_waves,
     _classify_routing,
@@ -21,8 +19,7 @@ from src.api.routes.chat import (
     _pick_worker_agent,
 )
 from src.core.config import settings
-from src.models import Agent, MultiAgentSession, MultiAgentTask, Workspace
-
+from src.models import Agent, MultiAgentSession, MultiAgentTask
 
 # ──────────────────────────────────────────────
 # 輔助：產生測試用 stub（不走 SQLAlchemy ORM）
@@ -231,8 +228,13 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(tasked); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+        db.add(router)
+        db.add(tasked)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(tasked)
+        db.refresh(public)
 
         worker, reason = _pick_worker_agent(db=db, router_agent=router, message='請銷售任務代理處理本月銷售報表')
         assert worker is not None
@@ -248,8 +250,11 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(public)
+        db.add(router)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(public)
 
         worker, reason = _pick_worker_agent(db=db, router_agent=router, message='今天天氣如何')
         assert worker is not None
@@ -269,8 +274,13 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(tasked_disabled); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(tasked_disabled); db.refresh(public)
+        db.add(router)
+        db.add(tasked_disabled)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(tasked_disabled)
+        db.refresh(public)
 
         worker, reason = _pick_worker_agent(db=db, router_agent=router, message='請問銷售報表')
         assert worker is not None
@@ -290,8 +300,13 @@ class TestWorkerClassRouting:
             name='一般任務代理', description='處理一般任務', model_type='cloud',
             agent_class='tasked', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(private_worker); db.add(tasked)
-        db.commit(); db.refresh(router); db.refresh(private_worker); db.refresh(tasked)
+        db.add(router)
+        db.add(private_worker)
+        db.add(tasked)
+        db.commit()
+        db.refresh(router)
+        db.refresh(private_worker)
+        db.refresh(tasked)
 
         private_permission_key = f'entity.agent.{str(private_worker.id)}.execute'
         worker, reason = _pick_worker_agent(
@@ -318,8 +333,13 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(private_worker); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(private_worker); db.refresh(public)
+        db.add(router)
+        db.add(private_worker)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(private_worker)
+        db.refresh(public)
 
         worker, reason = _pick_worker_agent(
             db=db,
@@ -341,8 +361,11 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(public)
+        db.add(router)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(public)
 
         with patch('src.api.routes.chat._pick_worker_by_llm', side_effect=RuntimeError('should_not_call')):
             worker, reason = _pick_worker_agent(db=db, router_agent=router, message='你是誰？')
@@ -364,8 +387,13 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(tasked); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+        db.add(router)
+        db.add(tasked)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(tasked)
+        db.refresh(public)
 
         with (
             patch.object(settings, 'ROUTER_ASSIGNMENT_MODE', 'description_only'),
@@ -390,8 +418,13 @@ class TestWorkerClassRouting:
             name='公眾代理', description='一般問題回覆', model_type='cloud',
             agent_class='public', enabled=True, workspace_id=workspace.id,
         )
-        db.add(router); db.add(tasked); db.add(public)
-        db.commit(); db.refresh(router); db.refresh(tasked); db.refresh(public)
+        db.add(router)
+        db.add(tasked)
+        db.add(public)
+        db.commit()
+        db.refresh(router)
+        db.refresh(tasked)
+        db.refresh(public)
 
         def _fake_memory_retrieve(*args, **kwargs):
             agent_id = str(kwargs.get('agent_id') or '')
@@ -578,7 +611,9 @@ class TestMultiAgentOrchestrator:
         )
         db.add(w2)
         db.commit()
-        db.refresh(router); db.refresh(w1); db.refresh(w2)
+        db.refresh(router)
+        db.refresh(w1)
+        db.refresh(w2)
         return router, w1, w2
 
     def test_complex_message_creates_session_and_tasks(self, client, admin_token, db, workspace):
@@ -662,7 +697,9 @@ class TestOrchestratorRetry:
         )
         db.add(w2)
         db.commit()
-        db.refresh(router); db.refresh(w1); db.refresh(w2)
+        db.refresh(router)
+        db.refresh(w1)
+        db.refresh(w2)
 
         call_count = {'n': 0}
         fake_plan = {
@@ -736,7 +773,9 @@ class TestSubAgentFailure:
         )
         db.add(w2)
         db.commit()
-        db.refresh(router); db.refresh(w1); db.refresh(w2)
+        db.refresh(router)
+        db.refresh(w1)
+        db.refresh(w2)
 
         fake_plan = {
             'multi': True,

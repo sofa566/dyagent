@@ -323,6 +323,79 @@
         ],
       },
       {
+        module: '腎友管理',
+        nodes: [
+          { label: 'renal.create', key: 'renal.create' },
+          { label: 'renal.read', key: 'renal.read' },
+          { label: 'renal.update', key: 'renal.update' },
+          { label: 'renal.delete', key: 'renal.delete' },
+        ],
+      },
+      {
+        module: '腎友照護',
+        nodes: [
+          { label: 'nursing.overview', key: 'nursing.overview' },
+          { label: 'nursing.ai_care', key: 'nursing.ai_care' },
+          { label: 'nursing.dialysis', key: 'nursing.dialysis' },
+          { label: 'nursing.trends', key: 'nursing.trends' },
+          { label: 'nursing.line', key: 'nursing.line' },
+          { label: 'nursing.tracing', key: 'nursing.tracing' },
+        ],
+      },
+      {
+        module: '腎友提醒',
+        nodes: [
+          { label: 'monitoring.compliance.read', key: 'monitoring.compliance.read' },
+          { label: 'monitoring.reminder.dispatch', key: 'monitoring.reminder.dispatch' },
+          { label: 'monitoring.reminder.policy.read', key: 'monitoring.reminder.policy.read' },
+          { label: 'monitoring.reminder.policy.update', key: 'monitoring.reminder.policy.update' },
+          { label: 'monitoring.reminder.log.read', key: 'monitoring.reminder.log.read' },
+          { label: 'monitoring.backfill.run', key: 'monitoring.backfill.run' },
+          { label: 'monitoring.backfill.read', key: 'monitoring.backfill.read' },
+        ],
+      },
+      {
+        module: '衛教提醒',
+        nodes: [
+          { label: 'health_education.content.read', key: 'health_education.content.read' },
+          { label: 'health_education.content.create', key: 'health_education.content.create' },
+          { label: 'health_education.content.update', key: 'health_education.content.update' },
+          { label: 'health_education.content.delete', key: 'health_education.content.delete' },
+          { label: 'health_education.content.approve', key: 'health_education.content.approve' },
+          { label: 'health_education.content.reject', key: 'health_education.content.reject' },
+          { label: 'health_education.content.send', key: 'health_education.content.send' },
+          { label: 'health_education.content.schedule', key: 'health_education.content.schedule' },
+          { label: 'health_education.log.read', key: 'health_education.log.read' },
+          { label: 'health_education.import.mcp', key: 'health_education.import.mcp' },
+          { label: 'health_education.import.manual', key: 'health_education.import.manual' },
+          { label: 'health_education.source_rule.read', key: 'health_education.source_rule.read' },
+          { label: 'health_education.source_rule.create', key: 'health_education.source_rule.create' },
+          { label: 'health_education.source_rule.update', key: 'health_education.source_rule.update' },
+          { label: 'health_education.source_rule.delete', key: 'health_education.source_rule.delete' },
+        ],
+      },
+      {
+        module: '排程管理',
+        nodes: [
+          { label: 'scheduler.task.read', key: 'scheduler.task.read' },
+          { label: 'scheduler.task.create', key: 'scheduler.task.create' },
+          { label: 'scheduler.task.update', key: 'scheduler.task.update' },
+          { label: 'scheduler.task.delete', key: 'scheduler.task.delete' },
+          { label: 'scheduler.task.run', key: 'scheduler.task.run' },
+          { label: 'scheduler.run.read', key: 'scheduler.run.read' },
+          { label: 'scheduler.template.read', key: 'scheduler.template.read' },
+          { label: 'scheduler.template.create', key: 'scheduler.template.create' },
+          { label: 'scheduler.template.update', key: 'scheduler.template.update' },
+          { label: 'scheduler.template.delete', key: 'scheduler.template.delete' },
+        ],
+      },
+      {
+        module: 'Line 對話中心',
+        nodes: [
+          { label: 'line.center', key: 'line.center' },
+        ],
+      },
+      {
         module: '聊天',
         nodes: [
           { label: 'chat', key: 'chat' },
@@ -717,7 +790,7 @@
           text: moduleItem.module,
           children: filteredNodes.map(node => ({
             id: `perm:${node.key}`,
-            text: `${node.label} (${node.key})`,
+            text: formatPermissionNodeText(node.label, node.key),
             attributes: { permissionKey: node.key },
             checked: state.roleSelectedPermissions.has(node.key),
           })),
@@ -883,6 +956,18 @@
       return String(permissionKey || '');
     }
 
+    function formatPermissionNodeText(label, key) {
+      const normalizedLabel = String(label || '').trim();
+      const normalizedKey = String(key || '').trim();
+      if (!normalizedLabel) {
+        return normalizedKey;
+      }
+      if (!normalizedKey || normalizedLabel === normalizedKey) {
+        return normalizedLabel;
+      }
+      return `${normalizedLabel} (${normalizedKey})`;
+    }
+
     function formatPermissionKeysForDisplay(permissionKeys) {
       const entityNameMap = buildEntityNameMap();
       return (Array.isArray(permissionKeys) ? permissionKeys : [])
@@ -999,7 +1084,7 @@
         functionModules,
         functionPermissionKeys,
         'viewer-func',
-        nodeItem => `${String(nodeItem.label || nodeItem.key)} (${String(nodeItem.key)})`,
+        nodeItem => formatPermissionNodeText(nodeItem.label, nodeItem.key),
       );
       const entityTreeData = buildViewerTreeDataFromModules(
         entityModules,

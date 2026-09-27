@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>腎友提醒 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    :root {
+      --reminder-accent: #17634f;
+      --reminder-warning: #9f3f1b;
+      --reminder-danger: #9b1c1c;
+    }
+    .reminder-layout {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .reminder-panel {
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      background: #fff;
+      padding: 14px;
+    }
+    .panel-title {
+      margin: 0 0 10px;
+      color: var(--reminder-accent);
+      font-size: 20px;
+    }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .filters input,
+    .filters select,
+    .filters textarea {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+    .filters textarea { width: 100%; min-height: 90px; }
+    .summary-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      margin-bottom: 10px;
+    }
+    .summary-card {
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 10px;
+      background: linear-gradient(180deg, #fff, #f9fcfb);
+    }
+    .summary-card .label { color: var(--text-secondary); font-size: 12px; }
+    .summary-card .value { font-size: 22px; font-weight: 700; }
+    .status-ok { color: var(--reminder-accent); }
+    .status-warn { color: var(--reminder-warning); }
+    .status-bad { color: var(--reminder-danger); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
+    th { background: #f5f8f7; color: #355; }
+    tr:last-child td { border-bottom: none; }
+    .policy-list { display: grid; gap: 10px; }
+    .policy-item { border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; background: #fff; }
+    .policy-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .policy-meta { font-size: 13px; color: var(--text-secondary); }
+    .policy-switches { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 8px; }
+    .muted-note { color: var(--text-secondary); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/reminder-schedule.html">腎友提醒</a>
+      <a href="/pages/scheduler-management.html">排程管理</a>
+      <a href="/pages/line-console.html">LINE 對話中心</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="actions">
+      <h2>腎友提醒</h2>
+      <button id="btn-refresh-all" class="btn">重新整理全部</button>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <section class="reminder-panel">
+      <h3 class="panel-title">合規列表</h3>
+      <div class="filters">
+        <label for="compliance-date">日期</label>
+        <input id="compliance-date" type="date">
+        <label for="compliance-window">時段</label>
+        <select id="compliance-window">
+          <option value="ALL">全部</option>
+          <option value="MORNING">早晨</option>
+          <option value="EVENING">晚間</option>
+        </select>
+        <button id="btn-load-compliance" class="btn btn-secondary">查詢合規</button>
+      </div>
+      <div id="compliance-summary" class="summary-grid"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>病患</th>
+              <th>早晨</th>
+              <th>晚間</th>
+              <th>糖友血糖</th>
+              <th>LINE 綁定</th>
+              <th>今日狀態</th>
+            </tr>
+          </thead>
+          <tbody id="compliance-table-body"><tr><td colspan="6">尚未載入</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="reminder-layout">
+      <section class="reminder-panel">
+        <h3 class="panel-title">手動派送</h3>
+        <div class="filters">
+          <label for="dispatch-date">日期</label>
+          <input id="dispatch-date" type="date">
+          <label for="dispatch-window">時段</label>
+          <select id="dispatch-window">
+            <option value="MORNING">早晨</option>
+            <option value="EVENING" selected>晚間</option>
+          </select>
+          <label><input id="dispatch-force" type="checkbox"> force 補發</label>
+          <button id="btn-dispatch" class="btn btn-primary">執行派送</button>
+        </div>
+        <div id="dispatch-summary" class="summary-grid"></div>
+      </section>
+
+      <section class="reminder-panel">
+        <h3 class="panel-title">派送紀錄</h3>
+        <div class="filters">
+          <label for="logs-date">日期</label>
+          <input id="logs-date" type="date">
+          <label for="logs-window">時段</label>
+          <select id="logs-window">
+            <option value="">全部</option>
+            <option value="MORNING">早晨</option>
+            <option value="EVENING">晚間</option>
+          </select>
+          <label for="logs-status">狀態</label>
+          <select id="logs-status">
+            <option value="">全部</option>
+            <option value="sent">sent</option>
+            <option value="skipped">skipped</option>
+            <option value="failed">failed</option>
+            <option value="pending">pending</option>
+          </select>
+          <button id="btn-load-logs" class="btn btn-secondary">查詢紀錄</button>
+        </div>
+        <div id="logs-summary" class="summary-grid"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>病患</th>
+                <th>時段</th>
+                <th>狀態</th>
+                <th>訊息摘要</th>
+                <th>處理時間</th>
+                <th>錯誤摘要</th>
+              </tr>
+            </thead>
+            <tbody id="logs-table-body"><tr><td colspan="6">尚未載入</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section class="reminder-panel" style="margin-top: 12px;">
+      <h3 class="panel-title">Policy 管理</h3>
+      <div id="schedule-meta" class="muted-note">排程時間載入中...</div>
+      <div id="policy-list" class="policy-list" style="margin-top:10px;"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const state = {
+      policies: [],
+      compliance: null,
+      logs: null,
+      dispatch: null,
+    };
+
+    const canAccessWith = [
+      'monitoring.compliance.read',
+      'monitoring.reminder.dispatch',
+      'monitoring.reminder.policy.read',
+      'monitoring.reminder.policy.update',
+      'monitoring.reminder.log.read',
+      'monitoring.backfill.run',
+      'monitoring.backfill.read',
+    ];
+
+    function todayText() {
+      return new Date().toISOString().slice(0, 10);
+    }
+
+    function escapeHtml(rawText) {
+      return String(rawText || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function boolLabel(v) {
+      return v ? '<span class="status-ok">完成</span>' : '<span class="status-warn">缺漏</span>';
+    }
+
+    function renderSummary(elementId, rows) {
+      const element = document.getElementById(elementId);
+      element.innerHTML = (rows || []).map((row) => `
+        <div class="summary-card">
+          <div class="label">${escapeHtml(row.label)}</div>
+          <div class="value ${row.cssClass || ''}">${escapeHtml(row.value)}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderCompliance() {
+      const payload = state.compliance || { summary: {}, patients: [] };
+      const summary = payload.summary || {};
+      renderSummary('compliance-summary', [
+        { label: '總病患', value: String(summary.total_patients || 0) },
+        { label: '完整回報', value: String(summary.compliant_patients || 0), cssClass: 'status-ok' },
+        { label: '待追蹤', value: String(summary.non_compliant_patients || 0), cssClass: 'status-warn' },
+      ]);
+
+      const filterWindow = document.getElementById('compliance-window').value;
+      const rows = (payload.patients || []).filter((row) => {
+        if (filterWindow === 'MORNING') return !row.morning_done;
+        if (filterWindow === 'EVENING') return !row.evening_done || (row.is_diabetic && !row.glucose_complete);
+        return true;
+      });
+
+      const bodyElement = document.getElementById('compliance-table-body');
+      if (!rows.length) {
+        bodyElement.innerHTML = '<tr><td colspan="6">查無資料</td></tr>';
+        return;
+      }
+
+      bodyElement.innerHTML = rows.map((row) => {
+        const statusText = row.compliant ? '<span class="status-ok">已完成</span>' : '<span class="status-bad">待回報</span>';
+        return `
+          <tr>
+            <td>${escapeHtml(`${row.patient_name || '-'} (${row.patient_id || '-'})`)}</td>
+            <td>${boolLabel(!!row.morning_done)}</td>
+            <td>${boolLabel(!!row.evening_done)}</td>
+            <td>${row.is_diabetic ? boolLabel(!!row.glucose_complete) : '<span class="muted-note">不適用</span>'}</td>
+            <td>${row.line_user_bound ? '<span class="status-ok">已綁定</span>' : '<span class="status-bad">未綁定</span>'}</td>
+            <td>${statusText}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderDispatchSummary() {
+      const payload = state.dispatch || {};
+      renderSummary('dispatch-summary', [
+        { label: 'scheduled', value: String(payload.scheduled || 0) },
+        { label: 'sent', value: String(payload.sent || 0), cssClass: 'status-ok' },
+        { label: 'skipped', value: String(payload.skipped || 0), cssClass: 'status-warn' },
+        { label: 'failed', value: String(payload.failed || 0), cssClass: 'status-bad' },
+      ]);
+    }
+
+    function renderLogs() {
+      const payload = state.logs || { summary: {}, jobs: [] };
+      const summary = payload.summary || {};
+      renderSummary('logs-summary', [
+        { label: '總任務', value: String(summary.total_jobs || 0) },
+        { label: 'sent', value: String(summary.sent || 0), cssClass: 'status-ok' },
+        { label: 'skipped', value: String(summary.skipped || 0), cssClass: 'status-warn' },
+        { label: 'failed', value: String(summary.failed || 0), cssClass: 'status-bad' },
+      ]);
+
+      const bodyElement = document.getElementById('logs-table-body');
+      const rows = payload.jobs || [];
+      if (!rows.length) {
+        bodyElement.innerHTML = '<tr><td colspan="6">查無派送紀錄</td></tr>';
+        return;
+      }
+      bodyElement.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(`${row.patient_name || '-'} (${row.patient_id || '-'})`)}</td>
+          <td>${escapeHtml(row.window || '-')}</td>
+          <td>${escapeHtml(row.status || '-')}</td>
+          <td>${escapeHtml((row.payload && row.payload.message) ? String(row.payload.message).slice(0, 28) : '-')}</td>
+          <td>${escapeHtml(row.processed_at || row.scheduled_at || '-')}</td>
+          <td>${escapeHtml(row.error_message || '-')}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderPolicyList() {
+      const listElement = document.getElementById('policy-list');
+      if (!state.policies.length) {
+        listElement.innerHTML = '<div class="muted-note">目前沒有 policy。</div>';
+        return;
+      }
+      listElement.innerHTML = state.policies.map((policy) => `
+        <div class="policy-item" data-policy-id="${policy.id}">
+          <div class="policy-header">
+            <strong>${policy.window === 'MORNING' ? '早晨提醒' : '晚間提醒'}</strong>
+            <span class="policy-meta">更新時間：${escapeHtml(policy.updated_at || '-')}</span>
+          </div>
+          <div class="policy-switches">
+            <label><input type="checkbox" data-field="enabled" ${policy.enabled ? 'checked' : ''}> 啟用</label>
+            <label><input type="checkbox" data-field="requires_glucose_for_diabetic" ${policy.requires_glucose_for_diabetic ? 'checked' : ''}> 糖友需血糖</label>
+          </div>
+          <div class="filters" style="display:block;">
+            <textarea data-field="message_template">${escapeHtml(policy.message_template || '')}</textarea>
+          </div>
+          <button class="btn btn-primary" data-action="save-policy">儲存 Policy</button>
+        </div>
+      `).join('');
+    }
+
+    async function loadCompliance() {
+      const targetDate = document.getElementById('compliance-date').value || todayText();
+      state.compliance = await api.get(`/monitoring-compliance/daily?date=${encodeURIComponent(targetDate)}`);
+      renderCompliance();
+    }
+
+    async function loadPolicies() {
+      const payload = await api.get('/monitoring-compliance/reminders/policies');
+      state.policies = Array.isArray(payload.policies) ? payload.policies : [];
+      const schedule = payload.schedule || {};
+      document.getElementById('schedule-meta').textContent = `提醒：早晨 ${schedule.morning_dispatch_time || '-'} / 晚間 ${schedule.evening_dispatch_time || '-'}；補寫：${schedule.backfill_first_run_time || '-'}、${schedule.backfill_second_run_time || '-'}`;
+      renderPolicyList();
+    }
+
+    async function loadLogs() {
+      const targetDate = document.getElementById('logs-date').value || todayText();
+      const windowValue = document.getElementById('logs-window').value;
+      const statusValue = document.getElementById('logs-status').value;
+      const query = new URLSearchParams({ date: targetDate, limit: '200' });
+      if (windowValue) query.set('window', windowValue);
+      if (statusValue) query.set('status', statusValue);
+      state.logs = await api.get(`/monitoring-compliance/reminders/logs?${query.toString()}`);
+      renderLogs();
+    }
+
+    async function dispatchManually() {
+      const payload = {
+        date: document.getElementById('dispatch-date').value || todayText(),
+        window: document.getElementById('dispatch-window').value || 'EVENING',
+        force: !!document.getElementById('dispatch-force').checked,
+      };
+      state.dispatch = await api.post('/monitoring-compliance/reminders/dispatch', payload);
+      renderDispatchSummary();
+      await Promise.all([loadCompliance(), loadLogs()]);
+      showSuccess(`派送完成：sent=${state.dispatch.sent || 0} / skipped=${state.dispatch.skipped || 0} / failed=${state.dispatch.failed || 0}`);
+    }
+
+    async function savePolicy(policyCard) {
+      const policyId = policyCard.getAttribute('data-policy-id') || '';
+      if (!policyId) return;
+      const payload = {
+        enabled: !!policyCard.querySelector('[data-field="enabled"]').checked,
+        requires_glucose_for_diabetic: !!policyCard.querySelector('[data-field="requires_glucose_for_diabetic"]').checked,
+        message_template: String(policyCard.querySelector('[data-field="message_template"]').value || '').trim(),
+      };
+      await api.put(`/monitoring-compliance/reminders/policies/${encodeURIComponent(policyId)}`, payload);
+      showSuccess('Policy 已儲存');
+      await loadPolicies();
+    }
+
+    async function initializePage() {
+      const capabilities = await getCapabilities();
+      if (!hasAnyPermission(capabilities, canAccessWith)) {
+        throw new Error('你沒有腎友提醒管理權限（需要 monitoring.* 權限）。');
+      }
+      const dateValue = todayText();
+      document.getElementById('compliance-date').value = dateValue;
+      document.getElementById('dispatch-date').value = dateValue;
+      document.getElementById('logs-date').value = dateValue;
+      await Promise.all([loadCompliance(), loadPolicies(), loadLogs()]);
+    }
+
+    document.getElementById('btn-load-compliance').addEventListener('click', async () => {
+      try {
+        await loadCompliance();
+      } catch (error) {
+        showError(error.message || '查詢合規失敗');
+      }
+    });
+
+    document.getElementById('btn-dispatch').addEventListener('click', async () => {
+      try {
+        await dispatchManually();
+      } catch (error) {
+        showError(error.message || '手動派送失敗');
+      }
+    });
+
+    document.getElementById('btn-load-logs').addEventListener('click', async () => {
+      try {
+        await loadLogs();
+      } catch (error) {
+        showError(error.message || '查詢紀錄失敗');
+      }
+    });
+
+    document.getElementById('btn-refresh-all').addEventListener('click', async () => {
+      try {
+        await Promise.all([loadCompliance(), loadPolicies(), loadLogs()]);
+        showSuccess('已更新腎友提醒頁面資料');
+      } catch (error) {
+        showError(error.message || '更新失敗');
+      }
+    });
+
+    document.getElementById('policy-list').addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.getAttribute('data-action') !== 'save-policy') return;
+      const policyCard = target.closest('[data-policy-id]');
+      if (!(policyCard instanceof HTMLElement)) return;
+      try {
+        await savePolicy(policyCard);
+      } catch (error) {
+        showError(error.message || '儲存 Policy 失敗');
+      }
+    });
+
+    initializePage().catch((error) => {
+      showError(error.message || '初始化失敗');
+      setTimeout(() => {
+        window.location.href = '/pages/dashboard.html';
+      }, 1000);
+    });
+  </script>
+</body>
+</html>

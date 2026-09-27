@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-import re
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import FileResponse
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 
 from src.api.errors import not_found_error, validation_error
@@ -15,7 +14,6 @@ from src.core.database import get_db
 from src.models import Conversation, SkillEntry, SkillInteraction
 from src.services.skill_executor import extract_skill_ui_dir, resolve_skill_ui_asset
 from src.services.skill_ui_token_service import verify_skill_ui_token
-
 
 router = APIRouter()
 
@@ -78,10 +76,10 @@ async def serve_skill_ui_asset(
     try:
         safe_asset_path = str(Path(asset_path or '').as_posix())
         target_path = resolve_skill_ui_asset(base_dir, safe_asset_path)
-    except FileNotFoundError:
-        raise not_found_error('SkillUiAsset', asset_path)
+    except FileNotFoundError as error:
+        raise not_found_error('SkillUiAsset', asset_path) from error
     except ValueError as path_error:
-        raise validation_error(str(path_error))
+        raise validation_error(str(path_error)) from path_error
 
     if str(target_path.suffix or '').lower() == '.html':
         html_text = target_path.read_text(encoding='utf-8')

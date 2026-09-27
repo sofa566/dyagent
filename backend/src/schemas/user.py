@@ -1,7 +1,7 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional
 from datetime import datetime
-import uuid
+
+from pydantic import BaseModel, EmailStr
+
 
 class UserBase(BaseModel):
     username: str
@@ -11,7 +11,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
-    role: Optional[str] = 'user'
+    role: str | None = 'user'
 
 
 class UserLogin(BaseModel):

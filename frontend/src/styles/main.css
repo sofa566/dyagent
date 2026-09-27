@@ -67,18 +67,99 @@ body {
 
 .nav-menu {
   display: flex;
-  gap: 1.5rem;
+  gap: 1rem;
   margin-left: auto;
+  align-items: center;
 }
 
 .nav-menu a {
   color: var(--text-secondary);
   text-decoration: none;
   transition: color 0.2s;
+  white-space: nowrap;
 }
 
 .nav-menu a:hover {
   color: var(--primary-color);
+}
+
+.nav-menu a.nav-active {
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+.nav-more {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.nav-more-toggle {
+  border: 1px solid var(--border-color);
+  background: #fff;
+  color: var(--text-secondary);
+  border-radius: 9999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.nav-more-toggle::after {
+  content: '▾';
+  margin-left: 0.4rem;
+  display: inline-block;
+  transition: transform 0.18s ease;
+}
+
+.nav-more-toggle:hover {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.nav-more.has-active-child .nav-more-toggle {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+  background: #eff6ff;
+}
+
+.nav-submenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 180px;
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 0.35rem;
+  display: none;
+  z-index: 30;
+}
+
+.nav-submenu a {
+  display: block;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+}
+
+.nav-submenu a:hover {
+  background: #eff6ff;
+}
+
+.nav-submenu a.nav-active {
+  background: #dbeafe;
+}
+
+.nav-more.is-open .nav-more-toggle::after,
+.nav-more:hover .nav-more-toggle::after,
+.nav-more:focus-within .nav-more-toggle::after {
+  transform: rotate(180deg);
+}
+
+.nav-more:hover .nav-submenu,
+.nav-more:focus-within .nav-submenu,
+.nav-more.is-open .nav-submenu {
+  display: block;
 }
 
 @media (max-width: 900px) {
@@ -90,6 +171,13 @@ body {
   }
   .nav-menu {
     margin-left: 0;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
+  }
+  .nav-submenu {
+    right: auto;
+    left: 0;
   }
 }
 

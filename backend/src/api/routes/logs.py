@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends
 import uuid
+
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
-from src.models import User, Log
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import check_permission
+from src.models import Log, User
 
 router = APIRouter()
 
@@ -19,7 +20,7 @@ async def get_logs(
     limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-): 
+):
     if not (
         check_permission(current_user, 'logs.read', db=db)
         or check_permission(current_user, 'read_logs', db=db)
@@ -42,17 +43,17 @@ async def get_logs(
     return {
         'logs': [
             {
-                'id': str(l.id),
-                'user_id': str(l.user_id) if l.user_id else None,
-                'level': l.level,
-                'action': l.action,
-                'resource_type': l.resource_type,
-                'resource_id': str(l.resource_id) if l.resource_id else None,
-                'details': l.details,
-                'ip_address': l.ip_address,
-                'timestamp': l.timestamp.isoformat() if l.timestamp else None,
+                'id': str(log_row.id),
+                'user_id': str(log_row.user_id) if log_row.user_id else None,
+                'level': log_row.level,
+                'action': log_row.action,
+                'resource_type': log_row.resource_type,
+                'resource_id': str(log_row.resource_id) if log_row.resource_id else None,
+                'details': log_row.details,
+                'ip_address': log_row.ip_address,
+                'timestamp': log_row.timestamp.isoformat() if log_row.timestamp else None,
             }
-            for l in logs
+            for log_row in logs
         ],
         'total': total,
         'page': page,
@@ -65,7 +66,7 @@ async def get_log(
     log_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-): 
+):
     if not (
         check_permission(current_user, 'logs.read', db=db)
         or check_permission(current_user, 'read_logs', db=db)
@@ -77,8 +78,8 @@ async def get_log(
 
     try:
         uuid.UUID(str(log_id))
-    except ValueError:
-        raise not_found_error('Log', log_id)
+    except ValueError as error:
+        raise not_found_error('Log', log_id) from error
 
     log = db.query(Log).filter(Log.id == log_id).first()
     if not log:

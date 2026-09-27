@@ -10,6 +10,8 @@ alembic==1.13.1
 
 # Redis
 redis==5.0.1
+celery==5.4.0
+celery-redbeat
 
 # Qdrant (Vector Database)
 qdrant-client==1.7.0

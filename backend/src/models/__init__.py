@@ -1,9 +1,22 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric, LargeBinary, UniqueConstraint
-from sqlalchemy.types import CHAR, TypeDecorator
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import relationship
-from datetime import datetime
 import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.types import CHAR, TypeDecorator
 
 from src.core.database import Base
 
@@ -259,8 +272,13 @@ class LineChannelSession(Base):
     line_user_id = Column(String(128), nullable=False)
     conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=False)
     assigned_agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=True)
+    bound_patient_id = Column(GUID(), ForeignKey('renal_patients.id'), nullable=True)
+    binding_status = Column(String(32), nullable=False, default='pending_name')
+    binding_name = Column(String(100), nullable=True)
+    binding_phone = Column(String(32), nullable=True)
+    bound_at = Column(DateTime, nullable=True)
     mode = Column(Enum('bot', 'human', name='line_session_mode_enum'), nullable=False, default='bot')
-    status = Column(Enum('active', 'archived', name='line_session_status_enum'), nullable=False, default='active')
+    status = Column(Enum('active', 'inactive', 'archived', name='line_session_status_enum'), nullable=False, default='active')
     last_inbound_at = Column(DateTime, nullable=True)
     last_outbound_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
@@ -626,3 +644,24 @@ class ChatAttachment(Base):
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     expires_at = Column(DateTime, nullable=True)
+
+
+# 目的：對外維持 `from src.models import ...` 相容匯出。
+# 為什麼：腎友照護模組模型獨立於 `renal_care.py`，但既有程式仍從 `src.models` 匯入。
+from src.models import renal_care as _renal_care  # noqa: E402
+
+DialysisEvent = _renal_care.DialysisEvent
+DialysisSession = _renal_care.DialysisSession
+FollowUpCase = _renal_care.FollowUpCase
+HealthEducationContent = _renal_care.HealthEducationContent
+HealthEducationDeliveryLog = _renal_care.HealthEducationDeliveryLog
+HealthEducationSourceRule = _renal_care.HealthEducationSourceRule
+MonitoringRecord = _renal_care.MonitoringRecord
+MonitoringReminderDeliveryLog = _renal_care.MonitoringReminderDeliveryLog
+MonitoringReminderJob = _renal_care.MonitoringReminderJob
+MonitoringReminderPolicy = _renal_care.MonitoringReminderPolicy
+PatientPortalLink = _renal_care.PatientPortalLink
+RenalPatient = _renal_care.RenalPatient
+ScheduledTask = _renal_care.ScheduledTask
+ScheduledTaskRun = _renal_care.ScheduledTaskRun
+ScheduledTaskTemplate = _renal_care.ScheduledTaskTemplate

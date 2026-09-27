@@ -2,13 +2,11 @@ import hashlib
 import math
 from collections.abc import Iterator
 
-
 VECTOR_SIZE = 1536
 
 
 def iter_chunk_text(text: str, max_chars: int = 800) -> Iterator[str]:
-    for chunk in chunk_text(text, max_chars=max_chars):
-        yield chunk
+    yield from chunk_text(text, max_chars=max_chars)
 
 
 def iter_chunk_text_with_pages(page_texts: list[str], max_chars: int = 800) -> Iterator[dict[str, int | str]]:

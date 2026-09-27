@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Optional
 import json
 import re
-
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 ToolCaller = Callable[[str, dict[str, Any]], dict[str, Any]]
-LLMComplete = Callable[[str, Optional[str]], str]
+LLMComplete = Callable[[str, str | None], str]
 
 
 DEFAULT_MAX_STEPS = 3
@@ -117,7 +117,7 @@ class ReActSynthesis:
         self._last_trace: list[dict[str, Any]] = []
         self._domain = WeatherDomainHeuristics()
 
-    def run(self, *, user_message: str, allowed_tools: list[str], tier: Optional[str] = None) -> str | None:
+    def run(self, *, user_message: str, allowed_tools: list[str], tier: str | None = None) -> str | None:
         if not allowed_tools:
             return None
 
@@ -217,7 +217,7 @@ class ReActSynthesis:
         self,
         *,
         user_message: str,
-        tier: Optional[str],
+        tier: str | None,
         last_success: dict[str, Any] | None,
         observations: list[dict[str, Any]],
     ) -> str | None:
@@ -253,7 +253,7 @@ class ReActSynthesis:
         user_message: str,
         allowed_tools: list[str],
         observations: list[dict[str, Any]],
-        tier: Optional[str],
+        tier: str | None,
     ) -> ReActStep | None:
         obs_text = self._compact_observations(observations)
         prompt = (
@@ -313,7 +313,7 @@ class ReActSynthesis:
         tool: str,
         arguments: dict[str, Any],
         result: dict[str, Any],
-        tier: Optional[str],
+        tier: str | None,
     ) -> str | None:
         prompt = (
             "你是繁體中文助理。請根據工具結果產生自然、精簡且可讀的最終回答。\n"
@@ -355,7 +355,7 @@ class ReActSynthesis:
             return ctext
         return ctext[: self._cfg.max_observation_chars]
 
-    def _safe_complete(self, *, prompt: str, tier: Optional[str]) -> str:
+    def _safe_complete(self, *, prompt: str, tier: str | None) -> str:
         try:
             return str(self._llm_complete(prompt, tier) or "")
         except Exception:

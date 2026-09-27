@@ -1,7 +1,7 @@
-import structlog
-from structlog.processors import CallsiteParameterAdder, CallsiteParameter
 import logging
 from typing import Any
+
+import structlog
 
 from src.core.config import settings
 

@@ -8,30 +8,30 @@
 
 from __future__ import annotations
 
-from typing import Optional, List, Any, Tuple
-from datetime import datetime
-from decimal import Decimal
-import uuid
-from collections import deque
+import json as _json
 import os
+import re
 import shlex
 import subprocess
-import json as _json
-import re
+import uuid
+from collections import deque
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
 
-from src.services.llm_client import LLMClient
-from src.core.logging import get_logger
 from sqlalchemy.orm import Session
-from src.models import Log, Agent, MCPConnection, SkillEntry, FunctionProfile
-from src.models.events import EventPart
+
 from src.core.config import settings
-from src.services.permission_service import PermissionService
+from src.core.logging import get_logger
+from src.models import Agent, FunctionProfile, Log, MCPConnection, SkillEntry
+from src.models.events import EventPart
+from src.services.llm_client import LLMClient
 from src.services.mcp_client import MCPClient
+from src.services.permission_service import PermissionService
 from src.services.react_synthesis import ReActSynthesis
 from src.services.skill_executor import execute_skill
 from src.services.skill_interaction_service import SkillInteractionService
-from src.services.tool_policy_service import ToolPolicyService, ToolPolicyDecision
-
+from src.services.tool_policy_service import ToolPolicyDecision, ToolPolicyService
 
 DEFAULT_LAST_METRICS = {
     "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
@@ -43,7 +43,7 @@ _log = get_logger("services.chat_router")
 class ChatRouter:
     """單輪聊天管線骨架。"""
 
-    def __init__(self, llm: Optional[LLMClient] = None) -> None:
+    def __init__(self, llm: LLMClient | None = None) -> None:
         self._llm = llm or LLMClient()
         self._log = get_logger("services.chat_router")
         # 最近一次回合的度量（供外部查詢）
@@ -52,26 +52,104 @@ class ChatRouter:
         self._structured_mode: dict | None = None  # {"schema": {...}}
         self._last_structured: dict | None = None
         # Doom loop 檢測：保存最近工具呼叫紀錄 (tool, normalized_input)
-        self._recent_tool_calls: deque[Tuple[str, str]] = deque(maxlen=32)
+        self._recent_tool_calls: deque[tuple[str, str]] = deque(maxlen=32)
         self._perm = PermissionService()
         self._mcp = MCPClient()
         # 記錄工具開始時間以計算耗時
         self._tool_start_times: dict[tuple[str, str], datetime] = {}
         self._mcp_tool_name_cache: dict[str, str] = {}
         # 每回合可覆蓋的工具呼叫協定模板
-        self._custom_toolcall_guide: Optional[str] = None
-        self._function_profile_template: Optional[str] = None
+        self._custom_toolcall_guide: str | None = None
+        self._function_profile_template: str | None = None
         self._tool_policy_service = ToolPolicyService()
         self._current_user_id: str = ''
         self._current_agent_id: str = ''
         self._current_conversation_id: str = ''
         self._current_agent_class: str = ''
         self._active_tool_policy_decisions: dict[tuple[str, str], ToolPolicyDecision] = {}
+        self._last_auto_tool_trace: dict[str, Any] = {
+            'allowed_tools': [],
+            'allowed_mcps': [],
+            'tool_calls': [],
+            'react_trace': [],
+        }
 
     def set_execution_context(self, *, user_id: str | None, agent_id: str | None, conversation_id: str | None) -> None:
         self._current_user_id = str(user_id or '').strip()
         self._current_agent_id = str(agent_id or '').strip()
         self._current_conversation_id = str(conversation_id or '').strip()
+
+    def call_mcp_tool_for_agent(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        mcp_name: str,
+        payload: dict,
+        db: Session,
+        target_mcp_tool_name: str = '',
+    ) -> dict:
+        # 目的：在指定 Agent 上下文中直接呼叫 MCP 工具。
+        # 為什麼：部分流程需要強制先走外部搜尋工具，再進行 LLM 整理，避免模型憑空產生資料。
+        normalized_agent_id = str(agent_id or '').strip()
+        normalized_tool_name = str(mcp_name or '').strip()
+        if not normalized_agent_id:
+            return {'ok': False, 'error': 'missing_agent_id'}
+        if not normalized_tool_name:
+            return {'ok': False, 'error': 'missing_mcp_name'}
+
+        self._set_db_if_present(db)
+        self._prepare_integrations(db=db, agent_id=normalized_agent_id)
+        if str(target_mcp_tool_name or '').strip():
+            self._mcp_tool_name_cache[normalized_tool_name] = str(target_mcp_tool_name).strip()
+        return self.call_tool(
+            session_id=session_id,
+            tool=f'mcp:{normalized_tool_name}',
+            payload=payload if isinstance(payload, dict) else {},
+        )
+
+    def call_mcp_tool(
+        self,
+        *,
+        session_id: str,
+        mcp_name: str,
+        payload: dict,
+        db: Session,
+        target_mcp_tool_name: str = '',
+    ) -> dict:
+        # 目的：在無 Agent 綁定情境下直接呼叫 MCP 工具。
+        # 為什麼：部分後台流程只需要固定 MCP 能力，不應被 Agent 存在與否綁住。
+        normalized_tool_name = str(mcp_name or '').strip()
+        if not normalized_tool_name:
+            return {'ok': False, 'error': 'missing_mcp_name'}
+
+        self._set_db_if_present(db)
+        mcp_rows = db.query(MCPConnection).filter(MCPConnection.enabled == True).all()  # noqa: E712
+        self._mcp_map = {}
+        for row in mcp_rows:
+            connection_name = str(getattr(row, 'name', '') or '').strip()
+            if not connection_name:
+                continue
+            self._mcp_map[connection_name] = {
+                'name': connection_name,
+                'enabled': True,
+                'transport': row.transport,
+                'base_url': row.base_url,
+                'auth': row.auth,
+                'progress_field': row.progress_field,
+                'eta_field': row.eta_field,
+                'command': row.command,
+                'args': row.args,
+                'env': row.env,
+            }
+        self._allowed_tools = {f'mcp:{name}' for name in self._mcp_map.keys()}
+        if str(target_mcp_tool_name or '').strip():
+            self._mcp_tool_name_cache[normalized_tool_name] = str(target_mcp_tool_name).strip()
+        return self.call_tool(
+            session_id=session_id,
+            tool=f'mcp:{normalized_tool_name}',
+            payload=payload if isinstance(payload, dict) else {},
+        )
 
     def _strip_policy_runtime_fields(self, payload: dict) -> dict:
         # 目的：移除策略確認流程的內部欄位後再交給實際工具。
@@ -179,18 +257,18 @@ class ChatRouter:
 
         return normalized
 
-    def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: Optional[str] = None, db: Optional[Session] = None, llm_overrides: Optional[dict] = None) -> str:
+    def single_turn(self, *, session_id: str, agent_id: str, user_message: str, tier: str | None = None, db: Session | None = None, llm_overrides: dict | None = None) -> str:
         """執行單輪回合並回傳助理文字。
 
         備註：
         - 歷史彙整、事件寫盤、結構化輸出與工具呼叫預留於後續任務實作
         - 目前僅委派 LLMClient.complete 取得文字輸出
         """
-        # 預留：載入/彙整歷史訊息（依 Conversation/Message 模型）
-        history: List[str] = []  # TODO: 從資料庫查詢歷史訊息
+        # 預留：載入/彙整歷史訊息（依 Conversation/Message 模型）。
+        # 目前階段尚未接上歷史查詢，先保留註記避免誤以為此處遺漏執行。
 
         # 綁定可選的 DB 寫盤目標
-        self._db: Optional[Session] = db
+        self._db: Session | None = db
 
         # 介面互動記錄（資訊等級）：標記使用者選擇之代理者與會話（以 session_id 表示）
         try:
@@ -250,7 +328,7 @@ class ChatRouter:
             return ""  # 結構化輸出成功即結束回合（不再產生一般文字）
 
         # 串流取得輸出（簡化為兩段），並寫入 reasoning/text 事件
-        chunks: List[str] = []
+        chunks: list[str] = []
         try:
             for delta in self._llm.stream_complete(prompt=composed_user_message, tier=tier):
                 # 視需要可區分 reasoning/text；此處以 text 事件示意
@@ -301,7 +379,7 @@ class ChatRouter:
         return output_text
 
     # 結構重構：以下 helper 僅抽取重複流程，不改變既有行為。
-    def _set_db_if_present(self, db: Optional[Session]) -> None:
+    def _set_db_if_present(self, db: Session | None) -> None:
         try:
             if db is not None:
                 self._db = db
@@ -343,7 +421,7 @@ class ChatRouter:
         except Exception:
             return False
 
-    def _auto_select_and_call(self, *, session_id: str, user_message: str, agent_ctx: dict[str, Any], tier: Optional[str], db: Optional[Session] = None, agent_id: Optional[str] = None) -> Optional[str]:
+    def _auto_select_and_call(self, *, session_id: str, user_message: str, agent_ctx: dict[str, Any], tier: str | None, db: Session | None = None, agent_id: str | None = None) -> str | None:
         """使用 ReAct 合成層：規劃工具呼叫、執行、再輸出可讀答案。"""
         try:
             skills = [s for s in (agent_ctx.get("skills", []) or []) if isinstance(s, str) and s.strip()]
@@ -352,8 +430,23 @@ class ChatRouter:
                 if isinstance(c, dict) and c.get("enabled") and c.get("name"):
                     mcps.append(f"mcp:{str(c.get('name')).strip()}")
             allowed = skills + mcps
+            self._last_auto_tool_trace = {
+                'allowed_tools': list(allowed),
+                'allowed_mcps': [tool_name for tool_name in allowed if str(tool_name).startswith('mcp:')],
+                'tool_calls': [],
+                'react_trace': [],
+            }
             if not allowed:
                 return None
+
+            self._log.info(
+                'chat.auto_tool.start',
+                session_id=session_id,
+                agent_id=str(agent_id or ''),
+                allowed_tool_count=len(allowed),
+                allowed_mcp_count=len([tool_name for tool_name in allowed if str(tool_name).startswith('mcp:')]),
+                allowed_mcp_names=[tool_name for tool_name in allowed if str(tool_name).startswith('mcp:')],
+            )
 
             # Why: ReAct tool path 仍需共用 DB 寫盤與技能查詢能力。
             self._set_db_if_present(db)
@@ -373,10 +466,41 @@ class ChatRouter:
             try:
                 trace = synthesis.last_trace()
                 if trace:
+                    tool_calls = []
+                    for item in trace:
+                        if not isinstance(item, dict):
+                            continue
+                        if str(item.get('phase') or '') != 'act':
+                            continue
+                        if not str(item.get('tool') or '').strip():
+                            continue
+                        tool_calls.append(
+                            {
+                                'tool': str(item.get('tool') or '').strip(),
+                                'ok': bool(item.get('ok')),
+                                'error': str(item.get('error') or '').strip() or None,
+                            }
+                        )
+                    self._last_auto_tool_trace = {
+                        'allowed_tools': list(allowed),
+                        'allowed_mcps': [tool_name for tool_name in allowed if str(tool_name).startswith('mcp:')],
+                        'tool_calls': tool_calls,
+                        'react_trace': trace[:20],
+                    }
                     self._write_part(
                         session_id=session_id,
                         type_="react.trace",
                         payload={"trace": trace[:20]},
+                    )
+                    used_mcp_tools = [call for call in tool_calls if str(call.get('tool') or '').startswith('mcp:')]
+                    self._log.info(
+                        'chat.auto_tool.summary',
+                        session_id=session_id,
+                        agent_id=str(agent_id or ''),
+                        total_tool_calls=len(tool_calls),
+                        used_mcp_count=len(used_mcp_tools),
+                        used_mcp_names=list(dict.fromkeys([str(call.get('tool') or '').strip() for call in used_mcp_tools]).keys()),
+                        used_any_mcp=bool(used_mcp_tools),
                     )
             except Exception:
                 pass
@@ -384,7 +508,16 @@ class ChatRouter:
         except Exception:
             return None
 
-    def _prepare_integrations(self, *, db: Optional[Session], agent_id: str) -> dict[str, Any]:
+    def get_last_auto_tool_trace(self) -> dict[str, Any]:
+        trace = self._last_auto_tool_trace if isinstance(self._last_auto_tool_trace, dict) else {}
+        return {
+            'allowed_tools': list(trace.get('allowed_tools') or []),
+            'allowed_mcps': list(trace.get('allowed_mcps') or []),
+            'tool_calls': list(trace.get('tool_calls') or []),
+            'react_trace': list(trace.get('react_trace') or []),
+        }
+
+    def _prepare_integrations(self, *, db: Session | None, agent_id: str) -> dict[str, Any]:
         agent_ctx: dict[str, Any] = {"skills": [], "mcp": [], "rag": {"enabled": False, "sources": [], "topK": 5}}
         self._function_profile_template = None
         try:
@@ -585,10 +718,10 @@ class ChatRouter:
         except Exception:
             return raw
 
-    def set_toolcall_guide(self, guide: Optional[str]) -> None:
+    def set_toolcall_guide(self, guide: str | None) -> None:
         self._custom_toolcall_guide = guide if isinstance(guide, str) else None
 
-    async def call_tool_async(self, *, session_id: str, tool: str, payload: dict, db: Optional[Session] = None, agent_id: Optional[str] = None) -> dict:
+    async def call_tool_async(self, *, session_id: str, tool: str, payload: dict, db: Session | None = None, agent_id: str | None = None) -> dict:
         """非同步工具呼叫入口。
 
         Why: 將 SSE 串流與同步工具邏輯橋接在同一入口，避免路由層分散處理白名單與審計。
@@ -671,9 +804,9 @@ class ChatRouter:
         session_id: str,
         tool: str,
         payload: dict,
-        db: Optional[Session],
-        agent_id: Optional[str],
-    ) -> tuple[str, Optional[dict]]:
+        db: Session | None,
+        agent_id: str | None,
+    ) -> tuple[str, dict | None]:
         """統一非同步工具請求前置檢查。
 
         Why: 保持 call_tool_async 主流程聚焦於執行路徑，降低重複邏輯維護成本。
@@ -970,6 +1103,14 @@ class ChatRouter:
                 return {"ok": False, "error": "mcp_connection_not_found"}
             transport = str(conn.get("transport") or "remote").strip() or "remote"
             target_tool_name = self._resolve_mcp_tool_name(conn_name=conn_name, conn=conn)
+            self._log.info(
+                'chat.tool.mcp.call',
+                session_id=session_id,
+                tool=name,
+                mcp_connection=conn_name,
+                transport=transport,
+                resolved_mcp_tool_name=target_tool_name,
+            )
             if transport == "stdio":
                 try:
                     cmd = str(conn.get("command") or "").strip()
@@ -983,11 +1124,33 @@ class ChatRouter:
                         params={"name": target_tool_name, "arguments": self._normalize_mcp_arguments(sanitized_payload)},
                     )
                     if res.get("ok"):
+                        self._log.info(
+                            'chat.tool.mcp.result',
+                            session_id=session_id,
+                            tool=name,
+                            mcp_connection=conn_name,
+                            ok=True,
+                        )
                         self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                         return {"ok": True, "result": res.get("result", res)}
+                    self._log.warning(
+                        'chat.tool.mcp.result',
+                        session_id=session_id,
+                        tool=name,
+                        mcp_connection=conn_name,
+                        ok=False,
+                        error=str(res.get('error') or ''),
+                    )
                     self.write_event_tool_error(session_id=session_id, tool=name, error=str(res.get("error")))
                     return {"ok": False, "error": str(res.get("error"))}
                 except Exception as e:
+                    self._log.warning(
+                        'chat.tool.mcp.exception',
+                        session_id=session_id,
+                        tool=name,
+                        mcp_connection=conn_name,
+                        error=str(e),
+                    )
                     self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
                     return {"ok": False, "error": str(e)}
             else:
@@ -997,9 +1160,23 @@ class ChatRouter:
                     return {"ok": False, "error": "mcp_invalid_base_url"}
                 try:
                     res = self._mcp.invoke(base_url=base_url, name=target_tool_name, arguments=self._normalize_mcp_arguments(sanitized_payload))
+                    self._log.info(
+                        'chat.tool.mcp.result',
+                        session_id=session_id,
+                        tool=name,
+                        mcp_connection=conn_name,
+                        ok=True,
+                    )
                     self.write_event_tool_result(session_id=session_id, tool=name, result=res)
                     return {"ok": True, "result": res}
                 except Exception as e:
+                    self._log.warning(
+                        'chat.tool.mcp.exception',
+                        session_id=session_id,
+                        tool=name,
+                        mcp_connection=conn_name,
+                        error=str(e),
+                    )
                     self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
                     return {"ok": False, "error": str(e)}
 
@@ -1246,9 +1423,10 @@ class ChatRouter:
                             self.write_event_tool_error(session_id=session_id, tool=name, error="schema_validation_failed")
                             # 盡量回傳結構化錯誤路徑
                             def _ext(e: Exception):
-                                p = getattr(e, 'path', None); m = str(e)
+                                p = getattr(e, 'path', None)
+                                m = str(e)
                                 if p is not None:
-                                    if isinstance(p, (list, tuple)):
+                                    if isinstance(p, list | tuple):
                                         return [{'path': '.'.join(map(str, p)), 'message': m}]
                                     return [{'path': str(p), 'message': m}]
                                 path = getattr(e, 'path', None)
@@ -1293,7 +1471,7 @@ class ChatRouter:
             self.write_event_tool_error(session_id=session_id, tool=name, error=str(e))
             return {"ok": False, "error": str(e)}
 
-    def _validate_sync_tool_call_request(self, *, session_id: str, tool: str, payload: dict) -> tuple[str, Optional[dict]]:
+    def _validate_sync_tool_call_request(self, *, session_id: str, tool: str, payload: dict) -> tuple[str, dict | None]:
         """統一同步工具請求前置檢查。
 
         Why: 與非同步路徑保持相同防護步驟，避免兩條路徑行為漂移。
@@ -1318,7 +1496,7 @@ class ChatRouter:
 
         return name, None
 
-    def _evaluate_tool_policy_before_execute(self, *, session_id: str, tool: str, payload: dict) -> Optional[dict]:
+    def _evaluate_tool_policy_before_execute(self, *, session_id: str, tool: str, payload: dict) -> dict | None:
         # 目的：在工具執行前套用風險策略（確認、額度、scope）。
         # 為什麼：工具執行已不依賴 RBAC，需以策略層統一治理風險。
         if not bool(getattr(settings, 'TOOL_EXEC_POLICY_ENABLED', True)):

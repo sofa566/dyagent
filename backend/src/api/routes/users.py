@@ -1,14 +1,14 @@
-from fastapi import APIRouter, Depends
 import uuid
-from sqlalchemy.orm import Session
 from typing import Any
 
-from src.core.database import get_db
-from src.models import ChatAttachment, User, UserGroupBinding, UserRoleBinding
-from src.middleware.auth import get_current_user
-from src.middleware.rbac import check_permission
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
 from src.api.errors import forbidden_error, not_found_error, validation_error
-from src.middleware.auth import get_password_hash
+from src.core.database import get_db
+from src.middleware.auth import get_current_user, get_password_hash
+from src.middleware.rbac import check_permission
+from src.models import ChatAttachment, User, UserGroupBinding, UserRoleBinding
 from src.services.access_control_service import access_control_service
 
 router = APIRouter()
@@ -54,8 +54,8 @@ async def update_user_profile(
 
     try:
         parsed_user_id = uuid.UUID(str(user_id))
-    except ValueError:
-        raise not_found_error('User', user_id)
+    except ValueError as error:
+        raise not_found_error('User', user_id) from error
 
     target_user = db.query(User).filter(User.id == parsed_user_id).first()
     if target_user is None:
@@ -109,8 +109,8 @@ async def update_user_role(
     # Validate UUID
     try:
         uuid.UUID(str(user_id))
-    except ValueError:
-        raise not_found_error('User', user_id)
+    except ValueError as error:
+        raise not_found_error('User', user_id) from error
 
     # Validate role
     if role not in ('admin', 'agent_admin', 'user'):
@@ -198,8 +198,8 @@ async def delete_user(
 
     try:
         parsed_user_id = uuid.UUID(str(user_id))
-    except ValueError:
-        raise not_found_error('User', user_id)
+    except ValueError as error:
+        raise not_found_error('User', user_id) from error
 
     if str(current_user.id) == str(parsed_user_id):
         raise validation_error('不可刪除目前登入中的使用者')

@@ -39,7 +39,7 @@ def test_confirmation_token_requires_single_use(client, db, regular_user, regula
     first_payload = first_response.json()
     assert first_payload.get('ok') is False
     assert first_payload.get('error') == 'confirmation_required'
-    confirm_token = str(((first_payload.get('policy') or {}).get('confirm_token') or '')).strip()
+    confirm_token = str((first_payload.get('policy') or {}).get('confirm_token') or '').strip()
     assert confirm_token
 
     with patch(

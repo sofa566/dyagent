@@ -65,7 +65,7 @@ def build_taiwan_news_fetch_prompt(keys: list[str] | None = None, top_n: int = 5
     if not rows:
         return "目前沒有可用的台灣新聞 RSS 來源。"
     lines = [
-        "請呼叫工具 mcp:fetch 抓以下 RSS，並輸出『來源、前{n}則標題、連結』。".format(n=limit),
+        f"請呼叫工具 mcp:fetch 抓以下 RSS，並輸出『來源、前{limit}則標題、連結』。",
         "",
         "來源清單:",
     ]

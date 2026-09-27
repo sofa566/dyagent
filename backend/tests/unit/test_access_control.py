@@ -132,8 +132,42 @@ class TestAccessControlCapabilities:
             'role:approver_role',
         }
 
+    def test_primary_role_prefers_non_system_role_when_only_custom_role_exists(
+        self,
+        client,
+        db,
+        admin_token,
+        regular_user,
+    ):
+        custom_role = AccessRole(code='custom_nurse_operator_for_test', name='Nurse Operator', enabled=True)
+        db.add(custom_role)
+        db.flush()
+        db.query(UserRoleBinding).filter(UserRoleBinding.user_id == regular_user.id).delete()
+        db.add(UserRoleBinding(user_id=regular_user.id, role_id=custom_role.id))
+        db.commit()
+
+        response = client.get('/api/users', headers={'Authorization': f'Bearer {admin_token}'})
+        assert response.status_code == 200
+        users = response.json().get('users') or []
+        target_user = next((item for item in users if str(item.get('id')) == str(regular_user.id)), None)
+        assert target_user is not None
+        assert target_user.get('role') == 'custom_nurse_operator_for_test'
+
 
 class TestAccessControlBindingApi:
+    def test_list_roles_includes_recommended_renal_templates(self, client, admin_token):
+        response = client.get(
+            '/api/access/roles',
+            headers={'Authorization': f'Bearer {admin_token}'},
+        )
+
+        assert response.status_code == 200
+        roles = response.json().get('roles') or []
+        role_codes = {str(role.get('code')) for role in roles}
+        assert 'renal_manager' in role_codes
+        assert 'nurse_operator' in role_codes
+        assert 'line_operator' in role_codes
+
     def test_list_permissions_includes_legacy_permission_keys(
         self,
         client,
@@ -148,6 +182,9 @@ class TestAccessControlBindingApi:
         payload = response.json()
         assert 'chat' in payload['permissions']
         assert 'read_user' in payload['permissions']
+        assert 'renal.read' in payload['permissions']
+        assert 'nursing.line' in payload['permissions']
+        assert 'line.center' in payload['permissions']
 
     def test_list_permissions_prunes_orphan_dataset_entity_permissions(self, client, db, admin_token):
         orphan_permission = AccessPermission(key=f'entity.dataset.{uuid.uuid4()}.execute')

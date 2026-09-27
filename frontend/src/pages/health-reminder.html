@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>衛教提醒 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .panel { border: 1px solid var(--border-color); border-radius: 12px; background: #fff; padding: 14px; margin-bottom: 12px; }
+    .panel h3 { margin-bottom: 10px; color: #1d4d83; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    .row input, .row select, .row textarea { border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+    .row textarea { width: 100%; min-height: 80px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); text-align: left; white-space: nowrap; }
+    th { background: #f5f8f7; }
+    .col-title { width: 34%; min-width: 220px; white-space: normal; word-break: break-word; }
+    .col-operations { min-width: 250px; }
+    .action-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+    .action-grid .btn { padding: 5px 6px; font-size: 12px; min-height: 30px; }
+    .pager-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+    .pager-row .btn { min-width: 74px; }
+    .pager-info { color: var(--text-secondary); font-size: 13px; }
+    .status-approved { color: #17634f; font-weight: 700; }
+    .status-draft { color: #9f3f1b; font-weight: 700; }
+    .status-rejected { color: #9b1c1c; font-weight: 700; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: none; align-items: center; justify-content: center; z-index: 1200; }
+    .modal-overlay.show { display: flex; }
+    .modal-card { width: min(560px, calc(100vw - 24px)); border-radius: 12px; background: #fff; border: 1px solid var(--border-color); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22); padding: 16px; }
+    .modal-title { margin: 0 0 8px 0; color: #9b1c1c; font-size: 18px; }
+    .modal-title.info { color: #1d4d83; }
+    .modal-message { margin: 0; color: var(--text-color); line-height: 1.6; white-space: pre-wrap; }
+    .modal-message code { background: #f3f5f8; border-radius: 4px; padding: 1px 4px; }
+    .modal-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+    .agent-output-box { border: 1px solid var(--border-color); border-radius: 8px; background: #f8fafb; padding: 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; min-height: 74px; max-height: 240px; overflow: auto; }
+    .hint-box { margin: 6px 0 10px 0; border-left: 4px solid #1d4d83; background: #eef5fb; padding: 10px; font-size: 13px; color: #26415e; line-height: 1.5; }
+    .tab-switcher { display: inline-flex; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; margin-bottom: 10px; }
+    .tab-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .tab-button { border: none; background: #eef2f6; padding: 9px 14px; font-size: 14px; color: #37506d; cursor: pointer; }
+    .tab-button + .tab-button { border-left: 1px solid var(--border-color); }
+    .tab-button.active { background: #1d4d83; color: #fff; font-weight: 700; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .panel .btn { transition: transform 0.08s ease, box-shadow 0.12s ease, opacity 0.12s ease; box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2); }
+    .panel .btn:hover { box-shadow: 0 2px 0 rgba(0, 0, 0, 0.26); }
+    .panel .btn:active { transform: translateY(1px) scale(0.99); box-shadow: 0 0 0 rgba(0, 0, 0, 0.15); }
+    .panel .btn:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+    .panel .btn.is-loading { opacity: 0.75; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/reminder-schedule.html">腎友提醒</a>
+      <a href="/pages/health-reminder.html">衛教提醒</a>
+      <a href="/pages/scheduler-management.html">排程管理</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="actions">
+      <h2>衛教提醒</h2>
+      <button id="btn-refresh" class="btn">重新整理</button>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <section class="panel">
+      <div class="tab-toolbar">
+        <div class="tab-switcher" role="tablist" aria-label="新增文章方式">
+          <button id="tab-agent-import" class="tab-button active" data-tab="agent" role="tab" aria-selected="true">MCP搜尋匯入</button>
+          <button id="tab-manual-create" class="tab-button" data-tab="manual" role="tab" aria-selected="false">手動新增文章</button>
+        </div>
+        <button id="btn-open-source-rules" class="btn btn-secondary">搜尋網站維護</button>
+      </div>
+
+      <div id="tab-panel-agent" class="tab-panel active" role="tabpanel">
+        <h3>MCP搜尋匯入</h3>
+        <div id="source-policy-note" style="margin-bottom:8px;color:var(--text-secondary);">來源規則載入中...</div>
+        <div class="row">
+          <label for="candidate-search-topic">搜尋主題</label>
+          <input id="candidate-search-topic" type="text" value="透析飲食與生活照護" placeholder="搜尋主題" style="min-width: 280px;">
+          <label for="candidate-search-limit">筆數上限</label>
+          <input id="candidate-search-limit" type="number" value="5" min="1" max="10" placeholder="筆數" style="width: 100px;">
+        </div>
+        <div class="row">
+          <textarea id="candidate-json-text" placeholder='貼上候選內容 JSON 陣列，例如 [{"title":"...","source_name":"...","source_url":"https://...","summary":"...","tags":["飲食"]}]'></textarea>
+        </div>
+        <div class="row">
+          <button id="btn-import-from-mcp" class="btn btn-secondary">一鍵搜尋並匯入</button>
+          <button id="btn-import-candidates" class="btn btn-primary">批次匯入候選</button>
+        </div>
+        <div class="row">
+          <div style="width:100%;">
+            <div style="margin-bottom:6px;color:var(--text-secondary);">最近一次 MCP 匯入訊息（除錯用）</div>
+            <div id="agent-output-preview" class="agent-output-box">尚未執行</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-panel-manual" class="tab-panel" role="tabpanel">
+        <h3>手動新增文章</h3>
+        <div class="hint-box">
+          這裡是手動新增「已找到的衛教文章」到候選池。<br>
+          <strong>來源連結</strong> 要填文章本身網址（例如新聞/衛教頁），不是給 Agent 搜尋的入口網址。
+        </div>
+        <div class="row">
+          <input id="content-title" type="text" placeholder="文章標題" style="min-width: 280px;">
+          <input id="content-source-name" type="text" placeholder="來源名稱（例：衛福部）" style="min-width: 180px;">
+          <input id="content-source-url" type="text" placeholder="文章網址（例如 https://...）" style="min-width: 360px;">
+        </div>
+        <div class="row"><textarea id="content-summary" placeholder="摘要（可留空）"></textarea></div>
+        <div class="row">
+          <input id="content-tags" type="text" placeholder="標籤（逗號分隔，例如 飲食,透析）" style="min-width: 320px;">
+          <button id="btn-create-content" class="btn btn-primary">新增草稿</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>文章內容列表</h3>
+      <div class="row">
+        <label for="filter-status">狀態</label>
+        <select id="filter-status">
+          <option value="">全部</option>
+          <option value="draft">draft</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+          <option value="sent">sent</option>
+        </select>
+        <label for="content-page-size">每頁筆數</label>
+        <select id="content-page-size">
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+        <button id="btn-load-contents" class="btn btn-secondary">查詢</button>
+        <button id="btn-clear-rejected" class="btn btn-secondary">清除 rejected</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-title">標題</th>
+              <th>來源</th>
+              <th>狀態</th>
+              <th class="col-operations">操作</th>
+            </tr>
+          </thead>
+          <tbody id="content-table-body"><tr><td colspan="4">尚未載入</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager-row">
+        <button id="btn-content-prev-page" class="btn btn-secondary">上一頁</button>
+        <span id="content-page-info" class="pager-info">第 1 / 1 頁，共 0 筆</span>
+        <button id="btn-content-next-page" class="btn btn-secondary">下一頁</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>最近發送紀錄</h3>
+      <div id="delivery-log-note">請先在列表點擊「查看紀錄」。</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>病患</th>
+              <th>狀態</th>
+              <th>對象規則</th>
+              <th>觸發來源</th>
+              <th>時間</th>
+              <th>細節</th>
+            </tr>
+          </thead>
+          <tbody id="delivery-log-table-body"><tr><td colspan="6">尚未載入</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="error-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="error-modal-title">
+    <div class="modal-card">
+      <h3 id="error-modal-title" class="modal-title">操作失敗</h3>
+      <p id="error-modal-message" class="modal-message">發生未知錯誤</p>
+      <div class="modal-actions">
+        <button id="error-modal-close" class="btn btn-primary">我知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="result-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="result-modal-title">
+    <div class="modal-card">
+      <h3 id="result-modal-title" class="modal-title info">匯入結果</h3>
+      <p id="result-modal-message" class="modal-message">尚無結果</p>
+      <div class="modal-actions">
+        <button id="result-modal-close" class="btn btn-primary">我知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, auth, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const DEFAULT_CONTENT_PAGE_SIZE = 10;
+    const state = { contents: [], sourcePolicy: null, contentPage: 1, contentPageSize: DEFAULT_CONTENT_PAGE_SIZE, contentTotal: 0, contentTotalPages: 1 };
+    const canAccessWith = [
+      'health_education.content.read',
+      'health_education.content.create',
+      'health_education.content.update',
+      'health_education.content.delete',
+      'health_education.content.approve',
+      'health_education.content.reject',
+      'health_education.content.send',
+      'health_education.content.schedule',
+      'health_education.log.read',
+      'health_education.import.mcp',
+      'health_education.import.manual',
+      'health_education.source_rule.read',
+      'health_education.source_rule.create',
+      'health_education.source_rule.update',
+      'health_education.source_rule.delete',
+    ];
+
+    function switchCreateTab(tabName) {
+      const isAgentTab = tabName === 'agent';
+      const agentTabButton = document.getElementById('tab-agent-import');
+      const manualTabButton = document.getElementById('tab-manual-create');
+      const agentPanel = document.getElementById('tab-panel-agent');
+      const manualPanel = document.getElementById('tab-panel-manual');
+      agentTabButton.classList.toggle('active', isAgentTab);
+      manualTabButton.classList.toggle('active', !isAgentTab);
+      agentTabButton.setAttribute('aria-selected', isAgentTab ? 'true' : 'false');
+      manualTabButton.setAttribute('aria-selected', isAgentTab ? 'false' : 'true');
+      agentPanel.classList.toggle('active', isAgentTab);
+      manualPanel.classList.toggle('active', !isAgentTab);
+    }
+
+    function showErrorModal(message) {
+      const modal = document.getElementById('error-modal');
+      const messageElement = document.getElementById('error-modal-message');
+      messageElement.textContent = String(message || '操作失敗，請稍後再試');
+      modal.classList.add('show');
+    }
+
+    function updateAgentOutputPreview(text) {
+      const previewElement = document.getElementById('agent-output-preview');
+      previewElement.textContent = String(text || '（空白）');
+    }
+
+    function closeErrorModal() {
+      document.getElementById('error-modal').classList.remove('show');
+    }
+
+    function closeResultModal() {
+      document.getElementById('result-modal').classList.remove('show');
+    }
+
+    function formatSkippedReason(reason) {
+      const normalizedReason = String(reason || '').trim();
+      if (normalizedReason === 'duplicate') return '重複';
+      if (normalizedReason === 'blocked') return '封鎖來源';
+      if (normalizedReason === 'not_trusted') return '非白名單來源';
+      if (normalizedReason === 'non_chinese') return '非中文來源';
+      if (normalizedReason === 'unreachable') return '連結不可達';
+      if (normalizedReason === 'invalid') return '格式錯誤';
+      return normalizedReason || '未知';
+    }
+
+    function buildImportResultText(response, title) {
+      const headerText = String(title || '匯入完成');
+      const parsedItems = Number(response.parsed_items || 0);
+      const created = Number(response.created || 0);
+      const skippedDuplicate = Number(response.skipped_duplicate || 0);
+      const skippedBlocked = Number(response.skipped_blocked || 0);
+      const skippedNotTrusted = Number(response.skipped_not_trusted || 0);
+      const skippedNonChinese = Number(response.skipped_non_chinese || 0);
+      const skippedUnreachable = Number(response.skipped_unreachable || 0);
+      const skippedInvalid = Number(response.skipped_invalid || 0);
+      const skippedItems = Array.isArray(response.skipped_items) ? response.skipped_items : [];
+      const mcpSearch = (response && typeof response.mcp_search === 'object' && response.mcp_search) ? response.mcp_search : null;
+      const lines = [
+        `${headerText}`,
+        `搜尋/解析筆數：${parsedItems}`,
+        `成功匯入：${created}`,
+        `略過統計：重複 ${skippedDuplicate}、封鎖 ${skippedBlocked}、非白名單 ${skippedNotTrusted}、非中文 ${skippedNonChinese}、連結不可達 ${skippedUnreachable}、格式錯誤 ${skippedInvalid}`,
+      ];
+      if (mcpSearch) {
+        const mcpToolName = String(mcpSearch.mcp_tool_name || '（未指定）');
+        const callStatus = mcpSearch.call_ok ? '成功' : '失敗';
+        lines.push(`MCP 搜尋工具：${mcpToolName}（呼叫${callStatus}）`);
+        const attempts = Array.isArray(mcpSearch.call_attempts) ? mcpSearch.call_attempts : [];
+        if (!mcpSearch.call_ok && attempts.length) {
+          const firstFailedAttempt = attempts.find((item) => item && item.ok === false);
+          if (firstFailedAttempt && firstFailedAttempt.error) {
+            lines.push(`MCP 失敗原因：${String(firstFailedAttempt.error).slice(0, 220)}`);
+          }
+        }
+      }
+      const mcpErrorMessage = String(response.mcp_error || response.agent_error || '').trim();
+      if (mcpErrorMessage) {
+        lines.push(`系統訊息：${mcpErrorMessage}`);
+      }
+      if (skippedItems.length) {
+        lines.push('');
+        lines.push('略過明細（最多 20 筆）：');
+        skippedItems.forEach((item, index) => {
+          const itemTitle = String(item.title || '（無標題）').trim() || '（無標題）';
+          const itemUrl = String(item.source_url || '').trim() || '（無網址）';
+          const reasonLabel = formatSkippedReason(item.reason);
+          lines.push(`${index + 1}. [${reasonLabel}] ${itemTitle} - ${itemUrl}`);
+        });
+      }
+      return lines.join('\n');
+    }
+
+    function showImportResultModal(response, title) {
+      const messageElement = document.getElementById('result-modal-message');
+      messageElement.textContent = buildImportResultText(response, title);
+      document.getElementById('result-modal').classList.add('show');
+    }
+
+    function escapeHtml(text) {
+      return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function normalizeStatusLabel(status) {
+      const s = String(status || '');
+      if (s === 'approved') return '<span class="status-approved">approved</span>';
+      if (s === 'rejected') return '<span class="status-rejected">rejected</span>';
+      return `<span class="status-draft">${escapeHtml(s || 'draft')}</span>`;
+    }
+
+    function formatDateTime(rawValue) {
+      const rawText = String(rawValue || '').trim();
+      if (!rawText) {
+        return '-';
+      }
+      const parsedDate = new Date(rawText);
+      if (Number.isNaN(parsedDate.getTime())) {
+        return rawText;
+      }
+      const year = parsedDate.getFullYear();
+      const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
+      const day = String(parsedDate.getDate()).padStart(2, '0');
+      const hour = String(parsedDate.getHours()).padStart(2, '0');
+      const minute = String(parsedDate.getMinutes()).padStart(2, '0');
+      const second = String(parsedDate.getSeconds()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+    }
+
+    function renderContents() {
+      const body = document.getElementById('content-table-body');
+      if (!state.contents.length) {
+        body.innerHTML = '<tr><td colspan="4">查無資料</td></tr>';
+        renderContentPager();
+        return;
+      }
+      body.innerHTML = state.contents.map((row) => `
+        <tr data-content-id="${row.id}">
+          <td class="col-title">${escapeHtml(row.title || '-')}</td>
+          <td><a href="${escapeHtml(row.source_url || '#')}" target="_blank" rel="noopener">${escapeHtml(row.source_name || row.source_url || '-')}</a></td>
+          <td>${normalizeStatusLabel(row.status)}</td>
+          <td class="col-operations">
+            <div class="action-grid">
+              <button class="btn btn-secondary" data-action="approve">核准</button>
+              <button class="btn btn-secondary" data-action="reject">退回</button>
+              <button class="btn btn-secondary" data-action="send" ${String(row.status || '') === 'approved' ? '' : 'disabled title="請先核准內容"'}>立即發送</button>
+              <button class="btn btn-secondary" data-action="schedule" ${String(row.status || '') === 'approved' ? '' : 'disabled title="請先核准內容"'}>建立排程</button>
+              <button class="btn btn-secondary" data-action="logs">查看紀錄</button>
+              <button class="btn btn-secondary" data-action="delete">刪除</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+      renderContentPager();
+    }
+
+    function renderContentPager() {
+      const totalPages = Math.max(1, Number(state.contentTotalPages || 1));
+      const currentPage = Math.max(1, Math.min(Number(state.contentPage || 1), totalPages));
+      const totalCount = Math.max(0, Number(state.contentTotal || 0));
+      document.getElementById('content-page-info').textContent = `第 ${currentPage} / ${totalPages} 頁，共 ${totalCount} 筆`;
+      document.getElementById('btn-content-prev-page').disabled = currentPage <= 1;
+      document.getElementById('btn-content-next-page').disabled = currentPage >= totalPages;
+    }
+
+    function getContentById(contentId) {
+      return state.contents.find((item) => String(item.id || '') === String(contentId || '')) || null;
+    }
+
+    function renderDeliveryLogs(rows) {
+      const body = document.getElementById('delivery-log-table-body');
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="6">查無紀錄</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(`${row.patient_name || '-'} (${row.patient_id || '-'})`)}</td>
+          <td>${escapeHtml(row.status || '-')}</td>
+          <td>${escapeHtml(row.audience_rule || '-')}</td>
+          <td>${escapeHtml(row.trigger_source || '-')}</td>
+          <td>${escapeHtml(formatDateTime(row.sent_at))}</td>
+          <td>${escapeHtml(row.detail || '-')}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadContents(page = null) {
+      const requestedPage = page == null ? state.contentPage : Number(page);
+      const safePage = Number.isFinite(requestedPage) ? Math.max(1, Math.trunc(requestedPage)) : 1;
+      const selectedPageSize = Number(document.getElementById('content-page-size').value || state.contentPageSize);
+      state.contentPageSize = Number.isFinite(selectedPageSize) ? Math.max(1, Math.trunc(selectedPageSize)) : state.contentPageSize;
+      const status = String(document.getElementById('filter-status').value || '').trim();
+      const query = new URLSearchParams({ page: String(safePage), page_size: String(state.contentPageSize) });
+      if (status) query.set('status', status);
+      const payload = await api.get(`/health-education/contents?${query.toString()}`);
+      state.contents = Array.isArray(payload.items) ? payload.items : [];
+      state.contentPage = Math.max(1, Number(payload.page || safePage));
+      state.contentPageSize = Math.max(1, Number(payload.page_size || state.contentPageSize));
+      state.contentTotal = Math.max(0, Number(payload.total || 0));
+      state.contentTotalPages = Math.max(1, Number(payload.total_pages || 1));
+      renderContents();
+    }
+
+    function renderSourcePolicy() {
+      const noteElement = document.getElementById('source-policy-note');
+      const policy = state.sourcePolicy || {};
+      const trusted = Array.isArray(policy.trusted_domains) ? policy.trusted_domains : [];
+      const blocked = Array.isArray(policy.blocked_domains) ? policy.blocked_domains : [];
+      const trustedOnlyMode = Boolean(policy.trusted_only_mode);
+      const defaultPolicyText = trustedOnlyMode ? '其他來源會直接略過（白名單強制模式）' : '其他來源會進入人工審核';
+      noteElement.textContent = `可擴充來源規則：trusted=${trusted.join('、') || '（未設定）'}；blocked=${blocked.join('、') || '（未設定）'}；${defaultPolicyText}。`;
+    }
+
+    async function loadSourcePolicy() {
+      const payload = await api.get('/health-education/source-policy');
+      state.sourcePolicy = (payload && payload.policy) ? payload.policy : null;
+      renderSourcePolicy();
+    }
+
+    async function createContent() {
+      const tagsText = String(document.getElementById('content-tags').value || '').trim();
+      const tags = tagsText ? tagsText.split(',').map((item) => String(item || '').trim()).filter(Boolean) : [];
+      await api.post('/health-education/contents', {
+        title: String(document.getElementById('content-title').value || '').trim(),
+        source_name: String(document.getElementById('content-source-name').value || '').trim(),
+        source_url: String(document.getElementById('content-source-url').value || '').trim(),
+        summary: String(document.getElementById('content-summary').value || '').trim(),
+        tags,
+      });
+      showSuccess('已新增衛教草稿');
+      document.getElementById('filter-status').value = 'draft';
+      await loadContents(1);
+    }
+
+    async function importCandidates() {
+      const rawText = String(document.getElementById('candidate-json-text').value || '').trim();
+      if (!rawText) {
+        throw new Error('請先貼上 Agent 候選 JSON');
+      }
+      let items;
+      try {
+        items = JSON.parse(rawText);
+      } catch {
+        throw new Error('候選 JSON 格式錯誤，請確認為陣列格式');
+      }
+      if (!Array.isArray(items)) {
+        throw new Error('候選 JSON 必須是陣列格式');
+      }
+      const response = await api.post('/health-education/contents/import-candidates', { agent_name: 'mcp-firecrawl-search', items });
+      showImportResultModal(response, '批次匯入完成');
+      await loadContents(1);
+    }
+
+    async function importFromMcp() {
+      const topic = String(document.getElementById('candidate-search-topic').value || '').trim();
+      const limit = Number(document.getElementById('candidate-search-limit').value || 5);
+      const requestPayload = {
+        source_name: 'mcp-firecrawl-search',
+        topic,
+        limit,
+      };
+      const response = await api.post('/health-education/contents/import-from-mcp', requestPayload);
+      const firstOutput = String(response.mcp_raw_output_preview || response.agent_raw_output_preview || '').trim();
+      const retryOutput = String(response.mcp_retry_output_preview || response.agent_retry_output_preview || '').trim();
+      if (retryOutput && retryOutput !== '（空白）') {
+        updateAgentOutputPreview(`[第一次輸出]\n${firstOutput || '（空白）'}\n\n[重試輸出]\n${retryOutput}`);
+      } else {
+        updateAgentOutputPreview(firstOutput || '（空白）');
+      }
+      if (response.mcp_error || response.agent_error) {
+        showImportResultModal(response, 'MCP 搜尋已完成，但未匯入資料');
+        return;
+      }
+      showImportResultModal(response, 'MCP 搜尋匯入完成');
+      await loadContents(1);
+    }
+
+    async function approveContent(contentId) {
+      await api.put(`/health-education/contents/${encodeURIComponent(contentId)}/approve`, {});
+      showSuccess('已核准內容');
+      await loadContents();
+    }
+
+    async function rejectContent(contentId) {
+      await api.put(`/health-education/contents/${encodeURIComponent(contentId)}/reject`, {});
+      showSuccess('已退回內容');
+      await loadContents();
+    }
+
+    async function sendContent(contentId) {
+      await api.post(`/health-education/contents/${encodeURIComponent(contentId)}/send-now`, { audience_rule: 'all' });
+      showSuccess('已觸發立即發送');
+      await loadContents();
+    }
+
+    async function scheduleContent(contentId) {
+      const response = await api.post(`/health-education/contents/${encodeURIComponent(contentId)}/schedule`, {
+        name: '衛教-每週三晚間',
+        cron_expression: '0 20 * * 3',
+        timezone: 'Asia/Taipei',
+        audience_rule: 'all',
+        enabled: true,
+      });
+      const taskId = String((response && response.task && response.task.id) || '').trim();
+      if (taskId) {
+        showSuccess(`已建立排程任務（ID：${taskId}）`);
+        document.getElementById('delivery-log-note').textContent = `已建立排程任務：${taskId}（可到排程管理頁查看）`;
+        return;
+      }
+      showSuccess('已建立排程任務');
+    }
+
+    async function deleteContent(contentId) {
+      await api.delete(`/health-education/contents/${encodeURIComponent(contentId)}`);
+      showSuccess('已刪除內容');
+      const nextPage = state.contents.length <= 1 ? Math.max(1, state.contentPage - 1) : state.contentPage;
+      await loadContents(nextPage);
+    }
+
+    async function clearRejectedContents() {
+      const response = await api.delete('/health-education/contents/rejected');
+      showSuccess(`已清除 rejected：${response.deleted_contents || 0} 筆`);
+      if (String(document.getElementById('filter-status').value || '') === 'rejected') {
+        document.getElementById('filter-status').value = '';
+      }
+      await loadContents(1);
+    }
+
+    async function withButtonLoading(buttonElement, runAction) {
+      if (!(buttonElement instanceof HTMLButtonElement)) {
+        await runAction();
+        return;
+      }
+      const originalText = buttonElement.textContent || '';
+      buttonElement.classList.add('is-loading');
+      buttonElement.disabled = true;
+      buttonElement.textContent = '處理中...';
+      try {
+        await runAction();
+      } finally {
+        buttonElement.classList.remove('is-loading');
+        buttonElement.disabled = false;
+        buttonElement.textContent = originalText;
+      }
+    }
+
+    async function showLogs(contentId) {
+      const payload = await api.get(`/health-education/contents/${encodeURIComponent(contentId)}/logs?limit=100`);
+      const rows = Array.isArray(payload.logs) ? payload.logs : [];
+      document.getElementById('delivery-log-note').textContent = `內容 ${contentId} 最近 ${rows.length} 筆紀錄`;
+      renderDeliveryLogs(rows);
+    }
+
+    document.getElementById('btn-create-content').addEventListener('click', async (event) => {
+      await withButtonLoading(event.currentTarget, async () => {
+        try {
+          await createContent();
+        } catch (error) {
+          showErrorModal(error.message || '新增失敗');
+        }
+      });
+    });
+
+    document.getElementById('btn-load-contents').addEventListener('click', async (event) => {
+      await withButtonLoading(event.currentTarget, async () => {
+        try {
+          await loadContents(1);
+        } catch (error) {
+          showErrorModal(error.message || '查詢失敗');
+        }
+      });
+    });
+
+    document.getElementById('btn-clear-rejected').addEventListener('click', async (event) => {
+      const confirmed = window.confirm('確定要清除所有 rejected 內容嗎？此動作無法復原。');
+      if (!confirmed) {
+        return;
+      }
+      await withButtonLoading(event.currentTarget, async () => {
+        try {
+          await clearRejectedContents();
+        } catch (error) {
+          showErrorModal(error.message || '清除失敗');
+        }
+      });
+    });
+
+    document.getElementById('btn-import-candidates').addEventListener('click', async (event) => {
+      await withButtonLoading(event.currentTarget, async () => {
+        try {
+          await importCandidates();
+        } catch (error) {
+          showErrorModal(error.message || '批次匯入失敗');
+        }
+      });
+    });
+
+    document.getElementById('btn-import-from-mcp').addEventListener('click', async (event) => {
+      await withButtonLoading(event.currentTarget, async () => {
+        try {
+          await importFromMcp();
+        } catch (error) {
+          showErrorModal(error.message || '一鍵匯入失敗');
+        }
+      });
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', async (event) => {
+      await withButtonLoading(event.currentTarget, async () => {
+        try {
+          await loadContents();
+        } catch (error) {
+          showErrorModal(error.message || '更新失敗');
+        }
+      });
+    });
+
+    document.getElementById('btn-content-prev-page').addEventListener('click', async () => {
+      if (state.contentPage <= 1) return;
+      try {
+        await loadContents(state.contentPage - 1);
+      } catch (error) {
+        showErrorModal(error.message || '切換上一頁失敗');
+      }
+    });
+
+    document.getElementById('btn-content-next-page').addEventListener('click', async () => {
+      if (state.contentPage >= state.contentTotalPages) return;
+      try {
+        await loadContents(state.contentPage + 1);
+      } catch (error) {
+        showErrorModal(error.message || '切換下一頁失敗');
+      }
+    });
+
+    document.getElementById('content-page-size').addEventListener('change', async () => {
+      try {
+        await loadContents(1);
+      } catch (error) {
+        showErrorModal(error.message || '切換每頁筆數失敗');
+      }
+    });
+
+    document.getElementById('content-table-body').addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const action = target.getAttribute('data-action');
+      if (!action) return;
+      const row = target.closest('[data-content-id]');
+      if (!(row instanceof HTMLElement)) return;
+      const contentId = row.getAttribute('data-content-id') || '';
+      if (!contentId) return;
+      const content = getContentById(contentId);
+      const contentStatus = String((content && content.status) || '').trim().toLowerCase();
+
+      try {
+        if ((action === 'send' || action === 'schedule') && contentStatus !== 'approved') {
+          throw new Error('請先核准內容，再進行發送或建立排程。');
+        }
+        if (action === 'approve') await approveContent(contentId);
+        if (action === 'reject') await rejectContent(contentId);
+        if (action === 'send') await sendContent(contentId);
+        if (action === 'schedule') await scheduleContent(contentId);
+        if (action === 'logs') await showLogs(contentId);
+        if (action === 'delete') {
+          const confirmed = window.confirm('確定刪除這筆內容嗎？此動作無法復原。');
+          if (!confirmed) {
+            return;
+          }
+          await deleteContent(contentId);
+        }
+      } catch (error) {
+        showErrorModal(error.message || '操作失敗');
+      }
+    });
+
+    document.getElementById('error-modal-close').addEventListener('click', closeErrorModal);
+    document.getElementById('result-modal-close').addEventListener('click', closeResultModal);
+    document.getElementById('tab-agent-import').addEventListener('click', () => switchCreateTab('agent'));
+    document.getElementById('tab-manual-create').addEventListener('click', () => switchCreateTab('manual'));
+    document.getElementById('btn-open-source-rules').addEventListener('click', () => {
+      const popup = window.open('/pages/health-source-rules.html', 'health-source-rules', 'width=980,height=760');
+      if (!popup) {
+        window.open('/pages/health-source-rules.html', '_blank');
+      }
+    });
+    document.getElementById('error-modal').addEventListener('click', (event) => {
+      if (event.target && event.target.id === 'error-modal') {
+        closeErrorModal();
+      }
+    });
+    document.getElementById('result-modal').addEventListener('click', (event) => {
+      if (event.target && event.target.id === 'result-modal') {
+        closeResultModal();
+      }
+    });
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeErrorModal();
+        closeResultModal();
+      }
+    });
+
+    (async function initializePage() {
+      const capabilities = await getCapabilities();
+      if (!hasAnyPermission(capabilities, canAccessWith)) {
+        throw new Error('你沒有衛教提醒權限（需要 health_education.* 權限）。');
+      }
+      switchCreateTab('agent');
+      await Promise.all([loadSourcePolicy(), loadContents()]);
+    })().catch((error) => {
+      showErrorModal(error.message || '初始化失敗');
+      setTimeout(() => {
+        window.location.href = '/pages/dashboard.html';
+      }, 1000);
+    });
+  </script>
+</body>
+</html>

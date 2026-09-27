@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "5e399e81408abe704a8a894ff4b6654afe7ea870",
+    "indexed_at": "2026-09-19T12:15:25Z",
+    "project": "dyagent",
+    "nodes": 9618,
+    "edges": 22033,
+    "original_size": 18415616,
+    "compressed_size": 4262353,
+    "compression_level": 9
+}

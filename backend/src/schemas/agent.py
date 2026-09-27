@@ -1,10 +1,10 @@
+
 from pydantic import BaseModel
-from typing import Optional
 
 
 class AgentBase(BaseModel):
     name: str
-    description: Optional[str] = ''
+    description: str | None = ''
     model_type: str = 'cloud'
     agent_class: str = 'tasked'
     enabled: bool = True
@@ -15,12 +15,12 @@ class AgentCreate(AgentBase):
 
 
 class AgentUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    model_type: Optional[str] = None
-    agent_class: Optional[str] = None
-    enabled: Optional[bool] = None
-    model_config: Optional[dict] = None
+    name: str | None = None
+    description: str | None = None
+    model_type: str | None = None
+    agent_class: str | None = None
+    enabled: bool | None = None
+    model_config: dict | None = None
 
 
 class AgentResponse(AgentBase):

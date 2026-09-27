@@ -2,16 +2,16 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import ExpiredSignatureError, JWTError, jwt
 from passlib.context import CryptContext
-from passlib.hash import bcrypt_sha256, pbkdf2_sha256
+from passlib.hash import pbkdf2_sha256
 from sqlalchemy.orm import Session
 
+from src.api.errors import forbidden_error
 from src.core.config import settings
 from src.core.database import get_db
 from src.core.logging import get_logger
-from src.api.errors import forbidden_error
 from src.models import User
 
 logger = get_logger(__name__)
@@ -66,18 +66,18 @@ def decode_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload
-    except ExpiredSignatureError:
+    except ExpiredSignatureError as error:
         logger.warning('token_decode_expired')
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Token has expired',
-        )
-    except JWTError as e:
-        logger.error('token_decode_error', error=str(e))
+        ) from error
+    except JWTError as error:
+        logger.error('token_decode_error', error=str(error))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Could not validate credentials',
-        )
+        ) from error
 
 
 async def get_current_user(

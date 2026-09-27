@@ -1,17 +1,15 @@
-from fastapi import APIRouter, Depends, Body
 from typing import Any
+
+from fastapi import APIRouter, Body, Depends
 from sqlalchemy.orm import Session
 
-from src.core.database import get_db
-from src.models import MCPConnection, User
-from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_permission
-from src.middleware.rbac import check_permission
 from src.api.errors import not_found_error, validation_error
+from src.core.database import get_db
+from src.middleware.auth import get_current_user
+from src.middleware.rbac import check_permission, require_permission
+from src.models import Log, MCPConnection, User
 from src.services.mcp_client import MCPClient
 from src.services.tool_policy_service import ToolPolicyService
-from src.models import Log
-
 
 router = APIRouter()
 tool_policy_service = ToolPolicyService()
@@ -20,7 +18,7 @@ tool_policy_service = ToolPolicyService()
 def _discover_schema_from_config(*, client: MCPClient, name: str, transport: str, base_url: str | None = None, auth: dict[str, Any] | None = None, command: str | None = None, args: list[Any] | None = None, env: dict[str, Any] | None = None) -> dict[str, Any]:
     def _builtin_schema_guess() -> dict[str, Any]:
         nm = str(name or '').strip().lower()
-        argv = [str(x).strip().lower() for x in (args or []) if isinstance(x, (str, int, float))]
+        argv = [str(x).strip().lower() for x in (args or []) if isinstance(x, str | int | float)]
         cmd = str(command or '').strip().lower()
         # 已知常見 server：mcp-server-fetch
         if nm == 'fetch' or 'mcp-server-fetch' in argv or (cmd == 'uvx' and 'fetch' in ' '.join(argv)):
@@ -216,7 +214,8 @@ async def test_mcp(
             try:
                 lg = Log(user_id=current_user.id, level='error', action='mcp.test', resource_type='mcp', resource_id=row.id,
                     details={'ok': False, 'duration_ms': int((_time.time()-t0)*1000), 'transport': 'stdio', 'error': 'missing_command'}, ip_address=None)
-                db.add(lg); db.commit()
+                db.add(lg)
+                db.commit()
             except Exception:
                 db.rollback()
             return out
@@ -224,7 +223,8 @@ async def test_mcp(
         try:
             lg = Log(user_id=current_user.id, level='info', action='mcp.test', resource_type='mcp', resource_id=row.id,
                 details={'ok': True, 'duration_ms': int((_time.time()-t0)*1000), 'transport': 'stdio'}, ip_address=None)
-            db.add(lg); db.commit()
+            db.add(lg)
+            db.commit()
         except Exception:
             db.rollback()
         return out
@@ -238,7 +238,8 @@ async def test_mcp(
         try:
             lg = Log(user_id=current_user.id, level='info' if (res or {}).get('ok') else 'error', action='mcp.test', resource_type='mcp', resource_id=row.id,
                 details={'ok': bool((res or {}).get('ok')), 'duration_ms': int((_time.time()-t0)*1000), 'transport': 'remote', 'error': (res or {}).get('error')}, ip_address=None)
-            db.add(lg); db.commit()
+            db.add(lg)
+            db.commit()
         except Exception:
             db.rollback()
         return res
@@ -247,7 +248,8 @@ async def test_mcp(
         try:
             lg = Log(user_id=current_user.id, level='error', action='mcp.test', resource_type='mcp', resource_id=row.id,
                 details={'ok': False, 'duration_ms': int((_time.time()-t0)*1000), 'transport': str(transport), 'error': str(e)[:200]}, ip_address=None)
-            db.add(lg); db.commit()
+            db.add(lg)
+            db.commit()
         except Exception:
             db.rollback()
         return out

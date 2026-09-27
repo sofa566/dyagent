@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import List
 import httpx
 
 from src.core.config import settings
 from src.core.logging import get_logger
 from src.services.rag_vectorizer import text_to_vector
-
 
 logger = get_logger(__name__)
 
@@ -17,7 +15,7 @@ class EmbeddingService:
     def __init__(self):
         self._st_model = None
 
-    def embed_texts(self, texts: List[str]) -> List[list[float]]:
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
         provider = str(settings.EMBEDDING_PROVIDER or 'deterministic').strip().lower()
         clean_texts = [str(t or '') for t in (texts or [])]
         if not clean_texts:
@@ -61,7 +59,7 @@ class EmbeddingService:
             return (True, None) if vectors else (False, 'embedding_provider_unavailable:vllm')
         return False, f'embedding_provider_unknown:{provider}'
 
-    def _embed_by_sentence_transformers(self, texts: List[str]) -> List[list[float]]:
+    def _embed_by_sentence_transformers(self, texts: list[str]) -> list[list[float]]:
         try:
             if self._st_model is None:
                 from sentence_transformers import SentenceTransformer
@@ -73,8 +71,8 @@ class EmbeddingService:
             logger.warning('embedding.sentence_transformers.failed', error=str(e))
             return []
 
-    def _embed_by_ollama(self, texts: List[str]) -> List[list[float]]:
-        vectors: List[list[float]] = []
+    def _embed_by_ollama(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
         base_url = str(settings.EMBEDDING_OLLAMA_BASE_URL or '').rstrip('/')
         model = str(settings.EMBEDDING_MODEL_NAME or '').strip()
         if not base_url or not model:
@@ -101,7 +99,7 @@ class EmbeddingService:
             return []
         return vectors
 
-    def _embed_by_vllm(self, texts: List[str]) -> List[list[float]]:
+    def _embed_by_vllm(self, texts: list[str]) -> list[list[float]]:
         base_url = str(settings.EMBEDDING_VLLM_BASE_URL or '').rstrip('/')
         model = str(settings.EMBEDDING_MODEL_NAME or '').strip()
         if not base_url or not model:
@@ -123,7 +121,7 @@ class EmbeddingService:
                     logger.warning('embedding.vllm.invalid_payload')
                     return []
 
-                vectors: List[list[float]] = []
+                vectors: list[list[float]] = []
                 for row in rows:
                     vector = row.get('embedding') if isinstance(row, dict) else None
                     if not isinstance(vector, list) or not vector:

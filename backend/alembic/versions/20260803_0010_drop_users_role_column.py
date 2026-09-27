@@ -8,17 +8,17 @@ Create Date: 2026-08-03 00:50:00
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = '20260803_0010'
-down_revision: Union[str, None] = '20260803_0009'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = '20260803_0009'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 SYSTEM_ROLE_CODES = ('admin', 'agent_admin', 'user')

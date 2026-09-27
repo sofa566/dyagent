@@ -12,8 +12,8 @@ Handler:
 from __future__ import annotations
 
 from typing import Any
-import httpx
 
+import httpx
 
 CITY_ALIAS = {
     "台北": "Taipei",

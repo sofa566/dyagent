@@ -19,6 +19,15 @@
       cursor: pointer;
       background: #fff;
     }
+    .line-session-item-title {
+      font-size: 22px;
+      line-height: 1.2;
+    }
+    .line-session-item-subtext {
+      font-size: 18px;
+      color: var(--text-secondary);
+      line-height: 1.35;
+    }
     .line-session-item.active {
       border-color: var(--primary-color);
       background: #eef7ff;
@@ -49,7 +58,8 @@
       border: 1px solid #e8a96b;
       border-style: solid;
     }
-    .line-msg-meta { color: var(--text-secondary); font-size: 12px; margin-bottom: 4px; }
+    .line-msg-meta { color: var(--text-secondary); font-size: 18px; margin-bottom: 4px; }
+    .line-msg-content { font-size: 21px; line-height: 1.45; }
     .line-controls {
       display: flex;
       gap: 8px;
@@ -134,7 +144,7 @@
   </main>
 
   <script type="module">
-    import { api, auth, showError, showSuccess } from '/main.js';
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
@@ -147,12 +157,29 @@
       agents: [],
     };
 
+    async function ensureLineCenterPermission() {
+      const capabilities = await getCapabilities();
+      const canAccess = hasAnyPermission(capabilities, ['line.center', 'read_logs', 'update_agent']);
+      if (!canAccess) {
+        throw new Error('你沒有 LINE 對話中心頁面的權限（需要 line.center）。');
+      }
+    }
+
     const sessionListEl = document.getElementById('session-list');
     const msgListEl = document.getElementById('msg-list');
     const chatTitleEl = document.getElementById('chat-title');
     const modeSelectEl = document.getElementById('mode-select');
     const agentSelectEl = document.getElementById('agent-select');
     const operatorTextEl = document.getElementById('operator-text');
+
+    function resolveSessionDisplayName(session) {
+      const boundPatient = session && session.bound_patient ? session.bound_patient : {};
+      const boundName = String((boundPatient && boundPatient.name) || '').trim();
+      if (boundName) return boundName;
+      const bindingName = String((session && session.binding_name) || '').trim();
+      if (bindingName) return bindingName;
+      return String((session && session.line_user_id) || '').trim() || '未命名對象';
+    }
 
     function renderSessions() {
       if (!state.sessions.length) {
@@ -163,11 +190,12 @@
         const latest = session.latest_message;
         const latestPreview = latest && latest.content ? String(latest.content).slice(0, 36) : '無訊息';
         const activeClass = state.selectedSessionId === session.id ? 'active' : '';
+        const displayName = resolveSessionDisplayName(session);
         return `
           <div class="line-session-item ${activeClass}" data-session-id="${session.id}">
-            <div><strong>${session.line_user_id}</strong></div>
-            <div style="font-size:12px;color:var(--text-secondary);">mode=${session.mode} / status=${session.status}</div>
-            <div style="font-size:12px;color:var(--text-secondary);">${latestPreview}</div>
+            <div class="line-session-item-title"><strong>${displayName}</strong></div>
+            <div class="line-session-item-subtext">mode=${session.mode} / status=${session.status}</div>
+            <div class="line-session-item-subtext">${latestPreview}</div>
           </div>
         `;
       }).join('');
@@ -200,7 +228,7 @@
       msgListEl.innerHTML = messages.map((message) => `
         <div class="line-msg ${message.direction} sender-${message.sender_type}">
           <div class="line-msg-meta">${message.direction} / ${message.sender_type} / ${message.created_at || ''}</div>
-          <div>${String(message.content || '').replaceAll('<', '&lt;')}</div>
+          <div class="line-msg-content">${String(message.content || '').replaceAll('<', '&lt;')}</div>
         </div>
       `).join('');
       msgListEl.scrollTop = msgListEl.scrollHeight;
@@ -226,7 +254,7 @@
     async function loadMessages(sessionId) {
       const response = await api.get(`/line/sessions/${encodeURIComponent(sessionId)}/messages?limit=200`);
       const session = response.session || {};
-      chatTitleEl.textContent = `會話：${session.line_user_id || sessionId}`;
+      chatTitleEl.textContent = `會話：${resolveSessionDisplayName(session)}`;
       modeSelectEl.value = session.mode || 'bot';
       state.selectedSession = session;
       renderAgents();
@@ -293,10 +321,14 @@
 
     async function bootstrap() {
       try {
+        await ensureLineCenterPermission();
         await loadAgents();
         await loadSessions();
       } catch (error) {
         showError(error.message || '初始化失敗');
+        setTimeout(() => {
+          window.location.href = '/pages/dashboard.html';
+        }, 900);
       }
     }
 

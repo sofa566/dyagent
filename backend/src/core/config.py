@@ -79,6 +79,30 @@ class Settings(BaseSettings):
     LINE_CHANNEL_ACCESS_TOKEN: str = ''
     LINE_WEBHOOK_VERIFY_SIGNATURE: bool = False
     LINE_DEFAULT_AGENT_ID: str = ''
+    LINE_RENAL_COMPANION_AGENT_ID: str = ''
+    LINE_RENAL_COMPANION_AGENT_NAME: str = '腎友陪伴'
+    MONITORING_REMINDER_SCHEDULER_ENABLED: bool = False
+    MONITORING_REMINDER_SCHEDULER_INTERVAL_SECONDS: int = 60
+    MONITORING_REMINDER_MORNING_DISPATCH_TIME: str = '06:00'
+    MONITORING_REMINDER_EVENING_DISPATCH_TIME: str = '21:00'
+    MONITORING_BACKFILL_SCHEDULER_ENABLED: bool = True
+    MONITORING_BACKFILL_FIRST_RUN_TIME: str = '00:10'
+    MONITORING_BACKFILL_SECOND_RUN_TIME: str = '12:10'
+    MONITORING_BACKFILL_LOOKBACK_DAYS: int = 2
+    CELERY_BROKER_URL: str = ''
+    CELERY_RESULT_BACKEND: str = ''
+    CELERY_TIMEZONE: str = 'Asia/Taipei'
+    CELERY_QUEUE_NAME: str = 'dyagent.scheduler'
+    REDBEAT_REDIS_URL: str = ''
+    REDBEAT_KEY_PREFIX: str = 'redbeat:'
+    SCHEDULER_SCRIPT_ALLOWED_ROOTS: str = ''
+    SCHEDULER_BASH_ALLOWED_PREFIXES: str = ''
+    HEALTH_EDUCATION_TRUSTED_DOMAINS: str = ''
+    HEALTH_EDUCATION_BLOCKED_DOMAINS: str = ''
+    HEALTH_EDUCATION_TRUSTED_ONLY_MODE: bool = False
+    HEALTH_EDUCATION_CHINESE_ONLY_MODE: bool = False
+    HEALTH_EDUCATION_TRANSLATE_NON_ZH: bool = True
+    HEALTH_EDUCATION_ROTATE_EMPTY_ALERT_THRESHOLD: int = 3
 
     # 聊天歷史上下文注入（同一會話連貫）
     CHAT_HISTORY_MODE: str = 'recent'  # off | recent
@@ -218,6 +242,11 @@ def validate_llm_settings() -> None:
         log.warning("config.invalid_chat_history_max_messages: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_MESSAGES)
     if settings.CHAT_HISTORY_MAX_TOKENS < 0:
         log.warning("config.invalid_chat_history_max_tokens: value=%s expect=>=0 int", settings.CHAT_HISTORY_MAX_TOKENS)
+    if settings.HEALTH_EDUCATION_ROTATE_EMPTY_ALERT_THRESHOLD <= 0:
+        log.warning(
+            "config.invalid_health_education_rotate_empty_alert_threshold: value=%s expect=>0 int",
+            settings.HEALTH_EDUCATION_ROTATE_EMPTY_ALERT_THRESHOLD,
+        )
     router_assignment_mode = str(settings.ROUTER_ASSIGNMENT_MODE or '').strip().lower()
     if router_assignment_mode not in {'description_only', 'hybrid', 'skill_first', 'memory_first'}:
         log.warning(
