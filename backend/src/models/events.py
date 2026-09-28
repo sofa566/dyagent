@@ -1,9 +1,9 @@
-from datetime import datetime
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, JSON
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, String
 
-from src.models import Base, GUID
+from src.models import GUID, Base
 
 
 class EventPart(Base):

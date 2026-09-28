@@ -260,12 +260,6 @@ const auth = {
     localStorage.setItem('user', JSON.stringify(response.user));
     clearCapabilitiesCache();
     clearMyCostUsageCache();
-    // 非 admin 登入後直接導向聊天頁
-    try {
-      if (response.user && response.user.role !== 'admin') {
-        window.location.href = '/pages/chat.html';
-      }
-    } catch {}
     return response.user;
   },
 
@@ -377,6 +371,76 @@ function hasPermission(capabilities, permission) {
 function hasAnyPermission(capabilities, permissions) {
   const permissionSet = new Set(Array.isArray(capabilities && capabilities.permissions) ? capabilities.permissions : []);
   return (permissions || []).some(permission => permissionSet.has(String(permission || '').trim()));
+}
+
+function resolveDefaultPageByCapabilities(capabilities) {
+  const routeConfigs = [
+    { path: '/pages/dashboard.html', permissions: ['dashboard.read', 'logs.read'] },
+    { path: '/pages/renals.html', permissions: ['renal.read', 'renal.create', 'renal.update', 'renal.delete'] },
+    { path: '/pages/renal-care-nurse.html', permissions: ['nursing.overview', 'nursing.ai_care', 'nursing.dialysis', 'nursing.trends', 'nursing.line', 'nursing.tracing'] },
+    {
+      path: '/pages/reminder-schedule.html',
+      permissions: [
+        'monitoring.compliance.read',
+        'monitoring.reminder.dispatch',
+        'monitoring.reminder.policy.read',
+        'monitoring.reminder.policy.update',
+        'monitoring.reminder.log.read',
+        'monitoring.backfill.run',
+        'monitoring.backfill.read',
+      ],
+    },
+    {
+      path: '/pages/health-reminder.html',
+      permissions: [
+        'health_education.content.read',
+        'health_education.content.create',
+        'health_education.content.update',
+        'health_education.content.delete',
+        'health_education.content.approve',
+        'health_education.content.reject',
+        'health_education.content.send',
+        'health_education.content.schedule',
+        'health_education.log.read',
+        'health_education.import.mcp',
+        'health_education.import.manual',
+        'health_education.source_rule.read',
+        'health_education.source_rule.create',
+        'health_education.source_rule.update',
+        'health_education.source_rule.delete',
+      ],
+    },
+    {
+      path: '/pages/scheduler-management.html',
+      permissions: [
+        'scheduler.task.read',
+        'scheduler.task.create',
+        'scheduler.task.update',
+        'scheduler.task.delete',
+        'scheduler.task.run',
+        'scheduler.run.read',
+        'scheduler.template.read',
+        'scheduler.template.create',
+        'scheduler.template.update',
+        'scheduler.template.delete',
+      ],
+    },
+    { path: '/pages/line-console.html', permissions: ['line.center'] },
+    { path: '/pages/users.html', permissions: ['read_user', 'update_user'] },
+    { path: '/pages/access-control.html', permissions: ['update_user', 'role.read', 'group.read', 'role.update', 'group.update'] },
+    { path: '/pages/agent-list.html', permissions: ['read_agent', 'update_agent', 'create_agent'] },
+    { path: '/pages/mcps.html', permissions: ['mcp.read'] },
+    { path: '/pages/skills.html', permissions: ['skills.read'] },
+    { path: '/pages/functions.html', permissions: ['functions.read'] },
+    { path: '/pages/rag-datasets.html', permissions: ['rag.read'] },
+    { path: '/pages/chat.html', permissions: ['chat'] },
+  ];
+  for (const routeConfig of routeConfigs) {
+    if (hasAnyPermission(capabilities, routeConfig.permissions)) {
+      return routeConfig.path;
+    }
+  }
+  return '/pages/dashboard.html';
 }
 
 function showError(message) {
@@ -506,6 +570,62 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const navConfigs = [
         { id: 'dashboard-link', href: '/pages/dashboard.html', text: '儀表板', requiredPermissions: ['dashboard.read', 'logs.read'] },
+        { id: 'renals-link', href: '/pages/renals.html', text: '腎友管理', requiredPermissions: ['renal.read', 'renal.create', 'renal.update', 'renal.delete'] },
+        { id: 'renal-care-link', href: '/pages/renal-care-nurse.html', text: '腎友照護', requiredPermissions: ['nursing.overview', 'nursing.ai_care', 'nursing.dialysis', 'nursing.trends', 'nursing.line', 'nursing.tracing'] },
+        {
+          id: 'reminder-schedule-link',
+          href: '/pages/reminder-schedule.html',
+          text: '腎友提醒',
+          requiredPermissions: [
+            'monitoring.compliance.read',
+            'monitoring.reminder.dispatch',
+            'monitoring.reminder.policy.read',
+            'monitoring.reminder.policy.update',
+            'monitoring.reminder.log.read',
+            'monitoring.backfill.run',
+            'monitoring.backfill.read',
+          ],
+        },
+        {
+          id: 'health-reminder-link',
+          href: '/pages/health-reminder.html',
+          text: '衛教提醒',
+          requiredPermissions: [
+            'health_education.content.read',
+            'health_education.content.create',
+            'health_education.content.update',
+            'health_education.content.delete',
+            'health_education.content.approve',
+            'health_education.content.reject',
+            'health_education.content.send',
+            'health_education.content.schedule',
+            'health_education.log.read',
+            'health_education.import.mcp',
+            'health_education.import.manual',
+            'health_education.source_rule.read',
+            'health_education.source_rule.create',
+            'health_education.source_rule.update',
+            'health_education.source_rule.delete',
+          ],
+        },
+        {
+          id: 'scheduler-management-link',
+          href: '/pages/scheduler-management.html',
+          text: '排程管理',
+          requiredPermissions: [
+            'scheduler.task.read',
+            'scheduler.task.create',
+            'scheduler.task.update',
+            'scheduler.task.delete',
+            'scheduler.task.run',
+            'scheduler.run.read',
+            'scheduler.template.read',
+            'scheduler.template.create',
+            'scheduler.template.update',
+            'scheduler.template.delete',
+          ],
+        },
+        { id: 'line-center-link', href: '/pages/line-console.html', text: 'LINE 對話中心', requiredPermissions: ['line.center'] },
         { id: 'users-admin-link', href: '/pages/users.html', text: '使用者管理', requiredPermissions: ['read_user', 'update_user'] },
         { id: 'access-control-link', href: '/pages/access-control.html', text: '權限管理', requiredPermissions: ['update_user', 'role.read', 'group.read', 'role.update', 'group.update'] },
         { id: 'agent-list-link', href: '/pages/agent-list.html', text: '代理者', requiredPermissions: ['read_agent', 'update_agent', 'create_agent'] },
@@ -545,6 +665,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const orderedPaths = [
         '/pages/dashboard.html',
+        '/pages/renals.html',
+        '/pages/renal-care-nurse.html',
+        '/pages/reminder-schedule.html',
+        '/pages/health-reminder.html',
+        '/pages/scheduler-management.html',
+        '/pages/line-console.html',
         '/pages/users.html',
         '/pages/access-control.html',
         '/pages/agent-list.html',
@@ -568,9 +694,114 @@ document.addEventListener('DOMContentLoaded', async () => {
         order.push(a);
       });
 
-      // 依序附加，最後放登出/登入
-      order.forEach(a => navMenu.appendChild(a));
+      const primaryPaths = new Set([
+        '/pages/dashboard.html',
+        '/pages/renals.html',
+        '/pages/renal-care-nurse.html',
+        '/pages/reminder-schedule.html',
+        '/pages/health-reminder.html',
+        '/pages/scheduler-management.html',
+        '/pages/line-console.html',
+        '/pages/chat.html',
+      ]);
+
+      const primaryLinks = [];
+      const overflowLinks = [];
+      for (const link of order) {
+        const href = link.getAttribute('href') || '';
+        const isPrimary = Array.from(primaryPaths).some(path => href.endsWith(path));
+        if (isPrimary) {
+          primaryLinks.push(link);
+        } else {
+          overflowLinks.push(link);
+        }
+      }
+
+      let moreMenuElement = navMenu.querySelector('.nav-more');
+      if (!moreMenuElement) {
+        moreMenuElement = document.createElement('div');
+        moreMenuElement.className = 'nav-more';
+
+        const toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.className = 'nav-more-toggle';
+        toggleButton.textContent = '更多';
+        toggleButton.setAttribute('aria-haspopup', 'menu');
+        toggleButton.setAttribute('aria-expanded', 'false');
+
+        const submenuElement = document.createElement('div');
+        submenuElement.className = 'nav-submenu';
+        submenuElement.id = 'nav-more-submenu';
+        submenuElement.setAttribute('role', 'menu');
+        toggleButton.setAttribute('aria-controls', submenuElement.id);
+
+        toggleButton.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const shouldOpen = !moreMenuElement.classList.contains('is-open');
+          moreMenuElement.classList.toggle('is-open', shouldOpen);
+          toggleButton.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+        });
+
+        moreMenuElement.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape') return;
+          moreMenuElement.classList.remove('is-open');
+          toggleButton.setAttribute('aria-expanded', 'false');
+          toggleButton.blur();
+        });
+
+        moreMenuElement.appendChild(toggleButton);
+        moreMenuElement.appendChild(submenuElement);
+      }
+
+      if (!navMenu.dataset.moreMenuDismissBound) {
+        document.addEventListener('click', (event) => {
+          if (!moreMenuElement.contains(event.target)) {
+            moreMenuElement.classList.remove('is-open');
+            const toggleButton = moreMenuElement.querySelector('.nav-more-toggle');
+            if (toggleButton) {
+              toggleButton.setAttribute('aria-expanded', 'false');
+            }
+          }
+        });
+        navMenu.dataset.moreMenuDismissBound = '1';
+      }
+
+      const submenuElement = moreMenuElement.querySelector('.nav-submenu');
+      if (submenuElement) {
+        submenuElement.innerHTML = '';
+        overflowLinks.forEach(link => submenuElement.appendChild(link));
+      }
+
+      primaryLinks.forEach(link => navMenu.appendChild(link));
+      if (overflowLinks.length > 0) {
+        navMenu.appendChild(moreMenuElement);
+      } else if (moreMenuElement.parentElement === navMenu) {
+        navMenu.removeChild(moreMenuElement);
+      }
+
       if (logoutOrAuth) navMenu.appendChild(logoutOrAuth);
+
+      const currentPathname = window.location.pathname || '';
+      const allNavLinks = Array.from(navMenu.querySelectorAll('a'));
+      let hasActiveOverflowLink = false;
+      for (const navLink of allNavLinks) {
+        const hrefValue = navLink.getAttribute('href') || '';
+        if (!hrefValue || hrefValue.startsWith('#')) {
+          navLink.classList.remove('nav-active');
+          continue;
+        }
+        const linkPathname = new URL(navLink.href, window.location.origin).pathname;
+        const isActive = currentPathname === linkPathname || currentPathname.endsWith(linkPathname);
+        navLink.classList.toggle('nav-active', isActive);
+        if (isActive && overflowLinks.includes(navLink)) {
+          hasActiveOverflowLink = true;
+        }
+      }
+
+      if (moreMenuElement) {
+        moreMenuElement.classList.toggle('has-active-child', hasActiveOverflowLink);
+      }
     } catch {}
   }
 
@@ -615,4 +846,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderNavbarUserMeta(user, capabilities);
 });
 
-export { api, auth, showError, showSuccess, API_BASE, getCapabilities, hasPermission, hasAnyPermission, clearCapabilitiesCache };
+export {
+  api,
+  auth,
+  showError,
+  showSuccess,
+  API_BASE,
+  getCapabilities,
+  hasPermission,
+  hasAnyPermission,
+  resolveDefaultPageByCapabilities,
+  clearCapabilitiesCache,
+};

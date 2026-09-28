@@ -1,15 +1,15 @@
-from fastapi import APIRouter, Depends, Query
 import hashlib
 from typing import Any
 
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from src.core.database import get_db
-from src.models import User
-from src.middleware.auth import get_current_user
-from src.middleware.rbac import check_permission
 from src.api.errors import forbidden_error
 from src.core.config import settings
+from src.core.database import get_db
+from src.middleware.auth import get_current_user
+from src.middleware.rbac import check_permission
+from src.models import User
 from src.services.mcp_client import MCPClient
 
 router = APIRouter()

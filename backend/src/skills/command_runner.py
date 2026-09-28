@@ -5,9 +5,9 @@ import os
 import sys
 from typing import Any
 
+from src.skills.demo_fx import convert as run_demo_fx_convert
 from src.skills.taiwan_finance_news import run as run_taiwan_finance_news
 from src.skills.taiwan_news import run as run_taiwan_news
-from src.skills.demo_fx import convert as run_demo_fx_convert
 
 
 def _load_skill_input() -> dict[str, Any]:

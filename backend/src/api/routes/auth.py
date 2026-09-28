@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
+from src.api.errors import unauthorized_error, validation_error
 from src.core.database import get_db
 from src.middleware.auth import (
+    create_access_token,
     get_current_user,
     get_password_hash,
-    create_access_token,
 )
 from src.models import User
-from src.api.errors import validation_error, unauthorized_error
-from src.schemas.user import UserCreate, UserLogin, UserResponse, TokenResponse
+from src.schemas.user import TokenResponse, UserCreate, UserLogin, UserResponse
 from src.schemas.utils import user_to_response
 from src.services.access_control_service import access_control_service
 

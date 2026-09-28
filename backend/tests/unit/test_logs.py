@@ -1,4 +1,3 @@
-import pytest
 from src.models import Log
 
 
@@ -37,7 +36,7 @@ class TestLogsList:
         )
         assert response.status_code == 200
         data = response.json()
-        assert all(l['level'] == 'error' for l in data['logs'])
+        assert all(log_item['level'] == 'error' for log_item in data['logs'])
 
     def test_get_logs_pagination(self, client, admin_user, admin_token, db):
         for i in range(5):

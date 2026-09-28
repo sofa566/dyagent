@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
 
+const backendProxyTarget = process.env.VITE_BACKEND_PROXY_TARGET || 'http://localhost:8000';
+const websocketProxyTarget = process.env.VITE_WS_PROXY_TARGET || 'ws://localhost:8000';
+
 export default defineConfig({
   root: 'src',
   build: {
@@ -17,6 +20,14 @@ export default defineConfig({
         'agent-llm': resolve(__dirname, 'src/pages/agent-llm.html'),
         'agent-llm-config': resolve(__dirname, 'src/pages/agent-llm-config.html'),
         'agent-rag-config': resolve(__dirname, 'src/pages/agent-rag-config.html'),
+        'line-console': resolve(__dirname, 'src/pages/line-console.html'),
+        'reminder-schedule': resolve(__dirname, 'src/pages/reminder-schedule.html'),
+        'health-reminder': resolve(__dirname, 'src/pages/health-reminder.html'),
+        'health-source-rules': resolve(__dirname, 'src/pages/health-source-rules.html'),
+        'scheduler-management': resolve(__dirname, 'src/pages/scheduler-management.html'),
+        renals: resolve(__dirname, 'src/pages/renals.html'),
+        'renal-care-nurse': resolve(__dirname, 'src/pages/renal-care-nurse.html'),
+        'renal-care-patient': resolve(__dirname, 'src/pages/renal-care-patient.html'),
         chat: resolve(__dirname, 'src/pages/chat.html'),
         dashboard: resolve(__dirname, 'src/pages/dashboard.html'),
         users: resolve(__dirname, 'src/pages/users.html'),
@@ -37,11 +48,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: websocketProxyTarget,
         ws: true,
       },
     },

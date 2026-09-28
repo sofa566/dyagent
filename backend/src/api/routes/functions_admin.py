@@ -1,19 +1,19 @@
-from fastapi import APIRouter, Depends, Body, UploadFile, File
-from typing import Any
-from sqlalchemy.orm import Session
-import re
-import yaml
-import zipfile
 import io
+import re
+import zipfile
 from pathlib import Path
+from typing import Any
 
+import yaml
+from fastapi import APIRouter, Body, Depends, File, UploadFile
+from sqlalchemy.orm import Session
+
+from src.api.errors import forbidden_error, not_found_error, validation_error
 from src.core.database import get_db
-from src.models import FunctionProfile, User
 from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_permission, check_permission
+from src.middleware.rbac import check_permission, require_permission
+from src.models import FunctionProfile, User
 from src.services.tool_policy_service import ToolPolicyService
-from src.api.errors import not_found_error, validation_error, forbidden_error
-
 
 router = APIRouter()
 tool_policy_service = ToolPolicyService()

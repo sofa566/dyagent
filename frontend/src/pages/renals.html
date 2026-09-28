@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>腎友管理 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    .command-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: #f7fafc;
+    }
+    .search-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .command-select,
+    .command-input {
+      min-width: 180px;
+      height: 40px;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      background: #fff;
+      color: #0f172a;
+      font-size: 0.95rem;
+      padding: 0 12px;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .command-select {
+      appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, #64748b 50%), linear-gradient(135deg, #64748b 50%, transparent 50%);
+      background-position: calc(100% - 18px) 16px, calc(100% - 12px) 16px;
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 30px;
+    }
+    .command-select:focus,
+    .command-input:focus {
+      border-color: #1f8a70;
+      box-shadow: 0 0 0 3px rgba(31, 138, 112, 0.14);
+    }
+    .search-btn {
+      height: 40px;
+      padding: 0 16px;
+      border-radius: 10px;
+    }
+    .mono-id { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .cell-wrap { max-width: 320px; white-space: normal; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/renals.html">腎友管理</a>
+      <a href="/pages/renal-care-nurse.html">護理師工作台</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h2>腎友管理</h2>
+    <div class="command-row">
+      <div>
+        <button id="btn-new" class="btn btn-primary" type="button">新建腎友</button>
+      </div>
+      <div class="search-row">
+        <select id="search-field" class="command-select">
+          <option value="name">姓名</option>
+          <option value="tel_no">手機號碼</option>
+          <option value="id_card">身份證號</option>
+        </select>
+        <input id="search-keyword" class="command-input" type="text" placeholder="請輸入查詢內容">
+        <button id="btn-search" class="btn search-btn" type="button">查詢</button>
+      </div>
+    </div>
+
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <section class="card">
+      <h3>腎友列表</h3>
+      <div style="max-height:560px;overflow:auto;border:1px solid var(--border-color);border-radius:var(--radius);">
+        <table style="margin:0;">
+          <thead style="position:sticky;top:0;background:var(--bg-color);z-index:1;">
+            <tr>
+              <th>ID</th><th>姓名</th><th>手機電話</th><th>身份證號碼</th><th>病史</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="renal-list-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="renal-modal" class="modal">
+    <div class="modal-content" style="max-width:620px;">
+      <h3 id="renal-modal-title">新建腎友</h3>
+      <form id="renal-form">
+        <input id="field-id-origin" type="hidden">
+        <div class="form-group">
+          <label for="field-id">id</label>
+          <input id="field-id" type="text" maxlength="24" placeholder="P001" required>
+        </div>
+        <div class="form-group">
+          <label for="field-name">name 姓名</label>
+          <input id="field-name" type="text" maxlength="100" placeholder="王美華" required>
+        </div>
+        <div class="form-group">
+          <label for="field-tel">tel_no 手機電話</label>
+          <input id="field-tel" type="text" maxlength="32" placeholder="0911222333">
+        </div>
+        <div class="form-group">
+          <label for="field-id-card">id_card 身份證號碼</label>
+          <input id="field-id-card" type="text" maxlength="32" placeholder="A123456789">
+        </div>
+        <div class="form-group">
+          <label for="field-med-history">med_history 病史</label>
+          <textarea id="field-med-history" rows="4" placeholder="糖尿病、右足慢性傷口"></textarea>
+        </div>
+        <div class="actions">
+          <button id="btn-save" type="submit" class="btn btn-primary">儲存</button>
+          <button id="btn-cancel" type="button" class="btn btn-secondary">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="delete-modal" class="modal">
+    <div class="modal-content">
+      <h3>確認刪除</h3>
+      <p>確定刪除腎友「<span id="delete-name"></span>」嗎？</p>
+      <div class="actions">
+        <button id="btn-delete-confirm" class="btn btn-danger" type="button">確認刪除</button>
+        <button id="btn-delete-cancel" class="btn btn-secondary" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const state = {
+      items: [],
+      editingItemId: '',
+      deletingItem: null,
+      searchField: 'name',
+      keyword: '',
+    };
+
+    async function ensureRenalPagePermission() {
+      const capabilities = await getCapabilities();
+      const canAccess = hasAnyPermission(capabilities, ['renal.read', 'renal.create', 'renal.update', 'renal.delete', 'read_logs', 'update_agent']);
+      if (!canAccess) {
+        throw new Error('你沒有腎友管理頁面的權限（需要 renal.*）。');
+      }
+    }
+
+    const listBodyEl = document.getElementById('renal-list-body');
+    const modalEl = document.getElementById('renal-modal');
+    const deleteModalEl = document.getElementById('delete-modal');
+
+    function openModal(modalElement) { modalElement.classList.add('active'); }
+    function closeModal(modalElement) { modalElement.classList.remove('active'); }
+
+    function resetForm() {
+      document.getElementById('field-id-origin').value = '';
+      document.getElementById('field-id').value = '';
+      document.getElementById('field-id').disabled = false;
+      document.getElementById('field-name').value = '';
+      document.getElementById('field-tel').value = '';
+      document.getElementById('field-id-card').value = '';
+      document.getElementById('field-med-history').value = '';
+      document.getElementById('renal-modal-title').textContent = '新建腎友';
+      state.editingItemId = '';
+    }
+
+    function openCreateModal() {
+      resetForm();
+      openModal(modalEl);
+    }
+
+    function openEditModal(item) {
+      state.editingItemId = String(item.id || '');
+      document.getElementById('field-id-origin').value = state.editingItemId;
+      document.getElementById('field-id').value = state.editingItemId;
+      document.getElementById('field-id').disabled = true;
+      document.getElementById('field-name').value = String(item.name || '');
+      document.getElementById('field-tel').value = String(item.tel_no || '');
+      document.getElementById('field-id-card').value = String(item.id_card || '');
+      document.getElementById('field-med-history').value = String(item.med_history || '');
+      document.getElementById('renal-modal-title').textContent = '編輯腎友';
+      openModal(modalEl);
+    }
+
+    function openDeleteModal(item) {
+      state.deletingItem = item;
+      document.getElementById('delete-name').textContent = String(item.name || item.id || '');
+      openModal(deleteModalEl);
+    }
+
+    function renderList() {
+      if (!state.items.length) {
+        listBodyEl.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">沒有腎友資料</td></tr>';
+        return;
+      }
+      listBodyEl.innerHTML = state.items.map((item) => `
+        <tr>
+          <td class="mono-id">${item.id || '-'}</td>
+          <td>${item.name || '-'}</td>
+          <td>${item.tel_no || '-'}</td>
+          <td>${item.id_card || '-'}</td>
+          <td class="cell-wrap">${item.med_history || '-'}</td>
+          <td>
+            <div class="actions" style="justify-content:flex-start;">
+              <button class="btn" type="button" data-action="edit" data-id="${item.id}">編輯</button>
+              <button class="btn btn-danger" type="button" data-action="delete" data-id="${item.id}">刪除</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadItems() {
+      const query = new URLSearchParams();
+      query.set('search_field', state.searchField);
+      query.set('keyword', state.keyword);
+      const response = await api.get(`/renals?${query.toString()}`);
+      state.items = Array.isArray(response.items) ? response.items : [];
+      renderList();
+    }
+
+    function buildFormPayload() {
+      return {
+        id: String(document.getElementById('field-id').value || '').trim(),
+        name: String(document.getElementById('field-name').value || '').trim(),
+        tel_no: String(document.getElementById('field-tel').value || '').trim(),
+        id_card: String(document.getElementById('field-id-card').value || '').trim(),
+        med_history: String(document.getElementById('field-med-history').value || '').trim(),
+      };
+    }
+
+    function getRenalsApiErrorMessage(error, fallbackMessage) {
+      const rawMessage = String((error && error.message) || fallbackMessage || '操作失敗');
+      if (rawMessage.includes('Not Found') || rawMessage.includes('HTTP 404')) {
+        return '腎友管理 API 尚未就緒（/api/renals）。請重啟後端並確認已執行 alembic upgrade head。';
+      }
+      if (rawMessage.includes('no such table') || rawMessage.includes('does not exist')) {
+        return '腎友資料表尚未建立，請先執行 alembic upgrade head 後重試。';
+      }
+      return rawMessage;
+    }
+
+    // 目的：提交腎友新增或編輯資料並刷新列表。
+    // 為什麼：統一保存流程，避免新增/編輯分支重複邏輯。
+    async function saveForm(event) {
+      event.preventDefault();
+      const payload = buildFormPayload();
+      if (!payload.id || !payload.name) {
+        showError('id 與 name 不可為空');
+        return;
+      }
+      if (state.editingItemId) {
+        await api.put(`/renals/${encodeURIComponent(state.editingItemId)}`, payload);
+        showSuccess('腎友資料已更新');
+      } else {
+        await api.post('/renals', payload);
+        showSuccess('腎友資料已建立');
+      }
+      closeModal(modalEl);
+      await loadItems();
+    }
+
+    async function confirmDelete() {
+      const item = state.deletingItem;
+      if (!item) return;
+      await api.delete(`/renals/${encodeURIComponent(item.id)}`);
+      showSuccess('腎友資料已刪除');
+      state.deletingItem = null;
+      closeModal(deleteModalEl);
+      await loadItems();
+    }
+
+    document.getElementById('btn-new').addEventListener('click', openCreateModal);
+    document.getElementById('btn-search').addEventListener('click', async () => {
+      state.searchField = String(document.getElementById('search-field').value || 'name');
+      state.keyword = String(document.getElementById('search-keyword').value || '').trim();
+      await loadItems();
+    });
+    document.getElementById('renal-form').addEventListener('submit', async (event) => {
+      try {
+        await saveForm(event);
+      } catch (error) {
+        showError(getRenalsApiErrorMessage(error, '儲存失敗'));
+      }
+    });
+    document.getElementById('btn-cancel').addEventListener('click', () => closeModal(modalEl));
+    document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
+      try {
+        await confirmDelete();
+      } catch (error) {
+        showError(getRenalsApiErrorMessage(error, '刪除失敗'));
+      }
+    });
+    document.getElementById('btn-delete-cancel').addEventListener('click', () => {
+      state.deletingItem = null;
+      closeModal(deleteModalEl);
+    });
+
+    listBodyEl.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+      const action = target.getAttribute('data-action');
+      const idValue = String(target.getAttribute('data-id') || '');
+      const item = state.items.find((row) => String(row.id) === idValue);
+      if (!item) return;
+      if (action === 'edit') {
+        openEditModal(item);
+        return;
+      }
+      if (action === 'delete') {
+        openDeleteModal(item);
+      }
+    });
+
+    (async function bootstrap() {
+      try {
+        await ensureRenalPagePermission();
+        await loadItems();
+      } catch (error) {
+        showError(getRenalsApiErrorMessage(error, '載入腎友列表失敗'));
+        setTimeout(() => {
+          window.location.href = '/pages/dashboard.html';
+        }, 900);
+      }
+    }());
+  </script>
+</body>
+</html>

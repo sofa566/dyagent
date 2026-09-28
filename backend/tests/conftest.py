@@ -1,16 +1,15 @@
+
 import pytest
-from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from src.core.database import Base, get_db
 from src.api.main import app
-from src.models import User, Agent, Workspace
-from src.middleware.auth import get_password_hash, create_access_token
+from src.core.database import Base, get_db
+from src.middleware.auth import create_access_token, get_password_hash
+from src.models import Agent, User, Workspace
 from src.services.access_control_service import access_control_service
-
 
 SQLALCHEMY_DATABASE_URL = 'sqlite:///:memory:'
 

@@ -5,12 +5,11 @@ from xml.etree import ElementTree
 
 import requests
 
-from src.utils.taiwan_news_sources import list_taiwan_news_rss_sources
 from src.utils.taiwan_finance_news_sources import (
-    list_taiwan_finance_rss_sources,
     filter_finance_items,
+    list_taiwan_finance_rss_sources,
 )
-
+from src.utils.taiwan_news_sources import list_taiwan_news_rss_sources
 
 REQUEST_TIMEOUT_SECONDS = 8
 MAX_SOURCES = 5

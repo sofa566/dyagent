@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>腎友照護 POC（腎友/家屬）- dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --portal-navy-800: #18485a;
+      --portal-navy-700: #153c50;
+      --portal-teal-700: #087f8c;
+      --portal-teal-600: #0d93a0;
+      --portal-border: #cfe1e4;
+      --portal-bg: #ecf3f6;
+      --text-main: #143848;
+      --text-sub: #648089;
+    }
+    body {
+      margin: 0;
+      font-family: 'Noto Sans TC', 'Segoe UI', sans-serif;
+      background: var(--portal-bg);
+      color: var(--text-main);
+      font-size: 15px;
+    }
+    .topbar {
+      height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 22px;
+      background: var(--portal-navy-800);
+      color: #fff;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.13);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+    .brand-mark {
+      width: 40px;
+      height: 40px;
+      border-radius: 11px;
+      border: 1px solid rgba(255, 255, 255, 0.23);
+      background: #0b97a4;
+      display: grid;
+      place-items: center;
+    }
+    .brand-mark svg {
+      width: 21px;
+      height: 21px;
+      stroke: #fff;
+      stroke-width: 2;
+      fill: none;
+    }
+    .brand strong,
+    .brand span {
+      display: block;
+      line-height: 1.2;
+    }
+    .brand strong {
+      font-size: 29px;
+      letter-spacing: -0.01em;
+    }
+    .brand span {
+      color: #b4d0d8;
+      font-size: 15px;
+      margin-top: 2px;
+    }
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .top-chip,
+    .top-btn {
+      border-radius: 11px;
+      border: 1px solid rgba(207, 227, 235, 0.35);
+      background: rgba(255, 255, 255, 0.06);
+      color: #d1e4ea;
+      padding: 8px 11px;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1;
+    }
+    .top-chip.active {
+      background: #fff;
+      color: #0e3040;
+      border-color: #e6eff1;
+    }
+    .shift-chip {
+      color: #c6dce2;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 0 3px;
+    }
+    .user-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(201, 219, 224, 0.4);
+      background: rgba(255, 255, 255, 0.1);
+      padding: 4px 7px 4px 4px;
+      color: #e4f0f3;
+    }
+    .user-chip .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #d9ebef;
+      color: #1c4a5d;
+      font-size: 14px;
+      font-weight: 800;
+      display: grid;
+      place-items: center;
+    }
+    .user-chip strong,
+    .user-chip span {
+      display: block;
+      line-height: 1.1;
+    }
+    .user-chip strong {
+      font-size: 13px;
+    }
+    .user-chip span {
+      color: #bad3da;
+      font-size: 11px;
+      margin-top: 2px;
+    }
+    .personal-shell {
+      max-width: 1110px;
+      margin: 0 auto;
+      padding: 18px 14px 30px;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .persona-switch {
+      display: flex;
+      padding: 3px;
+      border: 1px solid var(--portal-border);
+      border-radius: 11px;
+      background: #fff;
+    }
+    .persona-switch span {
+      font-size: 14px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      color: #6f8289;
+      font-weight: 600;
+    }
+    .persona-switch span.active {
+      color: #fff;
+      background: var(--portal-teal-700);
+    }
+    .authorization {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #2f745d;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .authorization svg {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+    .toolbar .btn {
+      margin-left: auto;
+      border-radius: 999px;
+      border: 1px solid #c6dade;
+      color: #395660;
+      background: #eff5f7;
+      padding: 8px 12px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      border-radius: 16px;
+      padding: 19px 20px;
+      color: #fff;
+      background: linear-gradient(122deg, #15475b, #0a808d);
+      box-shadow: 0 14px 30px rgba(21, 60, 80, 0.16);
+    }
+    .hero .eyebrow {
+      margin: 0;
+      color: #a7dde2;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+    }
+    .hero h1 {
+      margin: 2px 0 0;
+      font-size: 44px;
+      letter-spacing: -0.02em;
+    }
+    .hero p {
+      margin: 4px 0 0;
+      color: #d7eaed;
+      font-size: 14px;
+    }
+    .next-session {
+      min-width: 255px;
+      align-self: center;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      padding: 12px 13px;
+    }
+    .next-session span,
+    .next-session strong,
+    .next-session small {
+      display: block;
+    }
+    .next-session span {
+      color: #cae3e8;
+      font-size: 13px;
+    }
+    .next-session strong {
+      font-size: 26px;
+      margin: 4px 0;
+    }
+    .next-session small {
+      color: #d6e7eb;
+      font-size: 13px;
+    }
+    .alert-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 12px 0;
+      border-radius: 14px;
+      border: 1px solid #efc9be;
+      background: #fff1ec;
+      color: #7c4035;
+      padding: 12px 14px;
+    }
+    .alert-icon {
+      width: 19px;
+      height: 19px;
+      stroke: #c54f3a;
+      stroke-width: 2;
+      fill: none;
+      flex: 0 0 auto;
+    }
+    .alert-bar strong {
+      display: block;
+      font-size: 18px;
+    }
+    .alert-bar p {
+      margin: 2px 0 0;
+      color: #86584b;
+      font-size: 14px;
+    }
+    .alert-bar .btn {
+      margin-left: auto;
+      border: 1px solid #c55f4b;
+      border-radius: 10px;
+      background: #be503d;
+      color: #fff;
+      padding: 8px 11px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 11px;
+    }
+    .stat-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-radius: 12px;
+      border: 1px solid var(--portal-border);
+      background: #fff;
+      padding: 11px;
+    }
+    .stat-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: #e7f3f6;
+      color: #1f5f73;
+      display: grid;
+      place-items: center;
+    }
+    .stat-icon svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+    .stat-card span,
+    .stat-card strong {
+      display: block;
+      line-height: 1.15;
+    }
+    .stat-card span {
+      color: #6f858d;
+      font-size: 13px;
+    }
+    .stat-card strong {
+      margin-top: 2px;
+      color: #153f51;
+      font-size: 40px;
+      letter-spacing: -0.01em;
+    }
+    .stat-card em {
+      font-style: normal;
+      font-size: 13px;
+      color: #73909a;
+      margin-left: 2px;
+    }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(280px, 0.7fr);
+      gap: 11px;
+    }
+    .panel {
+      border: 1px solid var(--portal-border);
+      border-radius: 15px;
+      background: #fff;
+      padding: 13px;
+    }
+    .panel .eyebrow {
+      margin: 0;
+      color: var(--portal-teal-700);
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      font-weight: 800;
+    }
+    .panel h3 {
+      margin: 2px 0 0;
+      color: #133649;
+      font-size: 33px;
+      letter-spacing: -0.01em;
+    }
+    .panel p {
+      margin: 2px 0 0;
+      color: var(--text-sub);
+      font-size: 14px;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .panel-chip {
+      border: 1px solid #cfdee3;
+      border-radius: 999px;
+      background: #f8fbfc;
+      color: #435f69;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 4px 10px;
+    }
+    .trend-box {
+      height: 240px;
+      border-top: 1px solid #e8eff2;
+      border-bottom: 1px solid #e8eff2;
+      margin-top: 10px;
+      padding: 10px 0;
+    }
+    .trend-legend {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 3px;
+      color: #657f88;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .trend-legend i {
+      display: inline-block;
+      width: 16px;
+      height: 2px;
+      border-radius: 999px;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    .trend-legend .weight i { background: #0b8b98; }
+    .trend-legend .pressure i { background: #dc5a40; }
+    .trend-svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .trend-axis {
+      stroke: #d8e3e8;
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+    }
+    .line-weight {
+      fill: none;
+      stroke: #0b8b98;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .line-pressure {
+      fill: none;
+      stroke: #dc5a40;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .point-weight {
+      fill: #fff;
+      stroke: #0b8b98;
+      stroke-width: 2;
+    }
+    .point-pressure {
+      fill: #fff;
+      stroke: #dc5a40;
+      stroke-width: 2;
+    }
+    .trend-note {
+      margin-top: 10px;
+      border-radius: 9px;
+      background: #eff7f8;
+      border: 1px solid #d3e6e9;
+      padding: 9px 10px;
+      color: #4f6c74;
+      font-size: 13px;
+    }
+    .task-list {
+      margin-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .task-item {
+      border: 1px solid #d7e5e8;
+      border-radius: 11px;
+      background: #fff;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .task-item.done {
+      border-color: #a9d7c7;
+      background: #edf8f3;
+    }
+    .task-item strong,
+    .task-item span {
+      display: block;
+    }
+    .task-item strong {
+      font-size: 16px;
+      color: #1f434e;
+    }
+    .task-item span {
+      font-size: 13px;
+      color: #617b84;
+      margin-top: 1px;
+    }
+    .task-item .icon {
+      width: 20px;
+      text-align: center;
+      color: #5d7881;
+      display: grid;
+      place-items: center;
+    }
+    .task-item .icon svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+    .task-cta {
+      margin-top: 11px;
+      width: 100%;
+      border-radius: 11px;
+      border: 1px solid #bfd3d9;
+      background: #f2f7f8;
+      color: #274953;
+      font-size: 16px;
+      font-weight: 700;
+      padding: 8px 10px;
+    }
+    .session-flow {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr 52px 1fr 52px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .flow-card {
+      border: 1px solid #dbe7eb;
+      border-radius: 10px;
+      background: #f5f9fa;
+      padding: 9px;
+      text-align: center;
+    }
+    .flow-card span,
+    .flow-card strong {
+      display: block;
+    }
+    .flow-card span {
+      color: #657f88;
+      font-size: 13px;
+    }
+    .flow-card strong {
+      color: #1a4151;
+      margin-top: 2px;
+      font-size: 26px;
+    }
+    .arrow {
+      text-align: center;
+      color: #6f8b93;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .video-card {
+      margin-top: 10px;
+      border: 1px solid #dccff0;
+      border-radius: 11px;
+      background: #faf7ff;
+      padding: 11px;
+    }
+    .video-card strong,
+    .video-card span,
+    .video-card p {
+      display: block;
+    }
+    .video-card strong {
+      font-size: 17px;
+      color: #3f2d71;
+    }
+    .video-card span {
+      margin-top: 2px;
+      font-size: 13px;
+      color: #6a5a95;
+    }
+    .video-card p {
+      margin: 7px 0 0;
+      font-size: 14px;
+      color: #5a4b81;
+      line-height: 1.45;
+    }
+    .loading,
+    .empty {
+      border: 1px solid var(--portal-border);
+      border-radius: 14px;
+      background: #fff;
+      padding: 20px;
+      color: #5d7880;
+      font-size: 16px;
+    }
+    .safety-note {
+      margin-top: 10px;
+      border: 1px solid #bfd8cf;
+      border-radius: 11px;
+      background: #eef7f3;
+      color: #506f67;
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 10px 12px;
+    }
+    @media (max-width: 1180px) {
+      .brand strong { font-size: 26px; }
+      .hero h1 { font-size: 40px; }
+      .panel h3 { font-size: 31px; }
+      .stat-card strong { font-size: 34px; }
+    }
+    @media (max-width: 980px) {
+      .topbar {
+        height: auto;
+        min-height: 72px;
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 9px;
+        padding: 10px 14px;
+      }
+      .topbar-actions { width: 100%; overflow-x: auto; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .hero { flex-direction: column; }
+      .next-session { min-width: 0; }
+      .toolbar {
+        flex-wrap: wrap;
+        row-gap: 8px;
+      }
+      .toolbar .btn {
+        margin-left: 0;
+      }
+    }
+    @media (max-width: 620px) {
+      .brand span,
+      .shift-chip,
+      .user-chip span { display: none; }
+      .brand strong { font-size: 22px; }
+      .hero h1 { font-size: 34px; }
+      .stats-grid,
+      .session-flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .alert-bar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .alert-bar .btn {
+        margin-left: 0;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M20.8 9.3c0 5.6-8.8 10.4-8.8 10.4S3.2 14.9 3.2 9.3a4.8 4.8 0 0 1 8.1-3.5l.7.7.7-.7a4.8 4.8 0 0 1 8.1 3.5z"></path></svg>
+      </div>
+      <div>
+        <strong>腎友照護 POC</strong>
+        <span>Hospital Dialysis Care Workspace</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button class="top-btn" type="button">↻ 再更新</button>
+      <button class="top-chip active" type="button">腎友／家屬</button>
+      <span class="top-chip">虛擬展示資料</span>
+      <span class="shift-chip">2026/09/02・早班</span>
+      <div class="user-chip">
+        <div class="avatar">王</div>
+        <div>
+          <strong>王美華</strong>
+          <span>P001</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="personal-shell">
+    <div class="toolbar">
+      <div class="persona-switch">
+        <span class="active">本人</span>
+        <span>家屬</span>
+        <span>照護者</span>
+      </div>
+      <div class="authorization" id="authorization-text"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V6l8-3 8 3z"></path><path d="M9 12l2 2 4-4"></path></svg><span>病患本人帳號</span></div>
+      <button class="btn" id="btn-role-nurse" type="button">回護理師工作台</button>
+    </div>
+
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+    <section id="patient-dashboard"></section>
+  </main>
+
+  <script type="module">
+    import { api, showError } from '/main.js';
+
+    const state = {
+      token: localStorage.getItem('patient_session_token') || '',
+      patient: null,
+      records: [],
+      dashboard: null,
+    };
+
+    const dashboardEl = document.getElementById('patient-dashboard');
+    const authorizationTextEl = document.getElementById('authorization-text');
+
+    document.getElementById('btn-role-nurse').addEventListener('click', () => {
+      window.location.href = '/pages/renal-care-nurse.html';
+    });
+
+    function parseSystolicValue(bpValue) {
+      const textValue = String(bpValue || '').trim();
+      if (!textValue) return Number.NaN;
+      const matched = textValue.match(/^(\d{2,3})/);
+      return matched ? Number(matched[1]) : Number.NaN;
+    }
+
+    function formatTrendLabel(recordedAtValue) {
+      const textValue = String(recordedAtValue || '').trim();
+      if (!textValue) return '--';
+      const rawPart = textValue.slice(5, 10);
+      return rawPart.replace('-', '/');
+    }
+
+    function getNumericWeight(weightValue) {
+      const parsedWeight = Number(weightValue);
+      return Number.isFinite(parsedWeight) ? parsedWeight : Number.NaN;
+    }
+
+    function getFollowUpCount(records) {
+      return records.filter((item) => item.follow_up_required).length;
+    }
+
+    function formatSessionDate(dateValue) {
+      const textValue = String(dateValue || '').trim();
+      if (!textValue) return '-';
+      const dayPart = textValue.slice(5, 10).replace('-', '月').replace(/^0/, '');
+      return `${dayPart}日`;
+    }
+
+    function buildTaskRows(tasks) {
+      const safeTasks = Array.isArray(tasks) ? tasks : [];
+      if (!safeTasks.length) {
+        return '<div class="task-item"><span class="icon">' + getLineIcon('clock') + '</span><div><strong>尚未建立任務</strong><span>等待下一次 LINE 提醒</span></div></div>';
+      }
+      return safeTasks.map((task) => {
+        const taskStatus = String((task || {}).status || '').toLowerCase();
+        const iconName = taskStatus === 'done' ? 'check' : (String((task || {}).task_id || '').includes('evening') ? 'clock' : 'shield');
+        return `<div class="task-item ${taskStatus === 'done' ? 'done' : ''}"><span class="icon">${getLineIcon(iconName)}</span><div><strong>${(task || {}).title || '-'}</strong><span>${(task || {}).hint || ''}</span></div></div>`;
+      }).join('');
+    }
+
+    function buildEducationCard(educations) {
+      const safeEducations = Array.isArray(educations) ? educations : [];
+      if (!safeEducations.length) {
+        return '<div class="video-card"><strong>暫無推薦內容</strong><span>--</span><p>完成更多填報後，系統會依個人狀況推薦衛教。</p></div>';
+      }
+      const primaryEducation = safeEducations[0] || {};
+      return `<div class="video-card"><strong>${primaryEducation.title || '-'}</strong><span>${primaryEducation.duration || '--'}・院方核准 ${primaryEducation.education_id || '--'}</span><p>${primaryEducation.reason || ''}</p></div>`;
+    }
+
+    function getLineIcon(name) {
+      const iconMap = {
+        scale: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12l2 12H4L6 6z"></path><path d="M12 10v4"></path><path d="M9 12h6"></path></svg>',
+        pulse: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-4 4 8 2-4h6"></path></svg>',
+        drop: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c3 4 6 7 6 11a6 6 0 0 1-12 0c0-4 3-7 6-11z"></path></svg>',
+        check: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8 12l2.5 2.5L16 9"></path></svg>',
+        warn: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.29 3.86l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.71-3.14l-8-14a2 2 0 0 0-3.42 0z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>',
+        clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>',
+        shield: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V6l8-3 8 3z"></path></svg>',
+      };
+      return iconMap[name] || '';
+    }
+
+    // 目的：將量測資料轉為雙折線圖的座標與標籤，並輸出圖表 SVG。
+    // 為什麼：腎友頁只有單頁儀表板，必須在同一區塊同時傳達體重與血壓趨勢。
+    function renderTrendChart(records) {
+      const chartWidth = 760;
+      const chartHeight = 220;
+      const paddingTop = 20;
+      const paddingBottom = 26;
+      const paddingLeft = 42;
+      const paddingRight = 44;
+      const WEIGHT_MIN = 60;
+      const WEIGHT_MAX = 68;
+      const PRESSURE_MIN = 120;
+      const PRESSURE_MAX = 190;
+      const reversed = records.slice(0, 7).reverse();
+      const points = reversed.map((record) => ({
+        label: formatTrendLabel(record.recorded_at),
+        weight: getNumericWeight(record.weight_kg),
+        systolic: parseSystolicValue(record.bp),
+      }));
+      const weightPoints = points.filter((point) => Number.isFinite(point.weight));
+      const pressurePoints = points.filter((point) => Number.isFinite(point.systolic));
+
+      if (!points.length || (!weightPoints.length && !pressurePoints.length)) {
+        return '<div class="empty">近七日沒有可繪製的趨勢資料。</div>';
+      }
+
+      const safeWeightRange = WEIGHT_MAX - WEIGHT_MIN;
+      const safePressureRange = PRESSURE_MAX - PRESSURE_MIN;
+      const xStep = points.length > 1 ? (chartWidth - paddingLeft - paddingRight) / (points.length - 1) : 0;
+
+      const calcY = (value, minValue, rangeValue) => {
+        const usableHeight = chartHeight - paddingTop - paddingBottom;
+        const normalized = (value - minValue) / rangeValue;
+        return chartHeight - paddingBottom - normalized * usableHeight;
+      };
+
+      const weightLinePoints = [];
+      const pressureLinePoints = [];
+      for (let index = 0; index < points.length; index += 1) {
+        const point = points[index];
+        const x = paddingLeft + xStep * index;
+        if (Number.isFinite(point.weight)) {
+          weightLinePoints.push({
+            x,
+            y: calcY(Math.max(Math.min(point.weight, WEIGHT_MAX), WEIGHT_MIN), WEIGHT_MIN, safeWeightRange),
+            label: point.label,
+          });
+        }
+        if (Number.isFinite(point.systolic)) {
+          pressureLinePoints.push({
+            x,
+            y: calcY(Math.max(Math.min(point.systolic, PRESSURE_MAX), PRESSURE_MIN), PRESSURE_MIN, safePressureRange),
+            label: point.label,
+          });
+        }
+      }
+
+      const weightPolyline = weightLinePoints.map((point) => `${point.x},${point.y}`).join(' ');
+      const pressurePolyline = pressureLinePoints.map((point) => `${point.x},${point.y}`).join(' ');
+
+      return `
+        <svg class="trend-svg" viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" aria-hidden="true">
+          <line class="trend-axis" x1="${paddingLeft}" y1="${paddingTop}" x2="${chartWidth - paddingRight}" y2="${paddingTop}"></line>
+          <line class="trend-axis" x1="${paddingLeft}" y1="${paddingTop + (chartHeight - paddingTop - paddingBottom) / 2}" x2="${chartWidth - paddingRight}" y2="${paddingTop + (chartHeight - paddingTop - paddingBottom) / 2}"></line>
+          <line class="trend-axis" x1="${paddingLeft}" y1="${chartHeight - paddingBottom}" x2="${chartWidth - paddingRight}" y2="${chartHeight - paddingBottom}"></line>
+          <text x="20" y="${paddingTop + 4}" fill="#5e7982" font-size="13">${WEIGHT_MAX}</text>
+          <text x="20" y="${chartHeight - paddingBottom + 4}" fill="#5e7982" font-size="13">${WEIGHT_MIN}</text>
+          <text x="${chartWidth - 28}" y="${paddingTop + 4}" fill="#5e7982" font-size="13">${PRESSURE_MAX}</text>
+          <text x="${chartWidth - 28}" y="${chartHeight - paddingBottom + 4}" fill="#5e7982" font-size="13">${PRESSURE_MIN}</text>
+          ${weightPolyline ? `<polyline class="line-weight" points="${weightPolyline}"></polyline>` : ''}
+          ${pressurePolyline ? `<polyline class="line-pressure" points="${pressurePolyline}"></polyline>` : ''}
+          ${weightLinePoints.map((point) => `<circle class="point-weight" cx="${point.x}" cy="${point.y}" r="3.5"></circle>`).join('')}
+          ${pressureLinePoints.map((point) => `<circle class="point-pressure" cx="${point.x}" cy="${point.y}" r="3.5"></circle>`).join('')}
+          ${points.map((point, index) => {
+            const x = paddingLeft + xStep * index;
+            return `<text x="${x}" y="${chartHeight - 8}" fill="#5f7a82" font-size="12" text-anchor="middle">${point.label}</text>`;
+          }).join('')}
+        </svg>
+      `;
+    }
+
+    // 目的：渲染腎友/家屬單頁儀表板內容，不使用左側功能選單。
+    // 為什麼：符合需求「只有護理人員有左側六功能，腎友僅保留單一總覽頁」。
+    function renderDashboard() {
+      if (!state.patient) {
+        dashboardEl.innerHTML = '<div class="empty">請先從 LINE 點擊登入連結進入本頁。</div>';
+        return;
+      }
+
+      const dashboardPayload = state.dashboard || {};
+      const latest = state.records[0] || null;
+      const followUpCount = Number((dashboardPayload.metrics || {}).open_follow_up_count || getFollowUpCount(state.records));
+      const latestWeightText = (dashboardPayload.metrics || {}).latest_weight_kg ?? (latest && latest.weight_kg != null ? latest.weight_kg : '-');
+      const latestBpText = (dashboardPayload.metrics || {}).latest_bp || (latest ? (latest.bp || '-') : '-');
+      const latestPulseText = (dashboardPayload.metrics || {}).latest_pulse ?? '-';
+      const latestSession = dashboardPayload.latest_session || null;
+      const nextSessionDateText = formatSessionDate(latestSession && latestSession.dialysis_date ? latestSession.dialysis_date : null);
+      const nextSessionBedNo = latestSession && latestSession.bed_no ? latestSession.bed_no : 'A01';
+      const sessionPreWeight = latestSession && latestSession.pre_weight_kg != null ? latestSession.pre_weight_kg : '-';
+      const sessionTargetUf = latestSession && latestSession.target_uf_l != null ? latestSession.target_uf_l : '-';
+      const sessionActualUf = latestSession && latestSession.actual_uf_l != null ? latestSession.actual_uf_l : '-';
+      const sessionPostWeight = latestSession && latestSession.post_weight_kg != null ? latestSession.post_weight_kg : latestWeightText;
+      const taskRowsHtml = buildTaskRows(dashboardPayload.today_tasks);
+      const educationCardHtml = buildEducationCard(dashboardPayload.education_recommendations);
+      const patientName = state.patient.display_name || state.patient.id;
+      if (authorizationTextEl) {
+        authorizationTextEl.querySelector('span').textContent = `${patientName}本人帳號`;
+      }
+      const chartHtml = renderTrendChart(state.records);
+
+      dashboardEl.innerHTML = `
+        <section class="hero">
+          <div>
+            <p class="eyebrow">MY RENAL CARE</p>
+            <h1>${patientName}，早安</h1>
+            <p>這是您今天的健康狀況與待辦。</p>
+          </div>
+          <div class="next-session">
+            <span>下一次透析</span>
+            <strong>${nextSessionDateText} 07:00</strong>
+            <small>請於 06:30 前抵達・${nextSessionBedNo}床</small>
+          </div>
+        </section>
+
+        <section class="alert-bar">
+          ${getLineIcon('warn').replace('<svg ', '<svg class="alert-icon" ')}
+          <div>
+            <strong>今天有一項需要注意</strong>
+            <p>${followUpCount > 0 ? '本次透析曾出現血壓變化，主護理師正在追蹤。若持續不舒服，請直接聯絡洗腎室。' : '目前沒有新的異常追蹤，請維持早晚填報並留意身體變化。'}</p>
+          </div>
+          <button class="btn" type="button">回報不舒服</button>
+        </section>
+
+        <section class="stats-grid">
+          <article class="stat-card"><div class="stat-icon">${getLineIcon('scale')}</div><div><span>今日洗後體重</span><strong>${latestWeightText}<em>kg</em></strong></div></article>
+          <article class="stat-card"><div class="stat-icon">${getLineIcon('pulse')}</div><div><span>最新血壓</span><strong>${latestBpText}<em>mmHg</em></strong></div></article>
+          <article class="stat-card"><div class="stat-icon">${getLineIcon('drop')}</div><div><span>本次完成脫水</span><strong>${sessionActualUf}/${sessionTargetUf}<em>L</em></strong></div></article>
+          <article class="stat-card"><div class="stat-icon">${getLineIcon('check')}</div><div><span>今日填報</span><strong>${latest ? '1/2' : '0/2'}<em>次</em></strong></div></article>
+        </section>
+
+        <section class="dashboard-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">7-DAY TREND</p>
+                <h3>我的七日變化</h3>
+                <p>體重與收縮壓・最近七日填報</p>
+                <div class="trend-legend"><span class="weight"><i></i>體重 kg</span><span class="pressure"><i></i>收縮壓 mmHg</span></div>
+              </div>
+              <span class="panel-chip">最近更新 ${latest ? (String(latest.recorded_at || '').slice(11, 16) || '10:40') : '10:40'}</span>
+            </div>
+            <div class="trend-box">${chartHtml}</div>
+            <div class="trend-note">用簡單的話說：最近資料若持續上升，會由主護理師判讀與追蹤；這不是診斷結果。</div>
+          </article>
+
+          <aside class="panel">
+            <p class="eyebrow">TODAY</p>
+            <h3>今天要完成</h3>
+            <div class="task-list">${taskRowsHtml}</div>
+            <button class="task-cta" type="button">聯絡洗腎室</button>
+          </aside>
+
+          <article class="panel">
+            <p class="eyebrow">LAST SESSION</p>
+            <h3>今天透析摘要</h3>
+            <div class="session-flow">
+              <div class="flow-card"><span>洗前體重</span><strong>66.4 kg</strong></div>
+              <div class="arrow">→</div>
+              <div class="flow-card"><span>實際脫水</span><strong>${sessionActualUf} L</strong></div>
+              <div class="arrow">→</div>
+              <div class="flow-card"><span>洗後體重</span><strong>${sessionPostWeight} kg</strong></div>
+            </div>
+            <p>原訂脫水 ${sessionTargetUf} L；洗前 ${sessionPreWeight} kg，過程中如有血壓變化會由現場醫護判斷與處置。</p>
+          </article>
+
+          <aside class="panel">
+            <p class="eyebrow">AI PERSONALIZED EDUCATION</p>
+            <h3>為您推薦的衛教</h3>
+            ${educationCardHtml}
+            <p>看完後可在 LINE 回覆「看懂了」或「有困難」，系統會同步通知主護理師。</p>
+          </aside>
+        </section>
+        <section class="safety-note">本頁僅呈現已授權的個人健康摘要，不提供診斷或自行調整藥物建議；如有緊急不適請立即聯絡洗腎室或醫療人員。</section>
+      `;
+    }
+
+    // 目的：讀取網址 token 並交換病患 session。
+    // 為什麼：病患端採免註冊登入，首次進頁必須無感完成登入流程。
+    async function tryLoginWithMagicToken() {
+      const url = new URL(window.location.href);
+      const magicToken = String(url.searchParams.get('token') || '').trim();
+      if (!magicToken) return;
+      const response = await api.post('/patient-auth/line/login', { token: magicToken });
+      state.token = response.session_token || '';
+      state.patient = response.patient || null;
+      if (state.token) {
+        localStorage.setItem('patient_session_token', state.token);
+      }
+      url.searchParams.delete('token');
+      window.history.replaceState({}, '', url);
+    }
+
+    async function loadPatientData() {
+      if (!state.token) return;
+      const dashboardPayload = await api.request('/patient-portal/me/dashboard?days=7', {
+        headers: { 'X-Patient-Session': state.token },
+      });
+      state.dashboard = dashboardPayload;
+      state.patient = state.patient || dashboardPayload.patient || null;
+      state.records = Array.isArray(dashboardPayload.records) ? dashboardPayload.records : [];
+    }
+
+    // 目的：初始化病患單頁工作台並載入資料。
+    // 為什麼：集中首次流程，確保登入、資料抓取、渲染順序一致。
+    async function bootstrap() {
+      dashboardEl.innerHTML = '<div class="loading">正在載入病患工作台資料...</div>';
+      try {
+        await tryLoginWithMagicToken();
+        await loadPatientData();
+      } catch (error) {
+        showError(error.message || '病患工作台初始化失敗');
+      }
+      renderDashboard();
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>

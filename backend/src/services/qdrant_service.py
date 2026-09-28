@@ -1,3 +1,5 @@
+from typing import Any
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -8,7 +10,6 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
-from typing import Any
 
 from src.core.config import settings
 from src.core.logging import get_logger
@@ -78,7 +79,7 @@ class QdrantService:
                     vector=vector,
                     payload=payload,
                 )
-                for i, (vector, payload, id_) in enumerate(zip(vectors, payloads, ids or [None] * len(vectors)))
+                for i, (vector, payload, id_) in enumerate(zip(vectors, payloads, ids or [None] * len(vectors), strict=False))
             ]
             self.client.upsert(collection_name=collection_name, points=points)
             logger.info('vectors_upserted', count=len(vectors))

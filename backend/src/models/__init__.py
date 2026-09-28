@@ -1,9 +1,22 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, Boolean, Numeric, LargeBinary, UniqueConstraint
-from sqlalchemy.types import CHAR, TypeDecorator
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import relationship
-from datetime import datetime
 import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.types import CHAR, TypeDecorator
 
 from src.core.database import Base
 
@@ -244,6 +257,50 @@ class Message(Base):
     timestamp = Column(DateTime, default=datetime.now)
 
     # 以 conversation_id 關聯，測試中不建立 ORM relationship，避免重複映射
+
+
+class LineChannelSession(Base):
+    # 目的：管理 LINE 使用者與內部 Conversation/Agent 的對應狀態。
+    # 為什麼：LINE 雙向對話需要長期識別、人工接手模式與代理指派資訊。
+    __tablename__ = 'line_channel_sessions'
+    __table_args__ = (
+        UniqueConstraint('line_user_id', name='uq_line_channel_sessions_line_user_id'),
+        {'extend_existing': True},
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    line_user_id = Column(String(128), nullable=False)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=False)
+    assigned_agent_id = Column(GUID(), ForeignKey('agents.id'), nullable=True)
+    bound_patient_id = Column(GUID(), ForeignKey('renal_patients.id'), nullable=True)
+    binding_status = Column(String(32), nullable=False, default='pending_name')
+    binding_name = Column(String(100), nullable=True)
+    binding_phone = Column(String(32), nullable=True)
+    bound_at = Column(DateTime, nullable=True)
+    mode = Column(Enum('bot', 'human', name='line_session_mode_enum'), nullable=False, default='bot')
+    status = Column(Enum('active', 'inactive', 'archived', name='line_session_status_enum'), nullable=False, default='active')
+    last_inbound_at = Column(DateTime, nullable=True)
+    last_outbound_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class LineMessage(Base):
+    # 目的：保存 LINE 入站與出站訊息內容與發送者屬性。
+    # 為什麼：需支援客服介面追蹤、法遵稽核與推送重送排查。
+    __tablename__ = 'line_messages'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    session_id = Column(GUID(), ForeignKey('line_channel_sessions.id'), nullable=False)
+    conversation_id = Column(GUID(), ForeignKey('conversations.id'), nullable=True)
+    direction = Column(Enum('inbound', 'outbound', name='line_message_direction_enum'), nullable=False)
+    sender_type = Column(Enum('user', 'agent', 'operator', 'system', name='line_sender_type_enum'), nullable=False)
+    content = Column(Text, nullable=False)
+    line_message_id = Column(String(128), nullable=True)
+    reply_token = Column(String(120), nullable=True)
+    operator_user_id = Column(GUID(), ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class Document(Base):
@@ -587,3 +644,24 @@ class ChatAttachment(Base):
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     expires_at = Column(DateTime, nullable=True)
+
+
+# 目的：對外維持 `from src.models import ...` 相容匯出。
+# 為什麼：腎友照護模組模型獨立於 `renal_care.py`，但既有程式仍從 `src.models` 匯入。
+from src.models import renal_care as _renal_care  # noqa: E402
+
+DialysisEvent = _renal_care.DialysisEvent
+DialysisSession = _renal_care.DialysisSession
+FollowUpCase = _renal_care.FollowUpCase
+HealthEducationContent = _renal_care.HealthEducationContent
+HealthEducationDeliveryLog = _renal_care.HealthEducationDeliveryLog
+HealthEducationSourceRule = _renal_care.HealthEducationSourceRule
+MonitoringRecord = _renal_care.MonitoringRecord
+MonitoringReminderDeliveryLog = _renal_care.MonitoringReminderDeliveryLog
+MonitoringReminderJob = _renal_care.MonitoringReminderJob
+MonitoringReminderPolicy = _renal_care.MonitoringReminderPolicy
+PatientPortalLink = _renal_care.PatientPortalLink
+RenalPatient = _renal_care.RenalPatient
+ScheduledTask = _renal_care.ScheduledTask
+ScheduledTaskRun = _renal_care.ScheduledTaskRun
+ScheduledTaskTemplate = _renal_care.ScheduledTaskTemplate

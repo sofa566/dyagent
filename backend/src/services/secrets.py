@@ -8,21 +8,22 @@ Secrets provider 介面與預設實作。
 
 from __future__ import annotations
 
-from typing import Optional, Protocol
 import os
+from typing import Protocol
+
 from src.core.config import settings
 from src.core.logging import get_logger
 
 
 class SecretsProvider(Protocol):
-    def get(self, ref: str) -> Optional[str]:
+    def get(self, ref: str) -> str | None:
         ...
 
 
 class EnvSecretsProvider:
     """從環境變數載入祕密的預設實作。"""
 
-    def get(self, ref: str) -> Optional[str]:
+    def get(self, ref: str) -> str | None:
         try:
             return os.environ.get(ref) or None
         except Exception:
@@ -34,28 +35,28 @@ class VaultSecretsProvider:
     真正接 Vault 可在此處接 SDK。
     """
 
-    def get(self, ref: str) -> Optional[str]:
+    def get(self, ref: str) -> str | None:
         return os.environ.get(f"VAULT__{ref}") or None
 
 
 class AWSSecretsProvider:
     """占位實作：優先讀取環境變數 "AWS__{ref}"。"""
 
-    def get(self, ref: str) -> Optional[str]:
+    def get(self, ref: str) -> str | None:
         return os.environ.get(f"AWS__{ref}") or None
 
 
 class GCPSecretsProvider:
     """占位實作：優先讀取環境變數 "GCP__{ref}"。"""
 
-    def get(self, ref: str) -> Optional[str]:
+    def get(self, ref: str) -> str | None:
         return os.environ.get(f"GCP__{ref}") or None
 
 
 class K8sSecretsProvider:
     """占位實作：優先讀取環境變數 "K8S__{ref}"。"""
 
-    def get(self, ref: str) -> Optional[str]:
+    def get(self, ref: str) -> str | None:
         return os.environ.get(f"K8S__{ref}") or None
 
 

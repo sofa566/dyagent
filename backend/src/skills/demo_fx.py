@@ -23,7 +23,7 @@ Handler 簽名：convert(payload: dict) -> dict
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def convert(payload: dict) -> dict:
@@ -55,7 +55,7 @@ def convert(payload: dict) -> dict:
             'from': {'currency': cur_from, 'amount': amount},
             'to': {'currency': cur_to, 'amount': round(result, 4)},
             'rate': round(rate, 6),
-            'ts': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'ts': datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
             'note': '示範用，非即時匯率',
         }
     except Exception as e:

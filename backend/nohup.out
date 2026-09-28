@@ -1,0 +1,70 @@
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def trigger_scheduled_task(task_id):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def group(self, tasks, result, group_id, partial_args, add_to_parent=0):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def xmap(task, it):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def backend_cleanup():
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def execute_task_run(run_id):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def chain(*args, **kwargs):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def xstarmap(task, it):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def accumulate(self, *args, **kwargs):
+    return 1
+
+2026-09-15 23:17:35,183 [DEBUG] functional:head_from_fun functional.py:335 - 
+def chord(self, header, body, partial_args=0, interval=1, countdown=2, max_retries=3, eager=4, **kwargs):
+    return 1
+
+2026-09-15 23:17:35,184 [DEBUG] functional:head_from_fun functional.py:335 - 
+def chunks(task, it, n):
+    return 1
+
+2026-09-15 23:17:35,184 [DEBUG] functional:head_from_fun functional.py:335 - 
+def unlock_chord(self, group_id, callback, interval=0, max_retries=1, result=2, Result=3, GroupResult=4, result_from_tuple=5, **kwargs):
+    return 1
+
+ 
+ -------------- celery@bill-ubuntu22 v5.4.0 (opalescent)
+--- ***** ----- 
+-- ******* ---- Linux-6.8.0-138-generic-x86_64-with-glibc2.39 2026-09-15 23:17:35
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         dyagent_scheduler:0x74acd0125f10
+- ** ---------- .> transport:   redis://localhost:6379//
+- ** ---------- .> results:     redis://localhost:6379/
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> dyagent.scheduler exchange=dyagent.scheduler(direct) key=dyagent.scheduler
+                
+
+[tasks]
+  . src.worker.tasks.execute_task_run
+  . src.worker.tasks.trigger_scheduled_task
+
+[2026-09-15 23:17:35,299: INFO/MainProcess] Connected to redis://localhost:6379//
+[2026-09-15 23:17:35,301: INFO/MainProcess] mingle: searching for neighbors
+[2026-09-15 23:17:36,308: INFO/MainProcess] mingle: all alone
+[2026-09-15 23:17:36,316: INFO/MainProcess] celery@bill-ubuntu22 ready.
+
+worker: Warm shutdown (MainProcess)

@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>排程管理 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    :root {
+      --scheduler-accent: #1d4d83;
+      --scheduler-warning: #9f3f1b;
+    }
+    .scheduler-panel {
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      background: #fff;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .panel-title {
+      margin: 0 0 10px;
+      color: var(--scheduler-accent);
+      font-size: 20px;
+    }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .cron-inline {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .filters input,
+    .filters select,
+    .filters textarea {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+    .filters textarea { width: 100%; min-height: 90px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--border-color); padding: 8px 10px; text-align: left; white-space: nowrap; }
+    th { background: #f5f8f7; color: #355; }
+    tr:last-child td { border-bottom: none; }
+    .status-ok { color: var(--scheduler-accent); }
+    .status-warn { color: var(--scheduler-warning); }
+    .status-badge-warn {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #d87a22;
+      color: #8a3f00;
+      background: #fff3e6;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      margin-right: 6px;
+    }
+    .btn-status-enabled {
+      background: #e8f8ef;
+      border-color: #2f8f57;
+      color: #1f6b40;
+      font-weight: 600;
+    }
+    .btn-status-disabled {
+      background: #fff4e8;
+      border-color: #bf6d1d;
+      color: #8a4a12;
+      font-weight: 600;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1200;
+      padding: 16px;
+    }
+    .modal-backdrop.is-open { display: flex; }
+    .modal-panel {
+      width: min(760px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: #fff;
+      padding: 14px;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .muted-note { color: var(--text-secondary); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>dyagent</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/reminder-schedule.html">腎友提醒</a>
+      <a href="/pages/scheduler-management.html">排程管理</a>
+      <a href="/pages/line-console.html">LINE 對話中心</a>
+      <a href="/pages/chat.html">聊天</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="actions">
+      <h2>排程管理</h2>
+      <button id="btn-refresh-all" class="btn">重新整理全部</button>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <section class="scheduler-panel">
+      <h3 class="panel-title">任務模板管理</h3>
+      <div class="filters">
+        <button id="btn-open-template-modal" class="btn btn-primary">新增模板</button>
+        <button id="btn-toggle-template-list" class="btn btn-secondary">顯示列表</button>
+      </div>
+      <div class="table-wrap" id="template-list-wrap" style="display:none;">
+        <table>
+          <thead>
+            <tr>
+              <th>Template Key</th>
+              <th>名稱</th>
+              <th>Executor</th>
+              <th>啟用</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="template-table-body"><tr><td colspan="5">尚無模板</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div id="template-modal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="template-modal-title">
+        <div class="modal-header">
+          <h3 id="template-modal-title" class="panel-title" style="margin:0;">任務模板編輯</h3>
+          <button id="btn-close-template-modal" class="btn btn-secondary">關閉</button>
+        </div>
+        <div class="filters" style="display:block;">
+          <div class="filters">
+            <label for="template-key">Template Key</label>
+            <input id="template-key" type="text" placeholder="例如：ops.python.daily" style="min-width:220px;">
+            <label for="template-name">名稱</label>
+            <input id="template-name" type="text" placeholder="例如：每日 Python 任務" style="min-width:220px;">
+            <label for="template-executor">executor</label>
+            <select id="template-executor">
+              <option value="http_call">http_call</option>
+              <option value="bash_script">bash_script</option>
+              <option value="nodejs_script">nodejs_script</option>
+              <option value="python_script">python_script</option>
+              <option value="renal_reminder_dispatch">renal_reminder_dispatch</option>
+              <option value="monitoring_backfill">monitoring_backfill</option>
+              <option value="health_education_dispatch">health_education_dispatch</option>
+            </select>
+          </div>
+          <div class="filters">
+            <label><input id="template-enabled" type="checkbox" checked> 啟用</label>
+            <button id="btn-create-template" class="btn btn-primary">新增模板</button>
+            <button id="btn-cancel-edit-template" class="btn btn-secondary" style="display:none;">取消編輯</button>
+          </div>
+          <label for="template-description">說明</label>
+          <textarea id="template-description" placeholder="模板用途描述"></textarea>
+          <label for="template-schema">payload_schema JSON</label>
+          <textarea id="template-schema" placeholder='例如 {"required":["file_path"]}'></textarea>
+          <label for="template-default-payload">default_payload JSON</label>
+          <textarea id="template-default-payload" placeholder='例如 {"timeout_seconds":120}'></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div id="error-dialog" class="modal-backdrop" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="error-dialog-title" style="max-width:520px;">
+        <div class="modal-header">
+          <h3 id="error-dialog-title" class="panel-title" style="margin:0;">操作失敗</h3>
+          <button id="btn-close-error-dialog" class="btn btn-secondary">關閉</button>
+        </div>
+        <div id="error-dialog-message" style="white-space:pre-wrap; line-height:1.6;"></div>
+      </div>
+    </div>
+
+    <section class="scheduler-panel">
+      <h3 class="panel-title">Crontab 任務管理</h3>
+      <div class="filters" style="display:block;">
+        <div class="filters">
+          <label for="task-name">名稱</label>
+          <input id="task-name" type="text" placeholder="例如：LINE-早晨提醒" style="min-width:220px;">
+          <label>Crontab</label>
+          <div class="cron-inline">
+            <span>分</span><select id="task-cron-minute"></select>
+            <span>時</span><select id="task-cron-hour"></select>
+            <span>日</span><select id="task-cron-day"></select>
+            <span>月</span><select id="task-cron-month"></select>
+            <span>週</span><select id="task-cron-weekday"></select>
+          </div>
+          <label for="task-timezone">時區</label>
+          <input id="task-timezone" type="text" value="Asia/Taipei" style="min-width:160px;">
+        </div>
+        <div class="filters">
+          <label for="task-template-id">任務模板</label>
+          <select id="task-template-id"></select>
+          <label><input id="task-enabled" type="checkbox" checked> 啟用</label>
+          <button id="btn-create-task" class="btn btn-primary">新增任務</button>
+          <button id="btn-cancel-edit-task" class="btn btn-secondary" style="display:none;">取消編輯</button>
+        </div>
+        <div class="filters" id="health-dispatch-fields" style="display:none;">
+          <label for="task-health-dispatch-mode">衛教模式</label>
+          <select id="task-health-dispatch-mode">
+            <option value="fixed">指定單篇（固定）</option>
+            <option value="rotate">自動輪替</option>
+          </select>
+          <label for="task-health-content-id">指定文章</label>
+          <select id="task-health-content-id" style="min-width:360px;"></select>
+          <button id="btn-refresh-health-contents" class="btn btn-secondary" type="button">更新文章清單</button>
+          <label for="task-health-cooldown-days">冷卻天數</label>
+          <input id="task-health-cooldown-days" type="number" min="1" max="180" value="30" style="width:100px;">
+          <span>天內不重複</span>
+        </div>
+        <textarea id="task-payload" placeholder='payload JSON，例如 {"window":"MORNING","force":false}'></textarea>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>名稱</th>
+              <th>Crontab</th>
+              <th>類型</th>
+              <th>啟用</th>
+              <th>來源</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="task-table-body"><tr><td colspan="6">尚未載入</td></tr></tbody>
+        </table>
+      </div>
+      <div id="task-runs-note" class="muted-note" style="margin-top:8px;">點擊「最近執行」可查詢任務執行紀錄。</div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, auth, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const state = {
+      templates: [],
+      tasks: [],
+      approvedHealthContents: [],
+      taskAlerts: {},
+      templateListVisible: false,
+      editingTemplateId: '',
+      editingTaskId: '',
+    };
+
+    const canAccessWith = [
+      'scheduler.task.read',
+      'scheduler.task.create',
+      'scheduler.task.update',
+      'scheduler.task.delete',
+      'scheduler.task.run',
+      'scheduler.run.read',
+      'scheduler.template.read',
+      'scheduler.template.create',
+      'scheduler.template.update',
+      'scheduler.template.delete',
+    ];
+
+    function escapeHtml(rawText) {
+      return String(rawText || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderTasks() {
+      const bodyElement = document.getElementById('task-table-body');
+      const rows = state.tasks || [];
+      if (!rows.length) {
+        bodyElement.innerHTML = '<tr><td colspan="6">尚無任務</td></tr>';
+        return;
+      }
+      bodyElement.innerHTML = rows.map((task) => `
+        <tr data-task-id="${task.id}">
+          <td>${escapeHtml(task.name || '-')}</td>
+          <td>${escapeHtml(task.cron_expression || '-')}</td>
+          <td>${escapeHtml(getTaskTypeDisplayText(task))}</td>
+          <td><button class="btn ${task.enabled ? 'btn-status-enabled' : 'btn-status-disabled'}" data-action="toggle-task">${task.enabled ? '啟用' : '停用'}</button></td>
+          <td>${escapeHtml(task.source || '-')}</td>
+          <td>
+            ${buildTaskAlertBadge(task)}
+            <button class="btn btn-secondary" data-action="run-task">立即執行</button>
+            <button class="btn btn-secondary" data-action="edit-task">編輯</button>
+            <button class="btn btn-secondary" data-action="delete-task">刪除</button>
+            <button class="btn btn-secondary" data-action="show-runs">最近執行</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function setTemplateListVisible(visible) {
+      state.templateListVisible = !!visible;
+      document.getElementById('template-list-wrap').style.display = state.templateListVisible ? 'block' : 'none';
+      document.getElementById('btn-toggle-template-list').textContent = state.templateListVisible ? '隱藏列表' : '顯示列表';
+    }
+
+    function buildCronOptions(minimumValue, maximumValue) {
+      const options = ['<option value="*">*</option>'];
+      for (let value = minimumValue; value <= maximumValue; value += 1) {
+        options.push(`<option value="${value}">${value}</option>`);
+      }
+      return options.join('');
+    }
+
+    function initializeCronSelectors() {
+      document.getElementById('task-cron-minute').innerHTML = buildCronOptions(0, 59);
+      document.getElementById('task-cron-hour').innerHTML = buildCronOptions(0, 23);
+      document.getElementById('task-cron-day').innerHTML = buildCronOptions(1, 31);
+      document.getElementById('task-cron-month').innerHTML = buildCronOptions(1, 12);
+      document.getElementById('task-cron-weekday').innerHTML = buildCronOptions(0, 6);
+      fillCronSelectorsFromExpression('* * * * *');
+    }
+
+    function setCronSelectValue(selectElementId, valueText) {
+      const selectElement = document.getElementById(selectElementId);
+      const desiredValue = String(valueText || '*').trim() || '*';
+      const hasValue = Array.from(selectElement.options).some((optionElement) => optionElement.value === desiredValue);
+      if (!hasValue) {
+        const customOption = document.createElement('option');
+        customOption.value = desiredValue;
+        customOption.textContent = `${desiredValue}（原值）`;
+        selectElement.appendChild(customOption);
+      }
+      selectElement.value = desiredValue;
+    }
+
+    function fillCronSelectorsFromExpression(cronExpression) {
+      const tokens = String(cronExpression || '').trim().split(/\s+/).filter(Boolean);
+      const safeTokens = tokens.length === 5 ? tokens : ['*', '*', '*', '*', '*'];
+      setCronSelectValue('task-cron-minute', safeTokens[0]);
+      setCronSelectValue('task-cron-hour', safeTokens[1]);
+      setCronSelectValue('task-cron-day', safeTokens[2]);
+      setCronSelectValue('task-cron-month', safeTokens[3]);
+      setCronSelectValue('task-cron-weekday', safeTokens[4]);
+    }
+
+    function buildCronExpressionFromSelectors() {
+      const minuteValue = String(document.getElementById('task-cron-minute').value || '*').trim() || '*';
+      const hourValue = String(document.getElementById('task-cron-hour').value || '*').trim() || '*';
+      const dayValue = String(document.getElementById('task-cron-day').value || '*').trim() || '*';
+      const monthValue = String(document.getElementById('task-cron-month').value || '*').trim() || '*';
+      const weekdayValue = String(document.getElementById('task-cron-weekday').value || '*').trim() || '*';
+      return `${minuteValue} ${hourValue} ${dayValue} ${monthValue} ${weekdayValue}`;
+    }
+
+    function getTaskTypeDisplayText(task) {
+      const taskType = String(task && task.task_type || '').trim();
+      if (taskType !== 'health_education_dispatch') {
+        return taskType || '-';
+      }
+      const payload = task && task.payload && typeof task.payload === 'object' ? task.payload : {};
+      const dispatchMode = String(payload.dispatch_mode || '').trim().toLowerCase();
+      if (dispatchMode === 'rotate') {
+        return 'health_education_dispatch（自動輪替）';
+      }
+      return 'health_education_dispatch（指定單篇）';
+    }
+
+    function buildTaskAlertBadge(task) {
+      const taskId = String(task.id || '').trim();
+      if (!taskId) return '';
+      const alertItem = state.taskAlerts[taskId];
+      if (!alertItem) return '';
+      const titleText = escapeHtml(String(alertItem.message || '').trim());
+      const countText = Number(alertItem.consecutive_runs || 0);
+      return `<span class="status-badge-warn" title="${titleText}">空轉警示 ${countText} 次</span>`;
+    }
+
+    function renderTemplates() {
+      const bodyElement = document.getElementById('template-table-body');
+      const rows = state.templates || [];
+      if (!rows.length) {
+        bodyElement.innerHTML = '<tr><td colspan="5">尚無模板</td></tr>';
+        return;
+      }
+      bodyElement.innerHTML = rows.map((template) => `
+        <tr data-template-id="${template.id}">
+          <td>${escapeHtml(template.template_key || '-')}</td>
+          <td>${escapeHtml(template.name || '-')}</td>
+          <td>${escapeHtml(template.executor_type || '-')}</td>
+          <td>${template.enabled ? '<span class="status-ok">啟用</span>' : '<span class="status-warn">停用</span>'}</td>
+          <td>
+            <button class="btn btn-secondary" data-action="edit-template">編輯</button>
+            <button class="btn btn-secondary" data-action="delete-template">刪除</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function refreshTemplateSelectOptions() {
+      const selectElement = document.getElementById('task-template-id');
+      const rows = state.templates || [];
+      if (!rows.length) {
+        selectElement.innerHTML = '<option value="">請先建立模板</option>';
+        return;
+      }
+      selectElement.innerHTML = rows.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name || template.template_key || template.id)}</option>`).join('');
+    }
+
+    function refreshHealthContentSelectOptions(selectedContentId = '') {
+      const selectElement = document.getElementById('task-health-content-id');
+      const rows = state.approvedHealthContents || [];
+      const options = ['<option value="">請選擇已核准文章</option>'];
+      for (const content of rows) {
+        const contentId = String(content.id || '').trim();
+        if (!contentId) continue;
+        const titleText = String(content.title || '（無標題）').trim();
+        const sourceText = String(content.source_name || '').trim();
+        const labelText = sourceText ? `${titleText}（${sourceText}）` : titleText;
+        options.push(`<option value="${escapeHtml(contentId)}">${escapeHtml(labelText)}</option>`);
+      }
+      if (selectedContentId && !rows.some((content) => String(content.id || '') === selectedContentId)) {
+        options.push(`<option value="${escapeHtml(selectedContentId)}">${escapeHtml(`目前任務文章（${selectedContentId}）`)}</option>`);
+      }
+      selectElement.innerHTML = options.join('');
+      selectElement.value = selectedContentId || '';
+    }
+
+    function resetTemplateForm() {
+      state.editingTemplateId = '';
+      document.getElementById('template-key').value = '';
+      document.getElementById('template-name').value = '';
+      document.getElementById('template-description').value = '';
+      document.getElementById('template-executor').value = 'http_call';
+      document.getElementById('template-schema').value = '';
+      document.getElementById('template-default-payload').value = '';
+      document.getElementById('template-enabled').checked = true;
+      document.getElementById('btn-create-template').textContent = '新增模板';
+      document.getElementById('btn-cancel-edit-template').style.display = 'none';
+    }
+
+    function fillTemplateForm(template) {
+      state.editingTemplateId = String(template.id || '');
+      document.getElementById('template-key').value = String(template.template_key || '');
+      document.getElementById('template-name').value = String(template.name || '');
+      document.getElementById('template-description').value = String(template.description || '');
+      document.getElementById('template-executor').value = String(template.executor_type || 'http_call');
+      document.getElementById('template-schema').value = JSON.stringify(template.payload_schema || {}, null, 2);
+      document.getElementById('template-default-payload').value = JSON.stringify(template.default_payload || {}, null, 2);
+      document.getElementById('template-enabled').checked = !!template.enabled;
+      document.getElementById('btn-create-template').textContent = '儲存模板';
+      document.getElementById('btn-cancel-edit-template').style.display = 'inline-flex';
+    }
+
+    function openTemplateModal() {
+      const modalElement = document.getElementById('template-modal');
+      modalElement.classList.add('is-open');
+      modalElement.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeTemplateModal() {
+      const modalElement = document.getElementById('template-modal');
+      modalElement.classList.remove('is-open');
+      modalElement.setAttribute('aria-hidden', 'true');
+    }
+
+    function openErrorDialog(message) {
+      const dialogMessage = String(message || '操作失敗').trim() || '操作失敗';
+      document.getElementById('error-dialog-message').textContent = dialogMessage;
+      const modalElement = document.getElementById('error-dialog');
+      modalElement.classList.add('is-open');
+      modalElement.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeErrorDialog() {
+      const modalElement = document.getElementById('error-dialog');
+      modalElement.classList.remove('is-open');
+      modalElement.setAttribute('aria-hidden', 'true');
+    }
+
+    function resetTaskForm() {
+      state.editingTaskId = '';
+      document.getElementById('task-name').value = '';
+      fillCronSelectorsFromExpression('* * * * *');
+      document.getElementById('task-timezone').value = 'Asia/Taipei';
+      const templateSelect = document.getElementById('task-template-id');
+      templateSelect.selectedIndex = 0;
+      document.getElementById('task-enabled').checked = true;
+      document.getElementById('task-payload').value = '';
+      document.getElementById('task-health-dispatch-mode').value = 'fixed';
+      refreshHealthContentSelectOptions('');
+      document.getElementById('task-health-cooldown-days').value = '30';
+      document.getElementById('btn-create-task').textContent = '新增任務';
+      document.getElementById('btn-cancel-edit-task').style.display = 'none';
+      updateHealthDispatchFieldsVisibility();
+    }
+
+    function fillTaskForm(task) {
+      state.editingTaskId = String(task.id || '');
+      document.getElementById('task-name').value = String(task.name || '');
+      fillCronSelectorsFromExpression(String(task.cron_expression || '* * * * *'));
+      document.getElementById('task-timezone').value = String(task.timezone || 'Asia/Taipei');
+      document.getElementById('task-template-id').value = String(task.template_id || '');
+      document.getElementById('task-enabled').checked = !!task.enabled;
+      document.getElementById('task-payload').value = JSON.stringify(task.payload || {}, null, 2);
+      const payload = task.payload || {};
+      document.getElementById('task-health-dispatch-mode').value = String(payload.dispatch_mode || (payload.content_id ? 'fixed' : 'rotate'));
+      refreshHealthContentSelectOptions(String(payload.content_id || ''));
+      document.getElementById('task-health-cooldown-days').value = String(Number(payload.cooldown_days || 30));
+      document.getElementById('btn-create-task').textContent = '儲存編輯';
+      document.getElementById('btn-cancel-edit-task').style.display = 'inline-flex';
+      updateHealthDispatchFieldsVisibility();
+    }
+
+    function getSelectedTemplate() {
+      const templateId = String(document.getElementById('task-template-id').value || '').trim();
+      return (state.templates || []).find((template) => String(template.id || '') === templateId) || null;
+    }
+
+    function updateHealthDispatchFieldsVisibility() {
+      const fieldsElement = document.getElementById('health-dispatch-fields');
+      const template = getSelectedTemplate();
+      const isHealthDispatchTemplate = String(template && template.executor_type || '') === 'health_education_dispatch';
+      fieldsElement.style.display = isHealthDispatchTemplate ? 'flex' : 'none';
+      updateHealthDispatchModeFields();
+    }
+
+    function updateHealthDispatchModeFields() {
+      const dispatchMode = String(document.getElementById('task-health-dispatch-mode').value || '').trim() || 'fixed';
+      const contentSelect = document.getElementById('task-health-content-id');
+      const cooldownInput = document.getElementById('task-health-cooldown-days');
+      contentSelect.disabled = dispatchMode !== 'fixed';
+      cooldownInput.disabled = dispatchMode !== 'rotate';
+    }
+
+    async function loadTasks() {
+      const payload = await api.get('/scheduler/tasks?enabled_only=false');
+      state.tasks = Array.isArray(payload.items) ? payload.items : [];
+      await loadTaskAlerts();
+      renderTasks();
+    }
+
+    function isHealthEducationTask(task) {
+      return String(task && task.task_type || '').trim() === 'health_education_dispatch';
+    }
+
+    async function loadTaskAlerts() {
+      const tasks = state.tasks || [];
+      const healthTasks = tasks.filter((task) => isHealthEducationTask(task) && String(task.id || '').trim());
+      const alertsMap = {};
+      await Promise.all(healthTasks.map(async (task) => {
+        const taskId = String(task.id || '').trim();
+        try {
+          const payload = await api.get(`/scheduler/tasks/${encodeURIComponent(taskId)}/runs?limit=5`);
+          const alerts = Array.isArray(payload.alerts) ? payload.alerts : [];
+          if (alerts.length > 0) {
+            alertsMap[taskId] = alerts[0];
+          }
+        } catch (_) {
+          return;
+        }
+      }));
+      state.taskAlerts = alertsMap;
+    }
+
+    async function loadTemplates() {
+      const payload = await api.get('/scheduler/templates?enabled_only=false');
+      state.templates = Array.isArray(payload.items) ? payload.items : [];
+      renderTemplates();
+      refreshTemplateSelectOptions();
+    }
+
+    async function loadApprovedHealthContents() {
+      const payload = await api.get('/health-education/contents?status=approved&limit=200');
+      state.approvedHealthContents = Array.isArray(payload.items) ? payload.items : [];
+      refreshHealthContentSelectOptions(String(document.getElementById('task-health-content-id').value || ''));
+    }
+
+    function parseJsonTextarea(elementId) {
+      const rawText = String(document.getElementById(elementId).value || '').trim();
+      if (!rawText) return {};
+      return JSON.parse(rawText);
+    }
+
+    async function saveTemplate() {
+      const payload = {
+        template_key: String(document.getElementById('template-key').value || '').trim(),
+        name: String(document.getElementById('template-name').value || '').trim(),
+        description: String(document.getElementById('template-description').value || '').trim(),
+        executor_type: String(document.getElementById('template-executor').value || '').trim(),
+        payload_schema: parseJsonTextarea('template-schema'),
+        default_payload: parseJsonTextarea('template-default-payload'),
+        enabled: !!document.getElementById('template-enabled').checked,
+      };
+      if (state.editingTemplateId) {
+        await api.put(`/scheduler/templates/${encodeURIComponent(state.editingTemplateId)}`, payload);
+        showSuccess('模板已更新');
+      } else {
+        await api.post('/scheduler/templates', payload);
+        showSuccess('已新增模板');
+      }
+      resetTemplateForm();
+      await loadTemplates();
+      closeTemplateModal();
+    }
+
+    async function saveTask() {
+      const payloadJson = parseJsonTextarea('task-payload');
+      const template = getSelectedTemplate();
+      if (template && String(template.executor_type || '') === 'health_education_dispatch') {
+        const dispatchMode = String(document.getElementById('task-health-dispatch-mode').value || '').trim() || 'fixed';
+        const healthContentId = String(document.getElementById('task-health-content-id').value || '').trim();
+        const cooldownDays = Math.max(1, Math.min(180, Number(document.getElementById('task-health-cooldown-days').value || 30)));
+        payloadJson.dispatch_mode = dispatchMode;
+        payloadJson.audience_rule = String(payloadJson.audience_rule || 'all').trim() || 'all';
+        payloadJson.cooldown_days = cooldownDays;
+        if (dispatchMode === 'fixed') {
+          if (!healthContentId) {
+            throw new Error('衛教固定模式請先選擇一篇已核准文章');
+          }
+          payloadJson.content_id = healthContentId;
+        } else {
+          delete payloadJson.content_id;
+        }
+      }
+      const payload = {
+        name: String(document.getElementById('task-name').value || '').trim(),
+        cron_expression: buildCronExpressionFromSelectors(),
+        timezone: String(document.getElementById('task-timezone').value || 'Asia/Taipei').trim() || 'Asia/Taipei',
+        template_id: String(document.getElementById('task-template-id').value || '').trim(),
+        payload: payloadJson,
+        enabled: !!document.getElementById('task-enabled').checked,
+      };
+      if (state.editingTaskId) {
+        await api.put(`/scheduler/tasks/${encodeURIComponent(state.editingTaskId)}`, payload);
+        showSuccess('排程任務已更新');
+      } else {
+        await api.post('/scheduler/tasks', payload);
+        showSuccess('已新增排程任務');
+      }
+      resetTaskForm();
+      await loadTasks();
+    }
+
+    async function deleteTemplate(templateId) {
+      const confirmed = window.confirm('確定要刪除此模板嗎？');
+      if (!confirmed) return;
+      await api.delete(`/scheduler/templates/${encodeURIComponent(templateId)}`);
+      if (state.editingTemplateId === templateId) {
+        resetTemplateForm();
+      }
+      await loadTemplates();
+      showSuccess('模板已刪除');
+    }
+
+    async function runTask(taskId) {
+      await api.post(`/scheduler/tasks/${encodeURIComponent(taskId)}/run`, {});
+      showSuccess('任務已觸發執行');
+    }
+
+    async function toggleTask(taskId, nextEnabled) {
+      await api.put(`/scheduler/tasks/${encodeURIComponent(taskId)}`, { enabled: nextEnabled });
+      await loadTasks();
+      showSuccess(nextEnabled ? '任務已啟用' : '任務已停用');
+    }
+
+    async function showTaskRuns(taskId) {
+      const payload = await api.get(`/scheduler/tasks/${encodeURIComponent(taskId)}/runs?limit=5`);
+      const runRows = payload.runs || [];
+      const alertRows = payload.alerts || [];
+      if (!runRows.length) {
+        const warningText = alertRows.length ? `；告警：${String(alertRows[0].message || '').trim()}` : '';
+        document.getElementById('task-runs-note').textContent = `最近 5 次執行：無紀錄${warningText}`;
+        return;
+      }
+      const brief = runRows.map((row) => `${row.status}@${row.created_at || '-'}`).join(' | ');
+      const warningText = alertRows.length ? `；告警：${String(alertRows[0].message || '').trim()}` : '';
+      document.getElementById('task-runs-note').textContent = `最近 5 次執行：${brief}${warningText}`;
+    }
+
+    async function deleteTask(taskId) {
+      const confirmed = window.confirm('確定要刪除此排程任務嗎？');
+      if (!confirmed) return;
+      await api.delete(`/scheduler/tasks/${encodeURIComponent(taskId)}`);
+      if (state.editingTaskId === taskId) {
+        resetTaskForm();
+      }
+      await loadTasks();
+      showSuccess('排程任務已刪除');
+    }
+
+    async function initializePage() {
+      const capabilities = await getCapabilities();
+      if (!hasAnyPermission(capabilities, canAccessWith)) {
+        throw new Error('你沒有排程管理權限（需要 scheduler.* 權限）。');
+      }
+      await Promise.all([loadTemplates(), loadTasks(), loadApprovedHealthContents()]);
+      resetTaskForm();
+      resetTemplateForm();
+    }
+
+    document.getElementById('btn-refresh-all').addEventListener('click', async () => {
+      try {
+        await Promise.all([loadTemplates(), loadTasks(), loadApprovedHealthContents()]);
+        showSuccess('已更新排程管理資料');
+      } catch (error) {
+        openErrorDialog(error.message || '更新失敗');
+      }
+    });
+
+    document.getElementById('btn-refresh-health-contents').addEventListener('click', async () => {
+      try {
+        await loadApprovedHealthContents();
+        showSuccess('已更新已核准文章清單');
+      } catch (error) {
+        openErrorDialog(error.message || '更新文章清單失敗');
+      }
+    });
+
+    document.getElementById('btn-create-task').addEventListener('click', async () => {
+      try {
+        await saveTask();
+      } catch (error) {
+        openErrorDialog(error.message || '儲存排程任務失敗');
+      }
+    });
+
+    document.getElementById('btn-create-template').addEventListener('click', async () => {
+      try {
+        await saveTemplate();
+      } catch (error) {
+        openErrorDialog(error.message || '儲存模板失敗');
+      }
+    });
+
+    document.getElementById('btn-cancel-edit-template').addEventListener('click', () => {
+      resetTemplateForm();
+      closeTemplateModal();
+    });
+
+    document.getElementById('btn-open-template-modal').addEventListener('click', () => {
+      resetTemplateForm();
+      openTemplateModal();
+    });
+
+    document.getElementById('btn-toggle-template-list').addEventListener('click', () => {
+      setTemplateListVisible(!state.templateListVisible);
+    });
+
+    document.getElementById('btn-close-template-modal').addEventListener('click', () => {
+      closeTemplateModal();
+    });
+
+    document.getElementById('template-modal').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) {
+        closeTemplateModal();
+      }
+    });
+
+    document.getElementById('btn-cancel-edit-task').addEventListener('click', () => {
+      resetTaskForm();
+    });
+
+    document.getElementById('task-template-id').addEventListener('change', () => {
+      updateHealthDispatchFieldsVisibility();
+    });
+
+    document.getElementById('task-health-dispatch-mode').addEventListener('change', () => {
+      updateHealthDispatchModeFields();
+    });
+
+    document.getElementById('task-table-body').addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const action = target.getAttribute('data-action');
+      if (!action) return;
+      const taskRow = target.closest('[data-task-id]');
+      if (!(taskRow instanceof HTMLElement)) return;
+      const taskId = taskRow.getAttribute('data-task-id') || '';
+      if (!taskId) return;
+      const task = (state.tasks || []).find((item) => item.id === taskId);
+      if (!task) return;
+
+      try {
+        if (action === 'run-task') await runTask(taskId);
+        if (action === 'toggle-task') await toggleTask(taskId, !task.enabled);
+        if (action === 'show-runs') await showTaskRuns(taskId);
+        if (action === 'edit-task') fillTaskForm(task);
+        if (action === 'delete-task') await deleteTask(taskId);
+      } catch (error) {
+        openErrorDialog(error.message || '任務操作失敗');
+      }
+    });
+
+    document.getElementById('template-table-body').addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const action = target.getAttribute('data-action');
+      if (!action) return;
+      const templateRow = target.closest('[data-template-id]');
+      if (!(templateRow instanceof HTMLElement)) return;
+      const templateId = templateRow.getAttribute('data-template-id') || '';
+      if (!templateId) return;
+      const template = (state.templates || []).find((item) => item.id === templateId);
+      if (!template) return;
+
+      try {
+        if (action === 'edit-template') {
+          fillTemplateForm(template);
+          openTemplateModal();
+        }
+        if (action === 'delete-template') await deleteTemplate(templateId);
+      } catch (error) {
+        openErrorDialog(error.message || '模板操作失敗');
+      }
+    });
+
+    document.getElementById('btn-close-error-dialog').addEventListener('click', () => {
+      closeErrorDialog();
+    });
+
+    document.getElementById('error-dialog').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) {
+        closeErrorDialog();
+      }
+    });
+
+    initializeCronSelectors();
+    setTemplateListVisible(false);
+
+    initializePage().catch((error) => {
+      openErrorDialog(error.message || '初始化失敗');
+      setTimeout(() => {
+        window.location.href = '/pages/dashboard.html';
+      }, 1000);
+    });
+  </script>
+</body>
+</html>

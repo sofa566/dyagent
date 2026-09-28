@@ -1,7 +1,6 @@
 from src.models import Agent
 from src.services.embedding_service import embedding_service
 
-
 _COMPOUND_SIGNALS = [
     '並且', '同時', '另外', '然後', '接著', '以及', '也要', '還要', '順便',
     'and then', 'also', 'additionally', 'as well',
@@ -52,7 +51,7 @@ def _classify_routing(*, message: str, workers: list[Agent]) -> str:
 def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
     if not v1 or not v2 or len(v1) != len(v2):
         return -1.0
-    dot = sum((a * b) for a, b in zip(v1, v2))
+    dot = sum((a * b) for a, b in zip(v1, v2, strict=False))
     n1 = sum((a * a) for a in v1) ** 0.5
     n2 = sum((b * b) for b in v2) ** 0.5
     if n1 <= 0 or n2 <= 0:

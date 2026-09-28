@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.api.routes.chat import _find_best_skill_name
-from src.api.routes.chat import _has_meaningful_skill_overlap
 from src.api.routes import chat as chat_routes
+from src.api.routes.chat import _find_best_skill_name, _has_meaningful_skill_overlap
 
 
 def _make_skill(*, skill_id: str, name: str, description: str):

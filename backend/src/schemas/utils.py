@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
-from src.models import User
 from src.middleware.auth import get_password_hash, verify_password
+from src.models import User
 from src.schemas.user import UserResponse
 from src.services.access_control_service import access_control_service
 

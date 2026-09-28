@@ -593,12 +593,25 @@
     </div>
   </main>
   <script type="module">
-    import { api, auth, showError, API_BASE } from '/main.js';
+    import { api, auth, showError, API_BASE, getCapabilities, hasAnyPermission, resolveDefaultPageByCapabilities } from '/main.js';
     import { marked } from 'marked';
     marked.setOptions({ breaks: true, gfm: true });
 
     if (!auth.isAuthenticated()) {
       window.location.href = '/pages/login.html';
+    }
+
+    async function ensureChatPagePermission() {
+      const capabilities = await getCapabilities({ forceRefresh: true });
+      const canAccessChat = hasAnyPermission(capabilities, ['chat']);
+      if (canAccessChat) {
+        return true;
+      }
+      showError('你沒有聊天權限（chat），將返回可用頁面。');
+      setTimeout(() => {
+        window.location.href = resolveDefaultPageByCapabilities(capabilities);
+      }, 900);
+      return false;
     }
 
     const currentUser = auth.getUser() || {};
@@ -2961,11 +2974,21 @@
       }
     });
 
-    renderAttachmentTray();
-    loadAgents();
-    if (autoRoutingMode && chatInitialHint) {
-      chatInitialHint.textContent = '可直接開始對話，系統會自動由主代理分派。';
+    async function initializeChatPage() {
+      const canAccessChat = await ensureChatPagePermission();
+      if (!canAccessChat) {
+        return;
+      }
+      renderAttachmentTray();
+      loadAgents();
+      if (autoRoutingMode && chatInitialHint) {
+        chatInitialHint.textContent = '可直接開始對話，系統會自動由主代理分派。';
+      }
     }
+
+    initializeChatPage().catch((error) => {
+      showError((error && error.message) || '聊天頁初始化失敗');
+    });
   </script>
 </body>
 </html>

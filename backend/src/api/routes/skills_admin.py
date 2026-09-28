@@ -1,25 +1,24 @@
-from fastapi import APIRouter, Depends, Body, UploadFile, File
-from typing import Any
-from sqlalchemy.orm import Session
-import zipfile
 import io
-from pathlib import Path
+import os
 import re
-import yaml
 import shlex
 import subprocess
-import os
+import zipfile
+from pathlib import Path
+from typing import Any
 
-from src.core.database import get_db
-from src.models import SkillEntry, SkillInteraction, User, Log, Agent
-from src.middleware.auth import get_current_user
-from src.middleware.rbac import require_permission
-from src.middleware.rbac import check_permission
+import yaml
+from fastapi import APIRouter, Body, Depends, File, UploadFile
+from sqlalchemy.orm import Session
+
 from src.api.errors import not_found_error, validation_error
+from src.core.database import get_db
+from src.middleware.auth import get_current_user
+from src.middleware.rbac import check_permission, require_permission
+from src.models import Agent, Log, SkillEntry, SkillInteraction, User
+from src.services.llm_client import LLMClient
 from src.services.skill_executor import execute_skill
 from src.services.tool_policy_service import ToolPolicyService
-from src.services.llm_client import LLMClient
-
 
 router = APIRouter()
 tool_policy_service = ToolPolicyService()
@@ -528,7 +527,6 @@ async def update_skill(
             (payload or {}).get('execution_policy') if isinstance((payload or {}).get('execution_policy'), dict) else {}
         )
     prompt_text = str(getattr(row, 'prompt_template', '') or '').strip()
-    has_claude_prompt_or_zip = bool(prompt_text) or bool(getattr(row, 'zip_bundle', None))
     requires_executable = _requires_executable(skill_type=str(row.skill_type or 'executable'), prompt_template=prompt_text, has_zip_bundle=bool(getattr(row, 'zip_bundle', None)))
 
     command_text = _normalize_text(getattr(row, 'command', None))
@@ -597,11 +595,10 @@ async def test_skill(
             p = getattr(exc, 'path', None)
             msg = str(exc)
             if p is not None:
-                if isinstance(p, (list, tuple)):
+                if isinstance(p, list | tuple):
                     return [{'path': '.'.join(map(str, p)), 'message': msg}]
                 return [{'path': str(p), 'message': msg}]
             # jsonschema.ValidationError: has .path (deque)
-            from collections.abc import Iterable as _It
             path = getattr(exc, 'path', None)
             if path is not None and hasattr(path, '__iter__'):
                 parts = [str(x) for x in list(path)]
@@ -824,7 +821,8 @@ async def test_skill(
                     details={'ok': True, 'duration_ms': int((_time.time()-t0)*1000), 'type': 'python'},
                     ip_address=None,
                 )
-                db.add(lg); db.commit()
+                db.add(lg)
+                db.commit()
             except Exception:
                 db.rollback()
             return out
@@ -839,7 +837,9 @@ async def test_skill(
                     resource_id=row.id,
                     details={'ok': False, 'duration_ms': int((_time.time()-t0)*1000), 'type': 'python', 'error': str(e)[:200]},
                     ip_address=None,
-                ); db.add(lg); db.commit()
+                )
+                db.add(lg)
+                db.commit()
             except Exception:
                 db.rollback()
             return out
@@ -865,7 +865,8 @@ async def test_skill(
                 try:
                     lg = Log(user_id=current_user.id, level='error', action='skill.test', resource_type='skill', resource_id=row.id,
                         details={'ok': False, 'duration_ms': int((_time.time()-t0)*1000), 'type': 'webhook', 'http_status': resp.status_code}, ip_address=None)
-                    db.add(lg); db.commit()
+                    db.add(lg)
+                    db.commit()
                 except Exception:
                     db.rollback()
                 return out
@@ -877,7 +878,8 @@ async def test_skill(
             try:
                 lg = Log(user_id=current_user.id, level='info', action='skill.test', resource_type='skill', resource_id=row.id,
                     details={'ok': True, 'duration_ms': int((_time.time()-t0)*1000), 'type': 'webhook'}, ip_address=None)
-                db.add(lg); db.commit()
+                db.add(lg)
+                db.commit()
             except Exception:
                 db.rollback()
             return out
@@ -886,7 +888,8 @@ async def test_skill(
             try:
                 lg = Log(user_id=current_user.id, level='error', action='skill.test', resource_type='skill', resource_id=row.id,
                     details={'ok': False, 'duration_ms': int((_time.time()-t0)*1000), 'type': 'webhook', 'error': str(e)[:200]}, ip_address=None)
-                db.add(lg); db.commit()
+                db.add(lg)
+                db.commit()
             except Exception:
                 db.rollback()
             return out

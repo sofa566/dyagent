@@ -1,0 +1,2899 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>腎友照護 POC（護理師）- dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --renal-green-700: #1f8a70;
+      --renal-green-600: #2a9d7f;
+      --renal-green-100: #e9f6f1;
+      --renal-blue-700: #1e3a5f;
+    }
+    body {
+      font-family: 'Noto Sans TC', 'Segoe UI', sans-serif;
+      background: #f4f8f7;
+      font-size: 15px;
+    }
+    .navbar {
+      padding: 0.8rem 1.25rem;
+    }
+    .nav-brand h1 {
+      color: var(--renal-blue-700);
+      font-size: 1.1rem;
+      letter-spacing: 0.02em;
+    }
+    .container.renal-shell { max-width: 100%; margin: 0; padding: 0; }
+    .actions {
+      margin: 0;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.7rem 1rem 0.4rem;
+    }
+    .actions h2 {
+      font-size: 1.68rem;
+      font-weight: 800;
+      color: var(--renal-blue-700);
+      letter-spacing: -0.02em;
+    }
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .line-join-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      border: 1px solid #cfe0d9;
+      background: #fff;
+      color: var(--renal-green-700);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(29, 77, 131, 0.12);
+    }
+    .line-join-btn:hover {
+      background: #f0f8f4;
+      border-color: #9fd0bf;
+    }
+    .line-join-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+    .line-join-btn img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+    .qr-modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(16, 30, 45, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1300;
+      padding: 14px;
+    }
+    .qr-modal-overlay.show {
+      display: flex;
+    }
+    .qr-modal-card {
+      width: min(420px, calc(100vw - 28px));
+      border-radius: 14px;
+      border: 1px solid #d5e4df;
+      background: #fff;
+      box-shadow: 0 16px 36px rgba(16, 30, 45, 0.22);
+      padding: 16px;
+      text-align: center;
+    }
+    .qr-modal-title {
+      margin: 0;
+      color: var(--renal-blue-700);
+      font-size: 1.18rem;
+      font-weight: 800;
+    }
+    .qr-modal-note {
+      margin: 8px 0 10px;
+      color: #5a6f69;
+      font-size: 14px;
+    }
+    .qr-image-box {
+      border: 1px dashed #c8ddd6;
+      border-radius: 12px;
+      padding: 10px;
+      background: #f7fbf9;
+    }
+    .qr-image-box img {
+      width: min(100%, 300px);
+      height: auto;
+      border-radius: 8px;
+      display: block;
+      margin: 0 auto;
+    }
+    .qr-modal-actions {
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+    }
+    .role-switch {
+      display: flex;
+      gap: 0.45rem;
+    }
+    .role-switch .btn {
+      padding: 0.42rem 0.78rem;
+      border: 1px solid #c9dbd4;
+      background: #fff;
+      border-radius: 999px;
+      font-size: 1.105rem;
+    }
+    .role-switch .btn.active {
+      background: var(--renal-blue-700);
+      color: #fff;
+      border-color: var(--renal-blue-700);
+    }
+    .workspace-tabs {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      min-height: calc(100vh - 126px);
+      border-top: 1px solid #d8e7e2;
+    }
+    .renal-sidebar {
+      padding: 16px 12px;
+      background: #fff;
+      border-right: 1px solid #d8e7e2;
+    }
+    .shift-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px;
+      border-radius: 12px;
+      background: #edf6f2;
+    }
+    .shift-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: #fff;
+      color: var(--renal-green-700);
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .shift-summary span,
+    .shift-summary strong {
+      display: block;
+      line-height: 1.2;
+    }
+    .shift-summary span {
+      color: #688079;
+      font-size: 14.5px;
+    }
+    .shift-summary strong {
+      color: #224743;
+      margin-top: 2px;
+      font-size: 19px;
+    }
+    .side-tabs {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .side-tab-btn {
+      width: 100%;
+      text-align: left;
+      border: 1px solid #d7e9e3;
+      background: #fff;
+      border-radius: 10px;
+      padding: 0.58rem 0.7rem;
+      font-size: 1.225rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: #31524a;
+      cursor: pointer;
+    }
+    .side-tab-btn.active {
+      background: var(--renal-green-100);
+      color: var(--renal-green-700);
+      border-color: #9dd8c9;
+      font-weight: 700;
+    }
+    .menu-icon {
+      width: 18px;
+      height: 18px;
+      color: var(--renal-green-600);
+      flex: 0 0 18px;
+    }
+    .safety-note {
+      margin-top: 14px;
+      padding: 10px;
+      border-radius: 11px;
+      border: 1px solid #dcebe5;
+      background: #f4f8f7;
+      font-size: 14.5px;
+      color: #5d726c;
+      line-height: 1.45;
+    }
+    .safety-note strong {
+      display: block;
+      color: #2f5850;
+      margin-bottom: 3px;
+      font-size: 14.5px;
+    }
+    .renal-content-area {
+      min-width: 0;
+      padding: 12px 14px 24px;
+    }
+    .renal-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .renal-stat {
+      border: 1px solid #d7e8e2;
+      border-radius: 10px;
+      background: #fff;
+      padding: 9px 10px;
+    }
+    .renal-stat div {
+      color: #56716a;
+      font-size: 14.5px;
+    }
+    .renal-stat strong {
+      display: block;
+      font-size: 31px;
+      margin-top: 2px;
+      color: var(--renal-blue-700);
+      line-height: 1.15;
+    }
+    .patient-card {
+      border: 1px solid #dbe9e4;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+      margin-bottom: 8px;
+    }
+    .patient-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .patient-card-head {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: #edf6f2;
+      color: #1f8a70;
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .patient-id {
+      color: #617d75;
+      font-size: 13px;
+      margin: 0;
+      line-height: 1.2;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .status-pill.red {
+      color: #9d3f30;
+      background: #fde9e4;
+      border-color: #f5c8bd;
+    }
+    .status-pill.red .status-dot { background: #c8533f; }
+    .status-pill.amber {
+      color: #946216;
+      background: #fff3d9;
+      border-color: #f5dfab;
+    }
+    .status-pill.amber .status-dot { background: #c78b1d; }
+    .status-pill.green {
+      color: #287257;
+      background: #e6f6ef;
+      border-color: #bde6d2;
+    }
+    .status-pill.green .status-dot { background: #2f8b67; }
+    .status-pill.blue {
+      color: #2f5f8b;
+      background: #e8f1fa;
+      border-color: #c8dbef;
+    }
+    .status-pill.blue .status-dot { background: #3e6ea0; }
+    .bed-machine-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 6px;
+      border: 1px solid #dde9e4;
+      border-radius: 10px;
+      padding: 8px;
+      background: #f9fcfb;
+      font-size: 14px;
+      color: #4f6f67;
+      margin-bottom: 8px;
+    }
+    .bed-machine-strip strong {
+      color: #27463f;
+      font-size: 15px;
+    }
+    .paired-yes,
+    .paired-no {
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 12px;
+      font-style: normal;
+      font-weight: 700;
+      align-self: center;
+    }
+    .paired-yes { background: #e8f5ee; color: #2d7a5f; border: 1px solid #bee4d2; }
+    .paired-no { background: #fff2ef; color: #a44b3b; border: 1px solid #f0c3ba; }
+    .measure-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+      margin-bottom: 7px;
+    }
+    .measure-row div {
+      border: 1px solid #e1ebe7;
+      border-radius: 9px;
+      background: #fff;
+      padding: 8px;
+    }
+    .measure-row span {
+      display: block;
+      color: #667f78;
+      font-size: 13px;
+    }
+    .measure-row strong {
+      color: #22443f;
+      font-size: 20px;
+      line-height: 1.25;
+    }
+    .uf-block {
+      border: 1px solid #dde9e4;
+      border-radius: 9px;
+      padding: 8px;
+      background: #f8fcfa;
+      margin-bottom: 6px;
+    }
+    .uf-block-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .uf-block-top span {
+      color: #617a73;
+      font-size: 13px;
+    }
+    .uf-block-top strong {
+      color: #183a53;
+      font-size: 17px;
+    }
+    .progress-track {
+      margin-top: 6px;
+      height: 7px;
+      border-radius: 999px;
+      background: #dceae6;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2a9d7f, #1f8a70);
+    }
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .tag {
+      border-radius: 999px;
+      border: 1px solid #cae3d8;
+      background: #edf8f3;
+      color: #2d705b;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 2px 8px;
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .section-header .eyebrow {
+      margin: 0 0 3px;
+      color: #0f8391;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      font-weight: 800;
+    }
+    .section-header h3 {
+      margin: 0;
+      font-size: 30px;
+      color: #153c50;
+      letter-spacing: -0.02em;
+      line-height: 1.08;
+    }
+    .section-header p {
+      margin: 4px 0 0;
+      color: #647d85;
+      font-size: 13px;
+    }
+    .source-chip {
+      border-radius: 999px;
+      border: 1px solid #bcd6de;
+      background: #fff;
+      color: #3a7182;
+      padding: 6px 12px;
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .dialysis-patient-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .dialysis-patient-btn {
+      border: 1px solid #d4e5ea;
+      border-radius: 12px;
+      background: #fff;
+      padding: 8px 10px;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .dialysis-patient-btn.active {
+      border-color: #64bfd0;
+      box-shadow: inset 0 0 0 1px #64bfd0;
+      background: #f3fbfd;
+    }
+    .dialysis-bed {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: #eaf6fb;
+      color: #1b8290;
+      font-size: 15px;
+      font-weight: 800;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+    }
+    .dialysis-patient-btn strong,
+    .dialysis-patient-btn span {
+      display: block;
+      line-height: 1.1;
+    }
+    .dialysis-patient-btn strong { font-size: 16px; color: #153d50; }
+    .dialysis-patient-btn span { margin-top: 2px; color: #6f8791; font-size: 11px; }
+    .patient-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+    .patient-dot.red { background: #d35943; }
+    .patient-dot.amber { background: #be8122; }
+    .patient-dot.green { background: #2d8b66; }
+    .patient-dot.blue { background: #3c72a8; }
+    .dialysis-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.86fr) minmax(320px, 0.64fr);
+      gap: 12px;
+    }
+    .session-main,
+    .session-side {
+      border: 1px solid #dbe8ec;
+      border-radius: 14px;
+      background: #fff;
+      padding: 14px;
+    }
+    .session-person {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .session-person .avatar {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      font-size: 30px;
+    }
+    .session-person p { margin: 0; color: #6a8089; font-size: 14px; }
+    .session-person h4 { margin: 2px 0 0; color: #13374a; font-size: 24px; letter-spacing: -0.01em; }
+    .binding-chain {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 10px;
+      border: 1px solid #dce8ec;
+      background: #f4fafc;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: #52717b;
+      overflow-x: auto;
+      margin-bottom: 12px;
+      white-space: nowrap;
+    }
+    .binding-chain .ok {
+      margin-left: auto;
+      color: #1e7a5e;
+      font-weight: 700;
+    }
+    .session-measures {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 9px;
+      margin-bottom: 12px;
+    }
+    .mini-stat {
+      border: 1px solid #dbe7eb;
+      border-radius: 12px;
+      padding: 9px;
+      background: #fff;
+    }
+    .mini-stat span {
+      display: block;
+      color: #667f88;
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    .mini-stat strong {
+      display: block;
+      color: #173b51;
+      font-size: 14px;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-top: 2px;
+    }
+    .session-timeline {
+      margin-top: 2px;
+    }
+    .timeline-row {
+      display: grid;
+      grid-template-columns: 50px 15px 1fr;
+      gap: 10px;
+      min-height: 64px;
+    }
+    .timeline-row time {
+      color: #6f838b;
+      font-size: 11px;
+      padding-top: 3px;
+    }
+    .timeline-dot {
+      position: relative;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-top: 6px;
+    }
+    .timeline-dot::after {
+      content: "";
+      position: absolute;
+      top: 12px;
+      left: 4px;
+      width: 1px;
+      height: 50px;
+      background: #d7e5ea;
+    }
+    .timeline-row:last-child .timeline-dot::after { display: none; }
+    .timeline-dot.red { background: #d35943; }
+    .timeline-dot.amber { background: #be8122; }
+    .timeline-dot.green { background: #2d8b66; }
+    .timeline-dot.blue { background: #3c72a8; }
+    .timeline-row strong { color: #1c4153; font-size: 15px; line-height: 1.2; }
+    .timeline-row p { margin: 2px 0 0; color: #647c84; font-size: 13px; }
+    .session-side h4 {
+      margin: 0;
+      color: #153c50;
+      font-size: 24px;
+      letter-spacing: -0.02em;
+    }
+    .session-side .eyebrow { margin: 0 0 4px; color: #0f8391; font-size: 11px; letter-spacing: 0.16em; font-weight: 800; }
+    .machine-box {
+      margin-top: 10px;
+      border: 1px solid #dbe8ec;
+      border-radius: 12px;
+      background: #f7fbfc;
+      padding: 9px 10px;
+      font-size: 11px;
+      color: #5b7782;
+    }
+    .machine-box strong { color: #134259; font-size: 21px; }
+    .summary-ring {
+      width: 152px;
+      height: 152px;
+      border-radius: 50%;
+      margin: 12px auto;
+      background: conic-gradient(#0b8b98 var(--progress), #e0ecf0 0);
+      display: grid;
+      place-items: center;
+    }
+    .summary-ring::before {
+      content: "";
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      background: #fff;
+      grid-area: 1 / 1;
+    }
+    .summary-ring div {
+      grid-area: 1 / 1;
+      text-align: center;
+      z-index: 1;
+    }
+    .summary-ring strong { display: block; color: #12384d; font-size: 19px; line-height: 1; }
+    .summary-ring span { color: #6a818b; font-size: 11px; }
+    .summary-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid #e1eaed;
+    }
+    .summary-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid #e1eaed;
+      color: #607983;
+      font-size: 12px;
+    }
+    .summary-list strong { color: #173b51; font-size: 12px; }
+    .boundary-note {
+      margin-top: 10px;
+      border-radius: 10px;
+      border: 1px solid #cde1d8;
+      background: #eef7f3;
+      color: #4f6f67;
+      font-size: 11px;
+      line-height: 1.45;
+      padding: 9px;
+    }
+    .detail-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.85fr) minmax(300px, 0.65fr);
+      gap: 14px;
+    }
+    .detail-panel,
+    .profile-panel,
+    .ai-panel,
+    .edu-panel {
+      border: 1px solid #dbe8ec;
+      border-radius: 18px;
+      background: #fff;
+      padding: 16px;
+    }
+    .detail-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .legend {
+      display: flex;
+      gap: 12px;
+      color: #5f7782;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .legend i {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+    .legend .w i { background: #0f8793; }
+    .legend .s i { background: #dc5a40; }
+    .trend-chart-box {
+      margin-top: 8px;
+      border-top: 1px dashed #d7e5ea;
+      border-bottom: 1px dashed #d7e5ea;
+      padding: 10px 0;
+      height: 306px;
+    }
+    .trend-chart-canvas { width: 100%; height: 100%; }
+    .trend-warning {
+      margin-top: 12px;
+      border: 1px solid #edc6bc;
+      border-radius: 14px;
+      background: #fff1ec;
+      color: #88453a;
+      font-size: 13px;
+      padding: 11px 12px;
+    }
+    .profile-header {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #e1eaed;
+      margin-bottom: 10px;
+    }
+    .profile-header .avatar { width: 52px; height: 52px; border-radius: 15px; font-size: 20px; }
+    .profile-header h4 { margin: 0; color: #123a50; font-size: 24px; letter-spacing: -0.03em; line-height: 1; }
+    .profile-header p { margin: 3px 0 0; color: #68808a; font-size: 13px; }
+    .trend-main-title {
+      font-weight: 500;
+    }
+    .trend-chart-title {
+      color: #153c50;
+      font-size: 1.225rem;
+      font-weight: 600;
+      line-height: 1.1;
+    }
+    .profile-list { margin: 0; padding: 0; list-style: none; }
+    .profile-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid #e3ecef;
+      color: #647c86;
+      font-size: 13px;
+    }
+    .profile-list strong { color: #173b50; font-size: 15px; }
+    .primary-btn {
+      margin-top: 12px;
+      width: 100%;
+      border: 1px solid #0f8a95;
+      border-radius: 12px;
+      background: #0f8a95;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 11px;
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+    }
+    .primary-btn svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+    }
+    .traffic-emphasis { font-weight: 800; color: #12384d; }
+    .patient-inline-select {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .patient-inline-select button {
+      border: 1px solid #cfdee4;
+      border-radius: 10px;
+      background: #fff;
+      color: #5d7681;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 8px 13px;
+    }
+    .patient-inline-select button.active {
+      color: #fff;
+      background: linear-gradient(135deg, #118f9a 0%, #0a7783 100%);
+      border-color: #0a7783;
+    }
+    .ai-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+    .ai-summary-box {
+      border: 1px solid #d4c6ee;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #f7f3ff 0%, #f4f7ff 100%);
+      color: #473d7f;
+      padding: 12px;
+      font-size: 16px;
+      line-height: 1.45;
+      margin: 12px 0;
+    }
+    .concern-list { display: grid; gap: 8px; margin: 10px 0; }
+    .concern-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 12px;
+      background: #f0f6fa;
+      padding: 9px;
+      color: #395560;
+      font-size: 14px;
+    }
+    .concern-row b {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: #d9604e;
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+    }
+    .evidence-list { border-top: 1px solid #e2ebee; margin-top: 10px; padding-top: 10px; display: grid; gap: 8px; }
+    .evidence-item { color: #4f6a73; font-size: 13px; }
+    .ai-actions { display: flex; gap: 9px; margin-top: 12px; }
+    .ai-actions button {
+      border-radius: 13px;
+      border: 1px solid #bdd5dc;
+      background: #eff6f8;
+      color: #244854;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 9px 12px;
+    }
+    .ai-actions .confirm { border-color: #0f8a95; background: #0f8a95; color: #fff; }
+    .education-item {
+      border: 1px solid #dbe7ec;
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 9px;
+    }
+    .education-play {
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+      background: #efe9ff;
+      color: #6d57b6;
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+    .education-item strong { display: block; color: #214654; font-size: 15px; }
+    .education-item span { display: block; color: #6f8590; font-size: 11px; margin-top: 1px; }
+    .education-item p { margin: 3px 0 0; color: #546c76; font-size: 12px; line-height: 1.4; }
+    .education-item button {
+      margin-left: auto;
+      border: 1px solid #0f8a95;
+      background: #0f8a95;
+      color: #fff;
+      border-radius: 999px;
+      padding: 7px 13px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .education-loop {
+      margin-top: 12px;
+      border: 1px solid #dbe7ec;
+      border-radius: 14px;
+      background: #f3f8fb;
+      padding: 11px;
+      color: #4e6872;
+      font-size: 12px;
+    }
+    .education-loop-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .education-loop-row span {
+      border: 1px solid #cadce3;
+      background: #fff;
+      color: #5a737d;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .ai-safety-banner {
+      margin-top: 13px;
+      border: 1px solid #c5ddd4;
+      border-radius: 14px;
+      background: #edf7f3;
+      color: #496961;
+      padding: 11px 12px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .followup-count-chip {
+      border: 1px solid #c3dce4;
+      border-radius: 999px;
+      background: #f8fdff;
+      color: #2e7585;
+      padding: 6px 12px;
+      font-size: 10px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .followup-board { display: grid; gap: 12px; }
+    .followup-card {
+      border: 1px solid #d5e5ea;
+      border-radius: 16px;
+      background: #fff;
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1.35fr) minmax(170px, 0.45fr) auto;
+      gap: 12px;
+      padding: 12px;
+      position: relative;
+    }
+    .followup-card.critical::before,
+    .followup-card.medium::before,
+    .followup-card.default::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      border-radius: 16px 0 0 16px;
+    }
+    .followup-card.critical::before { background: #d95a46; }
+    .followup-card.medium::before { background: #c9852f; }
+    .followup-card.default::before { background: #5c8ba4; }
+    .followup-severity {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      align-self: center;
+      color: #b24938;
+      font-size: 15px;
+      font-weight: 500;
+      padding-left: 10px;
+    }
+    .followup-card.medium .followup-severity { color: #b36511; }
+    .followup-card.default .followup-severity { color: #2e6f8c; }
+    .followup-severity svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      flex: 0 0 auto;
+    }
+    .followup-meta { color: #78909a; font-size: 10px; font-weight: 400; }
+    .followup-title { margin-top: 3px; color: #133b50; font-size: 18px; font-weight: 500; letter-spacing: 0; }
+    .followup-evidence {
+      margin-top: 10px;
+      border-radius: 11px;
+      background: #eff5f8;
+      padding: 9px 10px;
+      color: #5a7480;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .followup-evidence b { display: block; color: #607985; font-size: 10px; margin-bottom: 4px; font-weight: 500; }
+    .followup-owner {
+      align-self: center;
+      color: #6e8791;
+      font-size: 10px;
+      display: grid;
+      gap: 6px;
+    }
+    .followup-owner strong {
+      color: #1a4558;
+      font-size: 16px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .followup-owner svg { width: 14px; height: 14px; stroke: #5b7b87; }
+    .followup-status {
+      width: fit-content;
+      border: 1px solid #cfe1e8;
+      border-radius: 999px;
+      background: #fff;
+      color: #62808d;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 2px 8px;
+    }
+    .followup-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      align-self: center;
+      justify-self: end;
+    }
+    .followup-actions button {
+      border: 1px solid #b7d4dd;
+      border-radius: 13px;
+      background: #f6fbfd;
+      color: #235266;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 10px 14px;
+      white-space: nowrap;
+    }
+    .followup-actions button.primary {
+      border-color: #0f8a95;
+      background: #0f8a95;
+      color: #fff;
+    }
+    .line-experience-layout {
+      display: flex;
+      gap: 0;
+      align-items: start;
+      min-height: 760px;
+    }
+    .line-pane {
+      min-width: 0;
+    }
+    .line-pane-left {
+      flex: 0 0 50%;
+      padding-right: 10px;
+    }
+    .line-pane-right {
+      flex: 1 1 auto;
+      padding-left: 10px;
+    }
+    .line-splitter {
+      flex: 0 0 14px;
+      position: relative;
+      align-self: stretch;
+      cursor: col-resize;
+      user-select: none;
+      transition: background 0.16s ease;
+    }
+    .line-splitter:hover {
+      background: rgba(15, 138, 149, 0.08);
+    }
+    .line-splitter.active {
+      background: rgba(15, 138, 149, 0.14);
+    }
+    .line-splitter::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 0;
+      transform: translateX(-50%);
+      width: 1px;
+      height: 100%;
+      background: #d8e6eb;
+    }
+    .line-splitter::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 4px;
+      height: 58px;
+      border-radius: 999px;
+      background: #b9d0d8;
+      transition: background 0.16s ease, height 0.16s ease;
+    }
+    .line-splitter:hover::after,
+    .line-splitter.active::after {
+      background: #0f8a95;
+      height: 72px;
+    }
+    .line-experience-layout.resizing {
+      user-select: none;
+    }
+    .line-left-panel,
+    .line-right-panel {
+      border: 1px solid #d9e7ec;
+      border-radius: 16px;
+      background: #fff;
+      padding: 12px;
+    }
+    .line-phone {
+      border: 6px solid #214f5f;
+      border-radius: 36px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: 0 16px 36px rgba(18, 66, 84, 0.18);
+    }
+    .line-phone-head {
+      background: #194c5a;
+      color: #fff;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .line-phone-head-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .line-phone-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .line-phone-logo {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #11af8f;
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .line-phone-head h4 { margin: 0; font-size: 28px; font-weight: 700; }
+    .line-phone-head p { margin: 1px 0 0; font-size: 15px; color: #bddbe3; }
+    .line-phone-head svg { width: 20px; height: 20px; stroke: #d6edf4; }
+    .line-binding-nav-btn {
+      border: 1px solid #4d7b89;
+      background: #245968;
+      color: #e8f6fb;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 16px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .line-chat-body {
+      background: #d7e0e4;
+      min-height: 540px;
+      max-height: 540px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      overflow-y: auto;
+    }
+    .line-chat-time {
+      align-self: center;
+      color: #7a9098;
+      font-size: 16px;
+      margin: 2px 0;
+    }
+    .line-msg-bubble {
+      width: fit-content;
+      max-width: 88%;
+      border-radius: 14px;
+      padding: 9px 12px;
+      font-size: 19px;
+      line-height: 1.45;
+      color: #174155;
+      background: #fff;
+      box-shadow: 0 1px 0 rgba(15, 53, 68, 0.06);
+      font-weight: 500;
+    }
+    .line-msg-bubble.inbound {
+      align-self: flex-end;
+      background: #11af8f;
+      color: #fff;
+    }
+    .line-msg-bubble.outbound.sender-agent {
+      align-self: flex-start;
+      background: #eef4ff;
+      border: 1px solid #b9cdef;
+      color: #24466a;
+    }
+    .line-msg-bubble.outbound.sender-operator {
+      align-self: flex-start;
+      background: #fff5ea;
+      border: 1px solid #e2b37a;
+      color: #6a461f;
+    }
+    .line-msg-bubble.outbound.sender-system {
+      align-self: flex-start;
+      background: #edf5f8;
+      border: 1px solid #bfd7df;
+      color: #2d5663;
+    }
+    .line-chat-footer {
+      border-top: 1px solid #d9e6eb;
+      padding: 10px 12px;
+      display: flex;
+      justify-content: flex-end;
+      background: #fff;
+    }
+    .line-chat-footer button {
+      border: 1px solid #0f8a95;
+      background: #0f8a95;
+      color: #fff;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .line-stage-panel {
+      display: grid;
+      gap: 10px;
+      margin-top: 0;
+    }
+    .line-right-column {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      margin-top: 0;
+    }
+    .line-selection-panel {
+      border: 1px solid #d9e7ec;
+      border-radius: 14px;
+      background: #f8fcfe;
+      padding: 10px;
+    }
+    .line-selection-title {
+      margin: 0 0 8px;
+      color: #214c60;
+      font-size: 21px;
+      font-weight: 600;
+    }
+    .line-stage-card {
+      border: 1px solid #deeaef;
+      border-radius: 16px;
+      background: #fff;
+      padding: 12px 14px;
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 10px;
+      color: #8ca0a9;
+    }
+    .line-stage-card.active {
+      border-color: #84c8d8;
+      box-shadow: 0 0 0 1px #84c8d8 inset;
+      color: #214d5f;
+    }
+    .line-stage-index {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #d3e1e6;
+      color: #5f7780;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .line-stage-card.active .line-stage-index {
+      background: #0d8ea0;
+      color: #fff;
+    }
+    .line-stage-body strong {
+      display: block;
+      font-size: 28px;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+    .line-stage-body p {
+      margin: 3px 0 0;
+      font-size: 18px;
+      line-height: 1.4;
+      font-weight: 400;
+    }
+    .line-demo-refresh {
+      border: 1px solid #bcd6de;
+      border-radius: 12px;
+      background: #f4fbfd;
+      color: #275e72;
+      padding: 9px 14px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .line-session-switch {
+      display: flex;
+      gap: 7px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .line-session-chip {
+      border: 1px solid #c7dce3;
+      background: #fff;
+      color: #5a7781;
+      border-radius: 999px;
+      font-size: 16px;
+      font-weight: 600;
+      padding: 5px 10px;
+    }
+    .line-session-chip.active {
+      border-color: #0f8a95;
+      background: #0f8a95;
+      color: #fff;
+    }
+    .line-filter-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr);
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .line-search-input,
+    .line-session-select {
+      min-height: 36px;
+      border: 1px solid #c7dce3;
+      border-radius: 10px;
+      background: #fff;
+      color: #2c5767;
+      font-size: 19px;
+      padding: 0 10px;
+      font-family: inherit;
+    }
+    .line-group-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .line-group-tab {
+      border: 1px solid #c7dce3;
+      border-radius: 999px;
+      background: #fff;
+      color: #5a7680;
+      font-size: 16px;
+      font-weight: 600;
+      padding: 5px 10px;
+    }
+    .line-group-tab.active {
+      border-color: #0f8a95;
+      background: #0f8a95;
+      color: #fff;
+    }
+    .line-empty {
+      border: 1px dashed #c7dce3;
+      border-radius: 12px;
+      padding: 12px;
+      color: #56727d;
+      font-size: 19px;
+      background: #f6fbfd;
+    }
+    .line-binding-card {
+      margin-top: 10px;
+      border: 1px solid #d7e7ec;
+      border-radius: 12px;
+      background: #f8fcfe;
+      padding: 10px;
+      color: #4e6873;
+      font-size: 18px;
+      line-height: 1.45;
+    }
+    .line-binding-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .line-binding-pill {
+      border-radius: 999px;
+      border: 1px solid #c4dbe3;
+      background: #eef7fa;
+      color: #2a6275;
+      padding: 2px 8px;
+      font-size: 16px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .line-binding-pill.bound {
+      border-color: #bfe3d3;
+      background: #ebf8f2;
+      color: #227657;
+    }
+    .line-binding-pill.manual {
+      border-color: #f2d7b5;
+      background: #fff6ea;
+      color: #9a651f;
+    }
+    .line-control-grid {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .line-control-field {
+      min-height: 36px;
+      border: 1px solid #c7dce3;
+      border-radius: 10px;
+      background: #fff;
+      color: #2c5767;
+      font-size: 19px;
+      padding: 0 10px;
+    }
+    .line-control-btn {
+      border: 1px solid #b6d2da;
+      border-radius: 10px;
+      background: #f2f9fb;
+      color: #2b5d6f;
+      font-size: 18px;
+      font-weight: 600;
+      padding: 8px 12px;
+      white-space: nowrap;
+    }
+    .line-input-row {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .line-input-row textarea {
+      flex: 1;
+      min-height: 74px;
+      max-height: 140px;
+      resize: vertical;
+      border: 1px solid #c7dce3;
+      border-radius: 10px;
+      background: #fff;
+      color: #294f5e;
+      font-size: 19px;
+      padding: 8px 10px;
+      font-family: inherit;
+    }
+    .line-send-btn {
+      border: 1px solid #0f8a95;
+      background: #0f8a95;
+      color: #fff;
+      border-radius: 10px;
+      font-size: 19px;
+      font-weight: 600;
+      padding: 0 14px;
+      white-space: nowrap;
+    }
+    .patient-card strong {
+      font-size: 1.555rem;
+      color: #173652;
+    }
+    .patient-meta {
+      font-size: 14.5px;
+      color: #5e7d75;
+      margin-top: 2px;
+    }
+    .patient-vitals {
+      font-size: 16px;
+      margin-top: 5px;
+      color: #28453f;
+    }
+    @media (max-width: 1000px) {
+      .workspace-tabs { grid-template-columns: 1fr; }
+      .renal-sidebar {
+        border-right: 0;
+        border-bottom: 1px solid #d8e7e2;
+        padding: 10px 12px;
+      }
+      .shift-summary,
+      .safety-note { display: none; }
+      .side-tabs {
+        margin-top: 0;
+        flex-direction: row;
+        overflow-x: auto;
+        padding-bottom: 3px;
+      }
+      .side-tab-btn {
+        min-width: max-content;
+        width: auto;
+      }
+    }
+    @media (max-width: 900px) {
+      .renal-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .patient-grid { grid-template-columns: 1fr; }
+      .measure-row { grid-template-columns: 1fr; }
+      .dialysis-patient-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dialysis-layout { grid-template-columns: 1fr; }
+      .session-measures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .detail-layout { grid-template-columns: 1fr; }
+      .ai-layout { grid-template-columns: 1fr; }
+      .dialysis-patient-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .patient-inline-select { flex-wrap: wrap; justify-content: flex-start; }
+      .followup-card { grid-template-columns: 1fr; }
+      .followup-severity { padding-left: 0; font-size: 14px; }
+      .followup-title { font-size: 16px; }
+      .followup-owner strong { font-size: 14px; }
+      .followup-actions { justify-self: start; }
+      .line-experience-layout {
+        flex-direction: column;
+        min-height: 0;
+      }
+      .line-pane-left,
+      .line-pane-right {
+        flex: 1 1 auto;
+        width: 100%;
+        padding: 0;
+      }
+      .line-splitter { display: none; }
+      .line-right-column { margin-top: 0; }
+      .line-filter-row { grid-template-columns: 1fr; }
+      .line-control-grid { grid-template-columns: 1fr; }
+      .line-input-row { flex-direction: column; }
+    }
+    @media (max-width: 560px) {
+      .renal-summary { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><h1>腎友照護 POC</h1></div>
+    <div class="nav-menu">
+      <a href="/pages/dashboard.html">儀表板</a>
+      <a href="/pages/renals.html">腎友管理</a>
+      <a href="/pages/renal-care-nurse.html">護理師工作台</a>
+      <a href="/pages/line-console.html">LINE 對話中心</a>
+      <a href="/pages/login.html" id="auth-link">登入</a>
+    </div>
+  </nav>
+
+  <main class="container renal-shell">
+    <div class="actions">
+      <div class="title-row">
+        <h2>腎友照護 POC｜護理師工作台</h2>
+        <button id="btn-open-line-qr" class="line-join-btn" type="button" title="加入 LINE 好友">
+          <img src="/assets/line-qr/line-join-qr-small.png" alt="LINE QR Code">
+        </button>
+      </div>
+      <div class="role-switch">
+        <button class="btn active" id="btn-role-nurse">護理師</button>
+        <button class="btn" id="btn-role-patient">腎友／家屬</button>
+      </div>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <div class="workspace-tabs">
+      <aside class="renal-sidebar">
+        <div class="shift-summary">
+          <div class="shift-icon">護</div>
+          <div>
+            <span>一三五早班</span>
+            <strong>4 位病患</strong>
+          </div>
+        </div>
+        <div class="side-tabs" id="renal-menu"></div>
+        <div class="safety-note">
+          <strong>人員確認原則</strong>
+          AI 只整理資料與提示追蹤，不下達醫療處置。
+        </div>
+      </aside>
+      <section class="renal-content-area">
+        <div class="renal-summary" id="renal-summary"></div>
+        <div id="renal-content"></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="line-qr-modal" class="qr-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="line-qr-title">
+    <div class="qr-modal-card">
+      <h3 id="line-qr-title" class="qr-modal-title">加入 LINE 好友</h3>
+      <p class="qr-modal-note">請使用 LINE 掃描 QR Code 加入官方帳號。</p>
+      <div class="qr-image-box">
+        <picture>
+          <source media="(max-width: 480px)" srcset="/assets/line-qr/line-join-qr-large.png">
+          <source media="(max-width: 960px)" srcset="/assets/line-qr/line-join-qr-large.png">
+          <img src="/assets/line-qr/line-join-qr-large.png" alt="加入 LINE 好友 QR Code">
+        </picture>
+      </div>
+      <div class="qr-modal-actions">
+        <button id="btn-close-line-qr" class="btn btn-secondary" type="button">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
+    import * as echarts from 'echarts';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const tabs = [
+      { key: 'overview', label: '四人總覽', icon: '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3"></circle><path d="M2 20c0-3 3-5 7-5s7 2 7 5"></path><circle cx="17" cy="9" r="2.5"></circle><path d="M15 20c.7-1.9 2.6-3.3 5-3.8"></path></svg>' },
+      { key: 'ai-care', label: 'AI 智慧照護', icon: '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l2.5 5.5L20 11l-5.5 2.5L12 19l-2.5-5.5L4 11l5.5-2.5z"></path></svg>' },
+      { key: 'today-dialysis', label: '今日透析', icon: '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 7h8M8 12h8M8 17h5"></path></svg>' },
+      { key: 'trends', label: '個案趨勢', icon: '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"></path><path d="M7 14l4-4 3 3 5-5"></path></svg>' },
+      { key: 'line', label: 'LINE 對話', icon: '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11c0 4.4-3.6 8-8 8-1.3 0-2.6-.3-3.7-.9L4 19l1-3.8C3.7 14 3 12.6 3 11c0-4.4 3.6-8 8-8s9 3.6 9 8z"></path></svg>' },
+      { key: 'alerts', label: '異常追蹤', icon: '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.3 3.7L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z"></path></svg>' },
+    ];
+    const tabFromQuery = new URL(window.location.href).searchParams.get('tab');
+    const state = {
+      tab: tabs.some((item) => item.key === tabFromQuery) ? tabFromQuery : 'overview',
+      summary: {},
+      patients: [],
+      followUps: [],
+      selectedPatientId: '',
+      monitoringByPatient: {},
+      trendChart: null,
+      lineExperienceStage: 1,
+      lineSessions: [],
+      selectedLineSessionId: '',
+      lineMessages: [],
+      lineLoading: false,
+      lineAgents: [],
+      lineSearchQuery: '',
+      lineStatusGroup: 'all',
+      linePaneLeftPercent: 50,
+      lineAutoRefreshTimer: null,
+      nursePermissions: {
+        overview: false,
+        aiCare: false,
+        dialysis: false,
+        trends: false,
+        line: false,
+        tracing: false,
+      },
+      dataLoaded: {
+        summary: false,
+        patients: false,
+        followUps: false,
+        monitoring: false,
+      },
+    };
+    const LINE_AUTO_REFRESH_INTERVAL_MS = 5000;
+
+    const tabPermissionMap = {
+      overview: 'overview',
+      'ai-care': 'aiCare',
+      'today-dialysis': 'dialysis',
+      trends: 'trends',
+      line: 'line',
+      alerts: 'tracing',
+    };
+
+    function openLineQrModal() {
+      document.getElementById('line-qr-modal').classList.add('show');
+    }
+
+    function closeLineQrModal() {
+      document.getElementById('line-qr-modal').classList.remove('show');
+    }
+
+    async function ensureNursePagePermission() {
+      const capabilities = await getCapabilities();
+      const canAccessWithAdminFallback = (permissionKeys) => hasAnyPermission(capabilities, [...permissionKeys, 'read_logs', 'update_agent']);
+      state.nursePermissions.overview = canAccessWithAdminFallback(['nursing.overview']);
+      state.nursePermissions.aiCare = canAccessWithAdminFallback(['nursing.ai_care']);
+      state.nursePermissions.dialysis = canAccessWithAdminFallback(['nursing.dialysis']);
+      state.nursePermissions.trends = canAccessWithAdminFallback(['nursing.trends']);
+      state.nursePermissions.line = canAccessWithAdminFallback(['nursing.line', 'line.center']);
+      state.nursePermissions.tracing = canAccessWithAdminFallback(['nursing.tracing']);
+      if (!Object.values(state.nursePermissions).some(Boolean)) {
+        throw new Error('你沒有護理師工作台可用權限（需要 nursing.* 或 line.center）。');
+      }
+    }
+
+    function canAccessTab(tabKey) {
+      const permissionKey = tabPermissionMap[tabKey];
+      if (!permissionKey) return false;
+      return Boolean(state.nursePermissions[permissionKey]);
+    }
+
+    function getVisibleTabs() {
+      return tabs.filter(tab => canAccessTab(tab.key));
+    }
+
+    const lineStageDefinitions = [
+      {
+        step: 1,
+        title: '自然語言理解',
+        description: '病患用自己的話描述不舒服，Agent 辨識重點並追問缺漏。',
+      },
+      {
+        step: 2,
+        title: '本人確認資料',
+        description: 'Agent 完成整理後，經本人確認才成為正式紀錄。',
+      },
+      {
+        step: 3,
+        title: 'Context+Evidence',
+        description: '結合七日趨勢、療程事件與病患敘述，保留來源。',
+      },
+      {
+        step: 4,
+        title: '個人化衛教',
+        description: '依風險選擇院方核准素材，追蹤是否理解與執行。',
+      },
+    ];
+
+    const menuEl = document.getElementById('renal-menu');
+    const summaryEl = document.getElementById('renal-summary');
+    const contentEl = document.getElementById('renal-content');
+
+    document.getElementById('btn-role-patient').addEventListener('click', () => {
+      window.location.href = '/pages/renal-care-patient.html';
+    });
+    document.getElementById('btn-open-line-qr').addEventListener('click', () => {
+      openLineQrModal();
+    });
+    document.getElementById('btn-close-line-qr').addEventListener('click', () => {
+      closeLineQrModal();
+    });
+    document.getElementById('line-qr-modal').addEventListener('click', (event) => {
+      if (event.target && event.target.id === 'line-qr-modal') {
+        closeLineQrModal();
+      }
+    });
+
+    async function setTab(nextTab) {
+      const visibleTabs = getVisibleTabs();
+      const normalizedTab = visibleTabs.some((item) => item.key === nextTab)
+        ? nextTab
+        : String((visibleTabs[0] || {}).key || 'overview');
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', normalizedTab);
+      window.history.replaceState({}, '', url);
+      state.tab = normalizedTab;
+      syncLineAutoRefresh();
+      try {
+        await ensureDataForCurrentTab();
+      } catch (error) {
+        showError(error.message || '載入分頁資料失敗');
+      }
+      renderMenu();
+      renderSummary();
+      renderContent();
+    }
+
+    function stopLineAutoRefresh() {
+      if (!state.lineAutoRefreshTimer) return;
+      window.clearInterval(state.lineAutoRefreshTimer);
+      state.lineAutoRefreshTimer = null;
+    }
+
+    function startLineAutoRefresh() {
+      if (state.lineAutoRefreshTimer) return;
+      state.lineAutoRefreshTimer = window.setInterval(() => {
+        if (state.tab !== 'line') return;
+        if (document.hidden) return;
+        loadLineExperienceData();
+      }, LINE_AUTO_REFRESH_INTERVAL_MS);
+    }
+
+    function syncLineAutoRefresh() {
+      if (state.tab === 'line') {
+        startLineAutoRefresh();
+        return;
+      }
+      stopLineAutoRefresh();
+    }
+
+    function renderMenu() {
+      menuEl.innerHTML = getVisibleTabs()
+        .map((tab) => `<button class="side-tab-btn ${state.tab === tab.key ? 'active' : ''}" data-tab="${tab.key}">${tab.icon}<span>${tab.label}</span></button>`)
+        .join('');
+    }
+
+    function renderSummary() {
+      const summary = state.summary || {};
+      summaryEl.innerHTML = [
+        { label: '病患數', value: summary.total_patients || 0 },
+        { label: '需追蹤', value: summary.need_follow_up || 0 },
+        { label: '完成療程', value: summary.completed_sessions || 0 },
+        { label: '已綁 LINE', value: state.patients.filter((item) => item.line_user_bound).length },
+      ].map((item) => `<div class="renal-stat"><div>${item.label}</div><strong>${item.value}</strong></div>`).join('');
+    }
+
+    function getSelectedPatient() {
+      return state.patients.find((patient) => String(patient.patient_id) === String(state.selectedPatientId)) || state.patients[0] || null;
+    }
+
+    function formatDateLabel(rawValue) {
+      if (!rawValue) return '--';
+      const date = new Date(rawValue);
+      if (Number.isNaN(date.getTime())) return '--';
+      return `${date.getMonth() + 1}/${date.getDate()}`;
+    }
+
+    function parseSystolic(bpValue) {
+      const matched = String(bpValue || '').match(/(\d+)\s*\/\s*(\d+)/);
+      return matched ? Number(matched[1]) : null;
+    }
+
+    function getSeverityTone(severity) {
+      const value = String(severity || '').toLowerCase();
+      if (value === 'critical' || value === 'high') return 'critical';
+      if (value === 'medium') return 'medium';
+      return 'default';
+    }
+
+    function getSeverityLabel(severity) {
+      const tone = getSeverityTone(severity);
+      if (tone === 'critical') return '高優先';
+      if (tone === 'medium') return '中優先';
+      return '一般';
+    }
+
+    function getFollowUpStatusLabel(status) {
+      const value = String(status || '').toUpperCase();
+      if (value === 'CLOSED') return '已結案';
+      if (value === 'IN_PROGRESS') return '醫師已查看';
+      if (value === 'OPEN') return '待追蹤';
+      return value || '待追蹤';
+    }
+
+    function getFollowUpActionLabel(status) {
+      const value = String(status || '').toUpperCase();
+      if (value === 'CLOSED') return '查看完整資料';
+      if (value === 'IN_PROGRESS') return '人工確認結案';
+      return '記錄已聯絡';
+    }
+
+    function getFollowUpEvidence(item) {
+      const snapshot = (item && item.source_snapshot) || {};
+      if (snapshot.type === 'monitoring') {
+        const bpValue = snapshot.bp || '-';
+        const weightValue = snapshot.weight_kg != null ? `${snapshot.weight_kg} kg` : '-';
+        return `${bpValue} mmHg・體重 ${weightValue}`;
+      }
+      if (snapshot.type === 'dialysis') {
+        const actionValue = snapshot.action || item.title || '-';
+        const ufValue = (((snapshot.payload || {}).actual_uf_l != null) && ((snapshot.payload || {}).target_uf_l != null))
+          ? `${(snapshot.payload || {}).actual_uf_l}/${(snapshot.payload || {}).target_uf_l} L`
+          : '-';
+        return `${actionValue}・實際 ${ufValue}`;
+      }
+      return String(item.title || '無補充證據');
+    }
+
+    function formatCaseTime(updatedAt) {
+      if (!updatedAt) return '今天 --:--';
+      const date = new Date(updatedAt);
+      if (Number.isNaN(date.getTime())) return '今天 --:--';
+      return `今天 ${date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+    }
+
+    function getBindingStatusLabel(bindingStatus) {
+      const value = String(bindingStatus || '').toLowerCase();
+      if (value === 'bound') return '已綁定';
+      if (value === 'awaiting_phone') return '待手機';
+      if (value === 'awaiting_name' || value === 'pending_name') return '待姓名';
+      if (value === 'manual_review') return '人工覆核';
+      return '待綁定';
+    }
+
+    function getBindingStatusClass(bindingStatus) {
+      const value = String(bindingStatus || '').toLowerCase();
+      if (value === 'bound') return 'bound';
+      if (value === 'manual_review') return 'manual';
+      return '';
+    }
+
+    function getBindingGroupKey(bindingStatus) {
+      const value = String(bindingStatus || '').toLowerCase();
+      if (value === 'bound') return 'bound';
+      if (value === 'manual_review') return 'manual_review';
+      if (value === 'awaiting_phone') return 'awaiting_phone';
+      return 'awaiting_name';
+    }
+
+    function getLineStatusGroupTabs() {
+      const counts = {
+        all: state.lineSessions.length,
+        awaiting_name: 0,
+        awaiting_phone: 0,
+        manual_review: 0,
+        bound: 0,
+      };
+      state.lineSessions.forEach((session) => {
+        const key = getBindingGroupKey(session.binding_status);
+        counts[key] += 1;
+      });
+      return [
+        { key: 'all', label: `全部 ${counts.all}` },
+        { key: 'awaiting_name', label: `待姓名 ${counts.awaiting_name}` },
+        { key: 'awaiting_phone', label: `待手機 ${counts.awaiting_phone}` },
+        { key: 'manual_review', label: `人工覆核 ${counts.manual_review}` },
+        { key: 'bound', label: `已綁定 ${counts.bound}` },
+      ];
+    }
+
+    function getFilteredLineSessions() {
+      const query = String(state.lineSearchQuery || '').trim().toLowerCase();
+      return state.lineSessions.filter((session) => {
+        const sessionGroup = getBindingGroupKey(session.binding_status);
+        if (state.lineStatusGroup !== 'all' && sessionGroup !== state.lineStatusGroup) return false;
+        if (!query) return true;
+        const lineUserId = String(session.line_user_id || '').toLowerCase();
+        const bindingName = String(session.binding_name || '').toLowerCase();
+        const bindingPhone = String(session.binding_phone || '').toLowerCase();
+        const phoneLastFour = bindingPhone.slice(-4);
+        return lineUserId.includes(query) || bindingName.includes(query) || bindingPhone.includes(query) || phoneLastFour.includes(query);
+      });
+    }
+
+    function getLineSessionDisplayName(session) {
+      const boundPatient = (session && session.bound_patient) || {};
+      const boundName = String(boundPatient.name || '').trim();
+      if (boundName) return boundName;
+      const bindingName = String((session && session.binding_name) || '').trim();
+      if (bindingName) return bindingName;
+      return String((session && session.line_user_id) || '').trim() || '未命名對象';
+    }
+
+    function escapeHtml(text) {
+      return String(text || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    }
+
+    function inferLineExperienceStage(messages) {
+      const rows = Array.isArray(messages) ? messages : [];
+      const outboundTexts = rows
+        .filter((message) => String(message.direction || '') === 'outbound')
+        .map((message) => String(message.content || '').toLowerCase());
+      const inboundTexts = rows
+        .filter((message) => String(message.direction || '') === 'inbound')
+        .map((message) => String(message.content || '').toLowerCase());
+      const hasEducationPush = outboundTexts.some((text) => text.includes('衛教') || text.includes('推播'));
+      if (hasEducationPush) return 4;
+      const hasConfirmedSubmit = inboundTexts.some((text) => text.includes('確認送出') || text.includes('確認'));
+      if (hasConfirmedSubmit) return 3;
+      const hasStructuredSummary = outboundTexts.some((text) => text.includes('已整理') || text.includes('請回覆') || text.includes('請確認'));
+      if (hasStructuredSummary) return 2;
+      return 1;
+    }
+
+    function getSelectedLineSession() {
+      return state.lineSessions.find((session) => String(session.id) === String(state.selectedLineSessionId)) || state.lineSessions[0] || null;
+    }
+
+    function scrollLineChatToBottom() {
+      requestAnimationFrame(() => {
+        const chatBody = document.querySelector('.line-chat-body');
+        if (!chatBody) return;
+        chatBody.scrollTop = chatBody.scrollHeight;
+      });
+    }
+
+    function mountLineSplitter() {
+      const layoutEl = document.getElementById('line-experience-layout');
+      const leftPaneEl = document.getElementById('line-pane-left');
+      const splitterEl = document.querySelector('[data-line-splitter]');
+      if (!layoutEl || !leftPaneEl || !splitterEl) return;
+      if (window.matchMedia('(max-width: 900px)').matches) return;
+
+      splitterEl.onpointerdown = (event) => {
+        const startX = event.clientX;
+        const layoutRect = layoutEl.getBoundingClientRect();
+        const startPercent = state.linePaneLeftPercent;
+        splitterEl.classList.add('active');
+        layoutEl.classList.add('resizing');
+        splitterEl.setPointerCapture(event.pointerId);
+
+        const onPointerMove = (moveEvent) => {
+          const moved = moveEvent.clientX - startX;
+          const movedPercent = (moved / layoutRect.width) * 100;
+          state.linePaneLeftPercent = Math.max(35, Math.min(65, startPercent + movedPercent));
+          leftPaneEl.style.flexBasis = `${state.linePaneLeftPercent}%`;
+        };
+
+        const onPointerUp = (upEvent) => {
+          splitterEl.releasePointerCapture(upEvent.pointerId);
+          splitterEl.removeEventListener('pointermove', onPointerMove);
+          splitterEl.removeEventListener('pointercancel', onPointerUp);
+          splitterEl.removeEventListener('pointerup', onPointerUp);
+          splitterEl.classList.remove('active');
+          layoutEl.classList.remove('resizing');
+        };
+
+        splitterEl.addEventListener('pointermove', onPointerMove);
+        splitterEl.addEventListener('pointercancel', onPointerUp);
+        splitterEl.addEventListener('pointerup', onPointerUp);
+      };
+
+      splitterEl.ondblclick = () => {
+        state.linePaneLeftPercent = 50;
+        leftPaneEl.style.flexBasis = '50%';
+      };
+    }
+
+    async function loadLineAgents() {
+      try {
+        const response = await api.get('/agents/public');
+        state.lineAgents = Array.isArray(response.agents) ? response.agents.filter((agent) => agent && agent.enabled !== false) : [];
+      } catch (error) {
+        state.lineAgents = [];
+        showError(error.message || '載入 Agent 清單失敗');
+      }
+    }
+
+    // 目的：讀取 LINE 會話與訊息，提供同頁流程展示。
+    // 為什麼：護理師需要在腎友工作台直接看到對話內容與 AI 階段，避免切頁操作。
+    async function loadLineExperienceData() {
+      if (state.lineLoading) return;
+      state.lineLoading = true;
+      try {
+        const [sessionResponse] = await Promise.all([
+          api.get('/line/sessions?limit=100'),
+          state.lineAgents.length ? Promise.resolve({}) : loadLineAgents(),
+        ]);
+        state.lineSessions = Array.isArray(sessionResponse.sessions) ? sessionResponse.sessions : [];
+        if (!state.selectedLineSessionId && state.lineSessions.length) {
+          state.selectedLineSessionId = String((state.lineSessions[0] || {}).id || '');
+        }
+        if (!state.lineSessions.length) {
+          state.lineMessages = [];
+          state.lineExperienceStage = 1;
+          return;
+        }
+        const activeSessionId = state.selectedLineSessionId || String((state.lineSessions[0] || {}).id || '');
+        state.selectedLineSessionId = activeSessionId;
+        const messagesResponse = await api.get(`/line/sessions/${encodeURIComponent(activeSessionId)}/messages?limit=50`);
+        state.lineMessages = Array.isArray(messagesResponse.messages) ? messagesResponse.messages : [];
+        state.lineExperienceStage = inferLineExperienceStage(state.lineMessages);
+      } catch (error) {
+        showError(error.message || '載入 LINE 對話失敗');
+      } finally {
+        state.lineLoading = false;
+        if (state.tab === 'line') {
+          renderContent();
+        }
+      }
+    }
+
+    // 目的：在 LINE 分頁內提供完整對話台操作（切模式、指派 Agent、人工送訊）。
+    // 為什麼：護理師需在同一工作台完成日常追蹤，不應切換到外部頁面才能操作。
+    async function handleLineConsoleAction(actionName) {
+      const selectedSession = getSelectedLineSession();
+      if (!selectedSession) {
+        showError('目前沒有可操作的 LINE 會話');
+        return;
+      }
+
+      if (actionName === 'mode') {
+        const modeSelect = document.getElementById('line-mode-select');
+        const nextMode = String((modeSelect && modeSelect.value) || '').trim();
+        if (!nextMode) {
+          showError('請先選擇模式');
+          return;
+        }
+        await api.put(`/line/sessions/${encodeURIComponent(String(selectedSession.id || ''))}/mode`, { mode: nextMode });
+        showSuccess('模式已更新');
+        await loadLineExperienceData();
+        return;
+      }
+
+      if (actionName === 'agent') {
+        const agentSelect = document.getElementById('line-agent-select');
+        const nextAgentId = String((agentSelect && agentSelect.value) || '').trim();
+        if (!nextAgentId) {
+          showError('請先選擇 Agent');
+          return;
+        }
+        await api.put(`/line/sessions/${encodeURIComponent(String(selectedSession.id || ''))}/agent`, { agent_id: nextAgentId });
+        showSuccess('Agent 已指派');
+        await loadLineExperienceData();
+        return;
+      }
+
+      if (actionName === 'send') {
+        const inputEl = document.getElementById('line-send-input');
+        const messageText = String((inputEl && inputEl.value) || '').trim();
+        if (!messageText) {
+          showError('請輸入要送出的訊息');
+          return;
+        }
+        await api.post(`/line/sessions/${encodeURIComponent(String(selectedSession.id || ''))}/messages`, { text: messageText });
+        if (inputEl) inputEl.value = '';
+        showSuccess('已送出 LINE 訊息');
+        await loadLineExperienceData();
+      }
+    }
+
+    function normalizeTrendRows(records) {
+      return records
+        .filter((row) => row && (row.weight_kg != null || row.bp))
+        .map((row) => ({
+          label: formatDateLabel(row.recorded_at),
+          weight: row.weight_kg != null ? Number(row.weight_kg) : null,
+          systolic: parseSystolic(row.bp),
+        }))
+        .filter((row) => row.weight != null || row.systolic != null)
+        .reverse()
+        .slice(-7);
+    }
+
+    // 目的：使用 ECharts 繪製雙 Y 軸七日趨勢圖並提供滑鼠提示。
+    // 為什麼：符合 UI 指示的座標軸與圖例位置，同時提供資料點 hover 可讀性。
+    function renderTrendChart(records) {
+      const chartEl = document.getElementById('trend-chart');
+      if (!chartEl) return;
+      const rows = normalizeTrendRows(records || []);
+      if (!rows.length) {
+        chartEl.innerHTML = '<div class="patient-vitals">近 7 日尚無可視化量測資料</div>';
+        if (state.trendChart) {
+          state.trendChart.dispose();
+          state.trendChart = null;
+        }
+        return;
+      }
+      const xLabels = rows.map((row) => row.label);
+      const weightSeries = rows.map((row) => row.weight);
+      const systolicSeries = rows.map((row) => row.systolic);
+      const weightValues = weightSeries.filter((value) => value != null);
+      const systolicValues = systolicSeries.filter((value) => value != null);
+      const weightMin = weightValues.length ? Math.floor(Math.min(...weightValues) - 1) : 58;
+      const weightMax = weightValues.length ? Math.ceil(Math.max(...weightValues) + 1) : 66;
+      const systolicMin = systolicValues.length ? Math.floor(Math.min(...systolicValues) - 8) : 88;
+      const systolicMax = systolicValues.length ? Math.ceil(Math.max(...systolicValues) + 8) : 150;
+      if (state.trendChart) {
+        state.trendChart.dispose();
+        state.trendChart = null;
+      }
+      state.trendChart = echarts.init(chartEl);
+      state.trendChart.setOption({
+        color: ['#dc5a40', '#189173'],
+        grid: { left: 44, right: 56, top: 28, bottom: 66 },
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'line' },
+          backgroundColor: '#ffffff',
+          borderColor: '#d5e3e8',
+          textStyle: { color: '#21414f', fontSize: 12 },
+          formatter: (items) => {
+            const safeItems = Array.isArray(items) ? items : [];
+            const dateLabel = (safeItems[0] && safeItems[0].axisValue) || '-';
+            const lines = safeItems.map((item) => {
+              if (item.seriesName.includes('收縮壓')) {
+                return `${item.marker}${item.seriesName}：${item.value ?? '-'} mmHg`;
+              }
+              return `${item.marker}${item.seriesName}：${item.value ?? '-'} kg`;
+            });
+            return [dateLabel, ...lines].join('<br/>');
+          },
+        },
+        legend: {
+          bottom: 4,
+          left: 'center',
+          itemWidth: 11,
+          itemHeight: 11,
+          textStyle: { color: '#556f78', fontSize: 12, fontWeight: 700 },
+          data: ['收縮壓 mmHg', '體重 kg'],
+        },
+        xAxis: {
+          type: 'category',
+          boundaryGap: false,
+          data: xLabels,
+          axisLine: { lineStyle: { color: '#d6e5ea' } },
+          axisTick: { show: false },
+          axisLabel: { color: '#7a9199', fontSize: 11 },
+        },
+        yAxis: [
+          {
+            type: 'value',
+            name: '體重 kg',
+            nameTextStyle: { color: '#617b85', fontSize: 11, fontWeight: 700, align: 'left' },
+            min: weightMin,
+            max: weightMax,
+            splitLine: { lineStyle: { color: '#e5eef2', type: 'dashed' } },
+            axisLine: { show: true, lineStyle: { color: '#cfe0e6' } },
+            axisLabel: { color: '#6f8790', fontSize: 10 },
+          },
+          {
+            type: 'value',
+            name: '收縮壓 mmHg',
+            nameTextStyle: { color: '#617b85', fontSize: 11, fontWeight: 700, align: 'right' },
+            min: systolicMin,
+            max: systolicMax,
+            splitLine: { show: false },
+            axisLine: { show: true, lineStyle: { color: '#f0d8d3' } },
+            axisLabel: { color: '#6f8790', fontSize: 10 },
+          },
+        ],
+        series: [
+          {
+            name: '收縮壓 mmHg',
+            type: 'line',
+            yAxisIndex: 1,
+            smooth: true,
+            showSymbol: true,
+            symbolSize: 7,
+            data: systolicSeries,
+            lineStyle: { width: 3 },
+          },
+          {
+            name: '體重 kg',
+            type: 'line',
+            yAxisIndex: 0,
+            smooth: true,
+            showSymbol: true,
+            symbolSize: 7,
+            data: weightSeries,
+            lineStyle: { width: 3 },
+          },
+        ],
+      });
+    }
+
+    async function loadSummaryDataIfNeeded() {
+      if (state.dataLoaded.summary) return;
+      const summaryResponse = await api.get('/dashboard/renal/summary');
+      state.summary = (summaryResponse && summaryResponse.summary) || {};
+      state.dataLoaded.summary = true;
+    }
+
+    async function loadPatientsDataIfNeeded() {
+      if (state.dataLoaded.patients) return;
+      const patientsResponse = await api.get('/dashboard/renal/patients');
+      state.patients = Array.isArray(patientsResponse.patients) ? patientsResponse.patients : [];
+      if (!state.selectedPatientId && state.patients.length) {
+        state.selectedPatientId = String((state.patients[0] || {}).patient_id || '');
+      }
+      state.dataLoaded.patients = true;
+    }
+
+    async function loadFollowUpsIfNeeded() {
+      if (state.dataLoaded.followUps) return;
+      const followUpsResponse = await api.get('/dashboard/renal/follow-ups?limit=50');
+      state.followUps = Array.isArray(followUpsResponse.follow_ups) ? followUpsResponse.follow_ups : [];
+      state.dataLoaded.followUps = true;
+    }
+
+    async function loadMonitoringDataIfNeeded() {
+      if (state.dataLoaded.monitoring) return;
+      await loadPatientsDataIfNeeded();
+      const monitoringRows = await Promise.all(
+        state.patients.map(async (patient) => {
+          try {
+            const response = await api.get(`/monitoring-records?patient_id=${encodeURIComponent(String(patient.patient_id || ''))}&days=7`);
+            return [String(patient.patient_id || ''), Array.isArray(response.records) ? response.records : []];
+          } catch {
+            return [String(patient.patient_id || ''), []];
+          }
+        }),
+      );
+      state.monitoringByPatient = Object.fromEntries(monitoringRows);
+      state.dataLoaded.monitoring = true;
+    }
+
+    // 目的：依當前分頁按需載入資料，避免一次請求全部 API。
+    // 為什麼：角色可能只具部分 nursing 權限，延遲載入可避免無關 API 因 403 造成整頁失敗。
+    async function ensureDataForCurrentTab() {
+      if (state.tab === 'line') {
+        await loadLineExperienceData();
+        return;
+      }
+
+      if (state.tab === 'alerts') {
+        await Promise.all([loadSummaryDataIfNeeded(), loadPatientsDataIfNeeded(), loadFollowUpsIfNeeded()]);
+        return;
+      }
+
+      if (state.tab === 'trends') {
+        await Promise.all([loadSummaryDataIfNeeded(), loadPatientsDataIfNeeded()]);
+        await loadMonitoringDataIfNeeded();
+        return;
+      }
+
+      await Promise.all([loadSummaryDataIfNeeded(), loadPatientsDataIfNeeded()]);
+    }
+
+    function renderContent() {
+      // 目的：依當前分頁與 API 資料渲染護理師工作台內容。
+      // 為什麼：把欄位轉換與版面組裝集中管理，確保顯示語意與醫護流程一致。
+      if (!canAccessTab(state.tab)) {
+        contentEl.innerHTML = '<p>你目前沒有此分頁權限，請聯絡管理員開通。</p>';
+        return;
+      }
+      const tabsWithoutTopSummary = new Set(['today-dialysis', 'trends', 'ai-care', 'alerts', 'line']);
+      summaryEl.style.display = tabsWithoutTopSummary.has(state.tab) ? 'none' : 'grid';
+      if (state.tab !== 'trends' && state.trendChart) {
+        state.trendChart.dispose();
+        state.trendChart = null;
+      }
+
+      function getToneClass(status) {
+        const tone = String((status && status.tone) || 'blue').toLowerCase();
+        if (tone === 'red' || tone === 'amber' || tone === 'green') return tone;
+        return 'blue';
+      }
+
+      function renderStatusPill(status) {
+        const toneClass = getToneClass(status);
+        const label = String((status && status.label) || '待觀察');
+        return `<span class="status-pill ${toneClass}"><i class="status-dot"></i>${label}</span>`;
+      }
+
+      if (state.tab === 'line') {
+        if (!canAccessTab('line')) {
+          contentEl.innerHTML = '<p>你沒有 LINE 對話分頁權限（需要 nursing.line 或 line.center）。</p>';
+          return;
+        }
+        if (!state.lineSessions.length && !state.lineLoading) {
+          loadLineExperienceData();
+        }
+        const lineStatusTabs = getLineStatusGroupTabs();
+        const filteredLineSessions = getFilteredLineSessions();
+        const selectedLineSession = getSelectedLineSession();
+        const selectedBoundPatient = (selectedLineSession && selectedLineSession.bound_patient) || {};
+        const bindingStatusLabel = getBindingStatusLabel(selectedLineSession ? selectedLineSession.binding_status : 'pending_name');
+        const bindingStatusClass = getBindingStatusClass(selectedLineSession ? selectedLineSession.binding_status : 'pending_name');
+        contentEl.innerHTML = `
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">LINE EXPERIENCE</p>
+              <h3>AI 關懷對話與衛教</h3>
+              <p>病患可用自己的話說明不舒服；Agent 追問、整理、確認，再提供院方核准的個人化衛教。</p>
+            </div>
+            <button class="line-demo-refresh" type="button" data-line-refresh="1">重新展示</button>
+          </div>
+          <div class="line-experience-layout" id="line-experience-layout">
+            <section class="line-pane line-pane-left" id="line-pane-left" style="flex-basis:${state.linePaneLeftPercent}%;">
+              <div class="line-left-panel">
+                <section class="line-phone">
+              <header class="line-phone-head">
+                <div class="line-phone-brand">
+                  <div class="line-phone-logo">❤</div>
+                  <div>
+                    <h4>腎友照護小幫手</h4>
+                    <p>${selectedLineSession ? `${escapeHtml(getLineSessionDisplayName(selectedLineSession))}・${selectedLineSession.mode || 'bot'} 模式` : '洗腎 Agent・LINE TOOL'}</p>
+                  </div>
+                </div>
+                <div class="line-phone-head-actions">
+                  <button type="button" class="line-binding-nav-btn" data-open-renals="1">綁定</button>
+                  <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2 4.1 2 2 0 0 1 4 2h3a2 2 0 0 1 2 1.7c.1 1 .3 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.4 1.9.6 2.9.7A2 2 0 0 1 22 16.9z"></path></svg>
+                </div>
+              </header>
+              <div class="line-chat-body">
+                ${selectedLineSession ? `<div class="line-chat-time">最近更新 ${formatCaseTime(selectedLineSession.updated_at)}</div>` : ''}
+                ${state.lineLoading ? '<div class="line-empty">LINE 對話載入中...</div>' : ''}
+                ${(!state.lineLoading && !state.lineSessions.length) ? '<div class="line-empty">目前沒有 LINE 對話。可先用 LINE 傳送一則訊息觸發會話建立。</div>' : ''}
+                ${state.lineMessages.map((message) => `<div class="line-msg-bubble ${message.direction || ''} sender-${message.sender_type || ''}">${escapeHtml(message.content || '')}</div>`).join('')}
+              </div>
+              <div class="line-control-grid">
+                <select id="line-mode-select" class="line-control-field">
+                  <option value="bot" ${selectedLineSession && selectedLineSession.mode === 'bot' ? 'selected' : ''}>bot（自動回覆）</option>
+                  <option value="human" ${selectedLineSession && selectedLineSession.mode === 'human' ? 'selected' : ''}>human（人工接手）</option>
+                </select>
+                <button type="button" class="line-control-btn" data-line-action="mode">儲存模式</button>
+                <select id="line-agent-select" class="line-control-field">
+                  ${state.lineAgents.map((agent) => `<option value="${agent.id}" ${selectedLineSession && String(selectedLineSession.assigned_agent_id || '') === String(agent.id) ? 'selected' : ''}>${escapeHtml(agent.name || '')}</option>`).join('') || '<option value="">無可用 Agent</option>'}
+                </select>
+                <button type="button" class="line-control-btn" data-line-action="agent">指派 Agent</button>
+              </div>
+              <div class="line-binding-card">
+                <div class="line-binding-head">
+                  <strong>綁定狀態</strong>
+                  <span class="line-binding-pill ${bindingStatusClass}">${bindingStatusLabel}</span>
+                </div>
+                <div>對話對象：${selectedLineSession ? escapeHtml(getLineSessionDisplayName(selectedLineSession)) : '-'}</div>
+                <div>姓名：${selectedLineSession ? (selectedLineSession.binding_name || '待填寫') : '-'}</div>
+                <div>手機：${selectedLineSession ? (selectedLineSession.binding_phone || '待填寫') : '-'}</div>
+                <div>腎友檔：${selectedBoundPatient.bound ? `${selectedBoundPatient.patient_id}｜${selectedBoundPatient.name}` : '尚未綁定'}</div>
+              </div>
+              <div class="line-input-row">
+                <textarea id="line-send-input" placeholder="輸入要送給此 LINE 使用者的訊息"></textarea>
+                <button type="button" class="line-send-btn" data-line-action="send">開始輸入</button>
+              </div>
+                </section>
+              </div>
+            </section>
+            <div class="line-splitter" data-line-splitter="1" aria-hidden="true"></div>
+            <aside class="line-pane line-pane-right">
+              <div class="line-right-panel">
+                <section class="line-right-column">
+                  <section class="line-selection-panel">
+                <h4 class="line-selection-title">選取腎友對話</h4>
+                <div class="line-group-tabs">
+                  ${lineStatusTabs.map((item) => `<button type="button" class="line-group-tab ${state.lineStatusGroup === item.key ? 'active' : ''}" data-line-group="${item.key}">${item.label}</button>`).join('')}
+                </div>
+                <div class="line-filter-row">
+                  <input id="line-session-search" class="line-search-input" type="text" value="${escapeHtml(state.lineSearchQuery)}" placeholder="搜尋姓名 / line id / 手機末四碼" data-line-search="1">
+                  <select id="line-session-select" class="line-session-select" data-line-select="1">
+                    ${filteredLineSessions.map((session) => `<option value="${session.id}" ${selectedLineSession && String(selectedLineSession.id) === String(session.id) ? 'selected' : ''}>${escapeHtml(getLineSessionDisplayName(session))}｜${getBindingStatusLabel(session.binding_status)}</option>`).join('') || '<option value="">無符合會話</option>'}
+                  </select>
+                </div>
+                <div class="line-session-switch">
+                  ${filteredLineSessions.slice(0, 8).map((session) => `<button type="button" class="line-session-chip ${String(session.id) === String((selectedLineSession || {}).id) ? 'active' : ''}" data-line-session-id="${session.id}">${escapeHtml(getLineSessionDisplayName(session))}・${getBindingStatusLabel(session.binding_status)}</button>`).join('')}
+                </div>
+                  </section>
+                  <section class="line-stage-panel">
+                ${lineStageDefinitions.map((row) => `
+                  <article class="line-stage-card ${state.lineExperienceStage === row.step ? 'active' : ''}">
+                    <div class="line-stage-index">${row.step}</div>
+                    <div class="line-stage-body">
+                      <strong>${row.title}</strong>
+                      <p>${row.description}</p>
+                    </div>
+                  </article>
+                `).join('')}
+                  </section>
+                </section>
+              </div>
+            </aside>
+          </div>
+        `;
+        scrollLineChatToBottom();
+        mountLineSplitter();
+        return;
+      }
+      if (state.tab === 'alerts') {
+        const rows = state.followUps;
+        if (!rows.length) {
+          contentEl.innerHTML = '<p>目前沒有異常追蹤案件。</p>';
+          return;
+        }
+        const nurseId = (rows[0] && rows[0].assigned_nurse_id) || 'N001';
+        contentEl.innerHTML = `
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">FOLLOW-UP CASES</p>
+              <h3>異常事件追蹤</h3>
+              <p>只顯示事件、證據、負責人與處理進度；不得由 AI 自動結案。</p>
+            </div>
+            <span class="followup-count-chip">主護 ${nurseId}・${rows.length} 件</span>
+          </div>
+          <div class="followup-board">
+            ${rows.map((item) => {
+              const tone = getSeverityTone(item.severity);
+              const severityLabel = getSeverityLabel(item.severity);
+              const snapshot = (item && item.source_snapshot) || {};
+              const statusLabel = getFollowUpStatusLabel(item.status);
+              const actionLabel = getFollowUpActionLabel(item.status);
+              const bedNo = snapshot.bed_no || (((snapshot.payload || {}).bed_no) || '-');
+              const machineNo = snapshot.machine_no || (((snapshot.payload || {}).machine_no) || '-');
+              return `
+                <article class="followup-card ${tone}">
+                  <div class="followup-severity"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.3 3.7L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z"></path></svg>${severityLabel}</div>
+                  <div>
+                    <div class="followup-meta">${item.patient_id}・床號 ${bedNo}・機號 ${machineNo}・${formatCaseTime(item.updated_at)}</div>
+                    <div class="followup-title">${item.patient_name}　${item.title}</div>
+                    <div class="followup-evidence"><b>觸發證據（來自 ${snapshot.type || item.source_type || '-' }）</b>${getFollowUpEvidence(item)}</div>
+                  </div>
+                  <div class="followup-owner">
+                    <span>負責人</span>
+                    <strong><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4 4-6 8-6s8 2 8 6"></path></svg>主護理師 ${item.assigned_nurse_id || '-'}</strong>
+                    <span class="followup-status">${statusLabel}</span>
+                  </div>
+                  <div class="followup-actions">
+                    <button type="button">查看完整資料</button>
+                    <button class="primary" type="button">${actionLabel}</button>
+                  </div>
+                </article>
+              `;
+            }).join('')}
+          </div>
+        `;
+        return;
+      }
+      if (state.tab === 'today-dialysis') {
+        if (!state.patients.length) {
+          contentEl.innerHTML = '<p>目前沒有透析資料。</p>';
+          return;
+        }
+        if (!state.selectedPatientId) {
+          state.selectedPatientId = String((state.patients[0] || {}).patient_id || '');
+        }
+        const selectedPatient = state.patients.find((patient) => String(patient.patient_id) === String(state.selectedPatientId)) || state.patients[0];
+        const selectedDialysis = (selectedPatient && selectedPatient.latest_dialysis) || {};
+        const selectedMonitoring = (selectedPatient && selectedPatient.latest_monitoring) || {};
+        const selectedStatus = (selectedPatient && selectedPatient.status) || {};
+        const progressPercent = Math.max(0, Math.min(Number(selectedDialysis.progress_percent || 0), 100));
+        const toneClass = getToneClass(selectedStatus);
+        const timelineRows = [
+          {
+            time: '06:48',
+            tone: 'blue',
+            title: '洗前量測',
+            detail: `${selectedDialysis.pre_weight_kg ?? '-'} kg · ${selectedMonitoring.bp || '-'} mmHg`,
+          },
+          {
+            time: '07:00',
+            tone: 'blue',
+            title: '開始透析',
+            detail: `目標脫水 ${selectedDialysis.target_uf_l ?? '-'} L（護理師確認）`,
+          },
+          {
+            time: '08:30',
+            tone: toneClass === 'red' ? 'red' : 'amber',
+            title: selectedStatus.label || '事件追蹤',
+            detail: selectedStatus.reason || '依現場紀錄持續觀察',
+          },
+          {
+            time: '09:00',
+            tone: 'amber',
+            title: '恢復脫水',
+            detail: `實際脫水進度 ${selectedDialysis.actual_uf_l ?? '-'} / ${selectedDialysis.target_uf_l ?? '-'} L`,
+          },
+          {
+            time: selectedDialysis.machine_time || '10:40',
+            tone: selectedDialysis.status === 'COMPLETED' ? 'green' : 'amber',
+            title: '療程結束',
+            detail: `洗後 ${selectedDialysis.post_weight_kg ?? '-'} kg · 狀態 ${selectedDialysis.status || '-'}`,
+          },
+        ];
+        contentEl.innerHTML = `
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">DIALYSIS SESSION</p>
+              <h3>今日透析療程</h3>
+              <p>洗前、透析中與洗後資料維持在同一條時間線；所有處置均記錄實際執行人。</p>
+            </div>
+            <span class="source-chip">資料來源：模擬機構 API</span>
+          </div>
+
+          <div class="dialysis-patient-strip">
+            ${state.patients.map((patient) => {
+              const dialysis = patient.latest_dialysis || {};
+              const status = patient.status || {};
+              const tone = getToneClass(status);
+              return `<button class="dialysis-patient-btn ${String(patient.patient_id) === String(state.selectedPatientId) ? 'active' : ''}" data-select-patient="${patient.patient_id}"><span class="dialysis-bed">${dialysis.bed_no || '--'}</span><div><strong>${patient.name || '-'}</strong><span>${dialysis.machine_no || '-'}</span></div><i class="patient-dot ${tone}"></i></button>`;
+            }).join('')}
+          </div>
+
+          <div class="dialysis-layout">
+            <section class="session-main">
+              <div class="session-person">
+                <div class="avatar">${String(selectedPatient.name || '?').slice(-1)}</div>
+                <div>
+                  <p>${selectedPatient.patient_id}・${selectedPatient.age || '-'}歲・家屬接送</p>
+                  <h4>${selectedPatient.name || '-'}</h4>
+                </div>
+                ${renderStatusPill(selectedStatus)}
+              </div>
+              <div class="binding-chain">
+                <span>病患 ${selectedPatient.patient_id || '-'}</span>
+                <span>></span>
+                <span>床號 ${selectedDialysis.bed_no || '-'}</span>
+                <span>></span>
+                <span>機號 ${selectedDialysis.machine_no || '-'}</span>
+                <span class="ok">${selectedDialysis.paired ? 'Session 已驗證' : 'Session 待驗證'}</span>
+              </div>
+              <div class="session-measures">
+                <div class="mini-stat"><span>洗前體重</span><strong>${selectedDialysis.pre_weight_kg ?? '-'} kg</strong></div>
+                <div class="mini-stat"><span>目標脫水</span><strong>${selectedDialysis.target_uf_l ?? '-'} L</strong></div>
+                <div class="mini-stat"><span>最新血壓</span><strong>${selectedMonitoring.bp || '-'} </strong></div>
+                <div class="mini-stat"><span>洗後體重</span><strong>${selectedDialysis.post_weight_kg ?? '-'} kg</strong></div>
+              </div>
+              <div class="session-timeline">
+                ${timelineRows.map((row) => `<div class="timeline-row"><time>${row.time}</time><i class="timeline-dot ${row.tone}"></i><div><strong>${row.title}</strong><p>${row.detail}</p></div></div>`).join('')}
+              </div>
+            </section>
+
+            <aside class="session-side">
+              <p class="eyebrow">SESSION SUMMARY</p>
+              <h4>療程完成摘要</h4>
+              <div class="machine-box">機器資料來源<br><strong>${selectedDialysis.machine_no || '-'}</strong><br>最後資料 ${selectedDialysis.machine_time || '-'}</div>
+              <div class="summary-ring" style="--progress: ${progressPercent * 3.6}deg;"><div><strong>${progressPercent}%</strong><span>脫水完成</span></div></div>
+              <ul class="summary-list">
+                <li><span>床號／機號</span><strong>${selectedDialysis.bed_no || '-'} / ${selectedDialysis.machine_no || '-'}</strong></li>
+                <li><span>參考乾體重</span><strong>${selectedPatient.dry_weight_kg ?? '-'} kg</strong></li>
+                <li><span>體重差值</span><strong>${((selectedDialysis.pre_weight_kg != null && selectedPatient.dry_weight_kg != null) ? `+${(Number(selectedDialysis.pre_weight_kg) - Number(selectedPatient.dry_weight_kg)).toFixed(1)}` : '-')} kg</strong></li>
+                <li><span>實際脫水</span><strong>${selectedDialysis.actual_uf_l ?? '-'} L</strong></li>
+                <li><span>完成狀態</span><strong>${selectedDialysis.status || '-'}</strong></li>
+              </ul>
+              <div class="boundary-note">醫療責任邊界：目標脫水量與暫停、恢復、提前結束皆由現場醫護確認；Agent 只保存與呈現。</div>
+            </aside>
+          </div>
+        `;
+        return;
+      }
+      if (state.tab === 'trends') {
+        if (!state.patients.length) {
+          contentEl.innerHTML = '<p>目前沒有趨勢資料。</p>';
+          return;
+        }
+        if (!state.selectedPatientId) {
+          state.selectedPatientId = String((state.patients[0] || {}).patient_id || '');
+        }
+        const selectedPatient = getSelectedPatient();
+        const selectedMonitoring = (selectedPatient && selectedPatient.latest_monitoring) || {};
+        const selectedDialysis = (selectedPatient && selectedPatient.latest_dialysis) || {};
+        const selectedStatus = (selectedPatient && selectedPatient.status) || {};
+        const trendRecords = state.monitoringByPatient[String((selectedPatient || {}).patient_id || '')] || [];
+        const symptomNames = Object.keys(selectedMonitoring.symptoms || {}).filter((key) => Boolean((selectedMonitoring.symptoms || {})[key]));
+        contentEl.innerHTML = `
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">PATIENT TREND</p>
+              <h3 class="trend-main-title">${(selectedPatient || {}).name || '-'}的七日趨勢</h3>
+              <p>整合近七日量測，快速辨識體重與血壓偏移，再回到今日療程做處置確認。</p>
+            </div>
+            <div class="patient-inline-select">
+              ${state.patients.map((patient) => `<button class="${String(patient.patient_id) === String((selectedPatient || {}).patient_id) ? 'active' : ''}" data-select-patient="${patient.patient_id}">${patient.name}</button>`).join('')}
+            </div>
+          </div>
+          <div class="detail-layout">
+            <section class="detail-panel">
+              <div class="detail-head">
+                <span class="trend-chart-title">體重與收縮壓</span>
+              </div>
+              <div class="patient-meta">最近量測：${selectedMonitoring.recorded_at ? new Date(selectedMonitoring.recorded_at).toLocaleString('zh-TW', { hour12: false }) : '-'} ｜ 血壓 ${selectedMonitoring.bp || '-'} ｜ 體重 ${selectedMonitoring.weight_kg ?? '-'} kg</div>
+              <div class="trend-chart-box"><div id="trend-chart" class="trend-chart-canvas"></div></div>
+              <div class="trend-warning">${renderStatusPill(selectedStatus)} 近況：${selectedStatus.reason || '近 7 日波動較大，建議持續追蹤'}${symptomNames.length ? `；通報症狀：${symptomNames.join('、')}` : ''}</div>
+            </section>
+            <aside class="profile-panel">
+              <div class="profile-header">
+                <div class="avatar">${String((selectedPatient || {}).name || '?').slice(-1)}</div>
+                <div>
+                  <h4>${(selectedPatient || {}).name || '-'}</h4>
+                  <p>${(selectedPatient || {}).patient_id || '-'}｜${(selectedPatient || {}).age || '-'}歲｜${(selectedPatient || {}).diagnosis || '未設定診斷'}</p>
+                </div>
+              </div>
+              <ul class="profile-list">
+                <li><span>床號／洗腎機</span><strong>${selectedDialysis.bed_no || '-'}／${selectedDialysis.machine_no || '-'}</strong></li>
+                <li><span>主護理師</span><strong>${(selectedPatient || {}).primary_nurse_id || '-'}</strong></li>
+                <li><span>透析班別</span><strong>一三五 07:00–11:00</strong></li>
+                <li><span>參考乾體重</span><strong>63 kg</strong></li>
+                <li><span>交通方式</span><strong class="traffic-emphasis">家屬接送</strong></li>
+                <li><span>個別規則</span><strong>RULE-P001-v1</strong></li>
+              </ul>
+              <button class="primary-btn" type="button" data-tab-jump="alerts"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.3 3.7L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z"></path></svg>查看追蹤案件</button>
+            </aside>
+          </div>
+        `;
+        renderTrendChart(trendRecords);
+        return;
+      }
+      if (state.tab === 'ai-care') {
+        if (!state.patients.length) {
+          contentEl.innerHTML = '<p>目前沒有 AI 摘要資料。</p>';
+          return;
+        }
+        if (!state.selectedPatientId) {
+          state.selectedPatientId = String((state.patients[0] || {}).patient_id || '');
+        }
+        const selectedPatient = getSelectedPatient();
+        const selectedStatus = (selectedPatient && selectedPatient.status) || {};
+        const selectedMonitoring = (selectedPatient && selectedPatient.latest_monitoring) || {};
+        const selectedDialysis = (selectedPatient && selectedPatient.latest_dialysis) || {};
+        const tags = Array.isArray((selectedPatient || {}).tags) ? selectedPatient.tags : [];
+        const symptomNames = Object.keys(selectedMonitoring.symptoms || {}).filter((key) => Boolean((selectedMonitoring.symptoms || {})[key]));
+        const concernRows = [
+          `體重差值 ${selectedDialysis.pre_weight_kg != null && selectedPatient.dry_weight_kg != null ? `+${(Number(selectedDialysis.pre_weight_kg) - Number(selectedPatient.dry_weight_kg)).toFixed(1)}` : '-'} kg`,
+          `最新血壓 ${selectedMonitoring.bp || '-'}`,
+          `追蹤案件 ${selectedPatient.open_follow_up_count || 0} 件`,
+        ];
+        contentEl.innerHTML = `
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">AI CARE COPILOT</p>
+              <h3>AI 智慧照護</h3>
+              <p>只提供追蹤整理與衛教建議，醫療處置仍由現場醫護判斷與確認。</p>
+            </div>
+            <div class="patient-inline-select">
+              ${state.patients.map((patient) => `<button class="${String(patient.patient_id) === String((selectedPatient || {}).patient_id) ? 'active' : ''}" data-select-patient="${patient.patient_id}">${patient.name}</button>`).join('')}
+            </div>
+          </div>
+          <div class="ai-layout">
+            <section class="ai-panel">
+              <div class="detail-head">
+                <strong>${(selectedPatient || {}).patient_id || '-'}｜${(selectedPatient || {}).name || '-'}</strong>
+                ${renderStatusPill(selectedStatus)}
+              </div>
+              <div class="ai-summary-box">${selectedStatus.reason || '目前無重大異常事件，建議維持常規監測。'}</div>
+              <div class="patient-vitals">重點標籤：${tags.length ? tags.join('、') : '無'}</div>
+              <div class="concern-list">${concernRows.map((row, index) => `<div class="concern-row"><b>${index + 1}</b><span>${row}</span></div>`).join('')}</div>
+              <div class="evidence-list">
+                <div class="evidence-item">最新症狀：${symptomNames.length ? symptomNames.join('、') : '無主訴症狀'}</div>
+                <div class="evidence-item">透析狀態：${selectedDialysis.status || '-'}，脫水 ${selectedDialysis.actual_uf_l ?? '-'} / ${selectedDialysis.target_uf_l ?? '-'} L</div>
+                <div class="evidence-item">主護理師：${(selectedPatient || {}).primary_nurse_id || '-'}，LINE 綁定：${selectedPatient.line_user_bound ? '是' : '否'}</div>
+              </div>
+              <div class="ai-actions">
+                <button class="confirm" type="button" data-tab-jump="alerts">查看追蹤案件</button>
+                <button type="button" data-tab-jump="today-dialysis">回到今日透析</button>
+              </div>
+            </section>
+            <aside class="edu-panel">
+              <p class="eyebrow">HEALTH EDUCATION</p>
+              <h4>建議衛教素材</h4>
+              <div class="education-item">
+                <div class="education-play">▶</div>
+                <div>
+                  <strong>透析當日體重管理</strong>
+                  <span>影片 2:18</span>
+                  <p>說明乾體重差值與脫水量追蹤方式，降低透析中不適。</p>
+                </div>
+                <button type="button">傳送</button>
+              </div>
+              <div class="education-item">
+                <div class="education-play">▶</div>
+                <div>
+                  <strong>低鹽飲食快速清單</strong>
+                  <span>圖卡 6 張</span>
+                  <p>針對高血壓與水腫風險，提供可立即執行的替代選項。</p>
+                </div>
+                <button type="button">傳送</button>
+              </div>
+              <div class="education-loop">
+                已讀回饋循環
+                <div class="education-loop-row"><span>發送紀錄</span><span>48h 已讀率</span><span>下次追蹤提醒</span></div>
+              </div>
+              <div class="ai-safety-banner">安全邊界：AI 不產生處方、劑量與醫囑，只提供資料摘要、風險排序與衛教素材推薦。</div>
+            </aside>
+          </div>
+        `;
+        return;
+      }
+      if (state.tab !== 'overview') {
+        contentEl.innerHTML = '<p>此分頁為 POC 版位，將依資料流逐步補齊。</p>';
+        return;
+      }
+      if (!state.patients.length) {
+        contentEl.innerHTML = '<p>目前沒有病患資料。</p>';
+        return;
+      }
+      contentEl.innerHTML = `<div class="patient-grid">${state.patients.map((patient) => {
+        const dialysis = patient.latest_dialysis || {};
+        const monitoring = patient.latest_monitoring || {};
+        const preWeight = dialysis.pre_weight_kg ?? '-';
+        const dryWeight = patient.dry_weight_kg ?? '-';
+        const actualUf = dialysis.actual_uf_l ?? '-';
+        const targetUf = dialysis.target_uf_l ?? '-';
+        const progress = Math.max(0, Math.min(Number(dialysis.progress_percent || 0), 100));
+        const tags = Array.isArray(patient.tags) ? patient.tags : [];
+        return `
+          <article class="patient-card">
+            <div class="patient-card-head">
+              <div class="avatar">${String(patient.name || '?').slice(-1)}</div>
+              <div>
+                <p class="patient-id">${patient.patient_id}・${patient.age || '-'}歲</p>
+                <strong>${patient.name || '-'}</strong>
+                <div class="patient-meta">${patient.diagnosis || '未設定診斷'}</div>
+              </div>
+              ${renderStatusPill(patient.status)}
+            </div>
+            <div class="bed-machine-strip">
+              <span>床號 <strong>${dialysis.bed_no || '-'}</strong></span>
+              <span>機號 <strong>${dialysis.machine_no || '-'}</strong></span>
+              <em class="${dialysis.paired ? 'paired-yes' : 'paired-no'}">${dialysis.paired ? '已配對' : '未配對'}</em>
+            </div>
+            <div class="measure-row">
+              <div>
+                <span>洗前體重／乾體重</span>
+                <strong>${preWeight}／${dryWeight}<small> kg</small></strong>
+              </div>
+              <div>
+                <span>最新血壓</span>
+                <strong>${monitoring.bp || '-'}<small> mmHg</small></strong>
+              </div>
+            </div>
+            <div class="uf-block">
+              <div class="uf-block-top">
+                <span>脫水進度</span>
+                <strong>${actualUf}／${targetUf} L</strong>
+              </div>
+              <div class="progress-track"><div class="progress-fill" style="width:${progress}%;"></div></div>
+            </div>
+            <div class="tag-row">${(tags.length ? tags : ['無']).map((tag) => `<span class="tag">${tag}</span>`).join('')}</div>
+          </article>
+        `;
+      }).join('')}</div>`;
+    }
+
+    menuEl.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-tab]');
+      if (!button) return;
+      setTab(button.getAttribute('data-tab'));
+    });
+
+    contentEl.addEventListener('click', (event) => {
+      const refreshLineButton = event.target.closest('[data-line-refresh]');
+      if (refreshLineButton) {
+        loadLineExperienceData();
+        return;
+      }
+      const lineGroupButton = event.target.closest('[data-line-group]');
+      if (lineGroupButton) {
+        state.lineStatusGroup = String(lineGroupButton.getAttribute('data-line-group') || 'all');
+        renderContent();
+        return;
+      }
+      const lineActionButton = event.target.closest('[data-line-action]');
+      if (lineActionButton) {
+        handleLineConsoleAction(String(lineActionButton.getAttribute('data-line-action') || ''));
+        return;
+      }
+      const openRenalsButton = event.target.closest('[data-open-renals]');
+      if (openRenalsButton) {
+        window.location.href = '/pages/renals.html';
+        return;
+      }
+      const lineSessionButton = event.target.closest('[data-line-session-id]');
+      if (lineSessionButton) {
+        state.selectedLineSessionId = String(lineSessionButton.getAttribute('data-line-session-id') || '');
+        loadLineExperienceData();
+        renderContent();
+        return;
+      }
+      const jumpButton = event.target.closest('[data-tab-jump]');
+      if (jumpButton) {
+        setTab(String(jumpButton.getAttribute('data-tab-jump') || 'overview'));
+        return;
+      }
+      const button = event.target.closest('[data-select-patient]');
+      if (!button) return;
+      state.selectedPatientId = String(button.getAttribute('data-select-patient') || '');
+      if (state.tab === 'today-dialysis' || state.tab === 'trends' || state.tab === 'ai-care') {
+        renderContent();
+      }
+    });
+
+    contentEl.addEventListener('input', (event) => {
+      const searchInput = event.target.closest('[data-line-search]');
+      if (!searchInput) return;
+      state.lineSearchQuery = String(searchInput.value || '');
+      renderContent();
+    });
+
+    contentEl.addEventListener('change', (event) => {
+      const sessionSelect = event.target.closest('[data-line-select]');
+      if (!sessionSelect) return;
+      const selectedSessionId = String(sessionSelect.value || '');
+      if (!selectedSessionId) return;
+      state.selectedLineSessionId = selectedSessionId;
+      loadLineExperienceData();
+      renderContent();
+    });
+
+    window.addEventListener('resize', () => {
+      if (state.trendChart) {
+        state.trendChart.resize();
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        return;
+      }
+      if (state.tab === 'line') {
+        loadLineExperienceData();
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      stopLineAutoRefresh();
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeLineQrModal();
+      }
+    });
+
+    async function bootstrap() {
+      try {
+        await ensureNursePagePermission();
+        const visibleTabs = getVisibleTabs();
+        if (!visibleTabs.length) {
+          throw new Error('目前帳號無可用的護理師工作台分頁');
+        }
+        if (!visibleTabs.some(tab => tab.key === state.tab)) {
+          state.tab = String((visibleTabs[0] || {}).key || 'overview');
+        }
+        await ensureDataForCurrentTab();
+        renderMenu();
+        renderSummary();
+        renderContent();
+        syncLineAutoRefresh();
+      } catch (error) {
+        showError(error.message || '載入腎友工作台失敗');
+        setTimeout(() => {
+          window.location.href = '/pages/dashboard.html';
+        }, 900);
+      }
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>

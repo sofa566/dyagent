@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>搜尋網站維護 - dyagent</title>
+  <link rel="stylesheet" href="/styles/main.css">
+  <style>
+    body { background: #f5f8fb; }
+    .panel { border: 1px solid var(--border-color); border-radius: 12px; background: #fff; padding: 14px; margin-bottom: 12px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    .row input, .row select { border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); text-align: left; white-space: nowrap; }
+    th { background: #f5f8f7; }
+    .tag-trusted { color: #17634f; font-weight: 700; }
+    .tag-blocked { color: #9b1c1c; font-weight: 700; }
+    #rules-table-body .rule-input,
+    #rules-table-body .rule-select {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 14px;
+      line-height: 1.4;
+      background: #fff;
+      box-sizing: border-box;
+    }
+    .col-domain .rule-input { width: 260px; font-family: "SFMono-Regular", Consolas, monospace; background: #f9fbff; }
+    .rule-toggle {
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #fff;
+      white-space: nowrap;
+    }
+    .rule-toggle-policy-trusted { border-color: #7fb99e; background: #e9f7ef; color: #17634f; }
+    .rule-toggle-policy-blocked { border-color: #d9a2a2; background: #fdeeee; color: #9b1c1c; }
+    .rule-toggle-enabled-true { border-color: #8fc9ad; background: #eef9f3; color: #1c6449; }
+    .rule-toggle-enabled-false { border-color: #e3bf92; background: #fff5ea; color: #8a4b0f; }
+    .col-note .rule-input { width: 260px; border-color: #d4dbe5; background: #fafcff; }
+  </style>
+</head>
+<body>
+  <main class="container" style="padding-top:18px; max-width: 1080px;">
+    <div class="actions">
+      <h2>搜尋網站維護</h2>
+      <button id="btn-refresh" class="btn">重新整理</button>
+    </div>
+    <div id="error-message" class="error-message"></div>
+    <div id="success-message" class="success-message"></div>
+
+    <section class="panel">
+      <h3>新增規則</h3>
+      <div class="row">
+        <label for="rule-domain">網域／網址前綴</label>
+        <input id="rule-domain" type="text" placeholder="例如 health.gov.tw 或 https://kidneyeducation.com/Chinese/" style="min-width: 360px;">
+        <label for="rule-policy">規則</label>
+        <select id="rule-policy">
+          <option value="trusted">trusted（白名單）</option>
+          <option value="blocked">blocked（黑名單）</option>
+        </select>
+        <label for="rule-enabled">啟用</label>
+        <select id="rule-enabled">
+          <option value="true">是</option>
+          <option value="false">否</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="rule-note">備註</label>
+        <input id="rule-note" type="text" placeholder="可留空" style="min-width: 420px;">
+        <button id="btn-create-rule" class="btn btn-primary">新增規則</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>規則列表</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>網域／網址前綴</th>
+              <th>規則</th>
+              <th>啟用</th>
+              <th>備註</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="rules-table-body"><tr><td colspan="5">尚未載入</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, auth, showError, showSuccess, getCapabilities, hasAnyPermission } from '/main.js';
+
+    if (!auth.isAuthenticated()) {
+      window.location.href = '/pages/login.html';
+    }
+
+    const canAccessWith = [
+      'health_education.source_rule.read',
+      'health_education.source_rule.create',
+      'health_education.source_rule.update',
+      'health_education.source_rule.delete',
+    ];
+    const state = { rules: [] };
+
+    function formatDateTime(rawValue) {
+      const rawText = String(rawValue || '').trim();
+      if (!rawText) return '-';
+      const dateValue = new Date(rawText);
+      if (Number.isNaN(dateValue.getTime())) return rawText;
+      const year = dateValue.getFullYear();
+      const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+      const day = String(dateValue.getDate()).padStart(2, '0');
+      const hour = String(dateValue.getHours()).padStart(2, '0');
+      const minute = String(dateValue.getMinutes()).padStart(2, '0');
+      const second = String(dateValue.getSeconds()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+    }
+
+    function escapeHtml(text) {
+      return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function renderRules() {
+      const body = document.getElementById('rules-table-body');
+      if (!state.rules.length) {
+        body.innerHTML = '<tr><td colspan="5">尚無規則</td></tr>';
+        return;
+      }
+      body.innerHTML = state.rules.map((rule) => `
+        <tr data-rule-id="${rule.id}">
+          <td class="col-domain"><input class="rule-input" data-field="domain" value="${escapeHtml(rule.domain || '')}"></td>
+          <td class="col-policy">${renderPolicyToggleButton(rule)}</td>
+          <td class="col-enabled">${renderEnabledToggleButton(rule)}</td>
+          <td class="col-note"><input class="rule-input" data-field="note" value="${escapeHtml(rule.note || '')}"></td>
+          <td>
+            <button class="btn btn-secondary" data-action="save">儲存</button>
+            <button class="btn btn-secondary" data-action="delete">刪除</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function renderPolicyToggleButton(rule) {
+      const policyValue = String(rule && rule.policy || 'trusted').trim() === 'blocked' ? 'blocked' : 'trusted';
+      const buttonText = policyValue === 'trusted' ? '白名單' : '黑名單';
+      const buttonClass = policyValue === 'trusted' ? 'rule-toggle-policy-trusted' : 'rule-toggle-policy-blocked';
+      return `<button type="button" class="rule-toggle ${buttonClass}" data-toggle-field="policy" data-value="${policyValue}">${buttonText}</button>`;
+    }
+
+    function renderEnabledToggleButton(rule) {
+      const isEnabled = !!(rule && rule.enabled);
+      const enabledValue = isEnabled ? 'true' : 'false';
+      const buttonClass = isEnabled ? 'rule-toggle-enabled-true' : 'rule-toggle-enabled-false';
+      return `<button type="button" class="rule-toggle ${buttonClass}" data-toggle-field="enabled" data-value="${enabledValue}">${isEnabled ? '啟用' : '停用'}</button>`;
+    }
+
+    function toggleRuleButton(targetElement) {
+      const fieldName = String(targetElement.getAttribute('data-toggle-field') || '').trim();
+      if (fieldName === 'policy') {
+        const currentValue = String(targetElement.getAttribute('data-value') || 'trusted').trim();
+        const nextValue = currentValue === 'trusted' ? 'blocked' : 'trusted';
+        targetElement.setAttribute('data-value', nextValue);
+        targetElement.textContent = nextValue === 'trusted' ? '白名單' : '黑名單';
+        targetElement.classList.remove('rule-toggle-policy-trusted', 'rule-toggle-policy-blocked');
+        targetElement.classList.add(nextValue === 'trusted' ? 'rule-toggle-policy-trusted' : 'rule-toggle-policy-blocked');
+        return;
+      }
+      if (fieldName === 'enabled') {
+        const currentValue = String(targetElement.getAttribute('data-value') || 'true').trim();
+        const nextValue = currentValue === 'true' ? 'false' : 'true';
+        targetElement.setAttribute('data-value', nextValue);
+        targetElement.textContent = nextValue === 'true' ? '啟用' : '停用';
+        targetElement.classList.remove('rule-toggle-enabled-true', 'rule-toggle-enabled-false');
+        targetElement.classList.add(nextValue === 'true' ? 'rule-toggle-enabled-true' : 'rule-toggle-enabled-false');
+      }
+    }
+
+    async function loadRules() {
+      const payload = await api.get('/health-education/source-rules');
+      state.rules = Array.isArray(payload.items) ? payload.items : [];
+      renderRules();
+    }
+
+    async function createRule() {
+      await api.post('/health-education/source-rules', {
+        domain: String(document.getElementById('rule-domain').value || '').trim(),
+        policy: String(document.getElementById('rule-policy').value || 'trusted').trim(),
+        enabled: String(document.getElementById('rule-enabled').value || 'true') === 'true',
+        note: String(document.getElementById('rule-note').value || '').trim(),
+      });
+      showSuccess('已新增規則');
+      await loadRules();
+    }
+
+    async function updateRule(rowElement) {
+      const ruleId = String(rowElement.getAttribute('data-rule-id') || '').trim();
+      if (!ruleId) return;
+      await api.put(`/health-education/source-rules/${encodeURIComponent(ruleId)}`, {
+        domain: String(rowElement.querySelector('[data-field="domain"]').value || '').trim(),
+        policy: String(rowElement.querySelector('[data-toggle-field="policy"]').getAttribute('data-value') || 'trusted').trim(),
+        enabled: String(rowElement.querySelector('[data-toggle-field="enabled"]').getAttribute('data-value') || 'true') === 'true',
+        note: String(rowElement.querySelector('[data-field="note"]').value || '').trim(),
+      });
+      showSuccess('已更新規則');
+      await loadRules();
+    }
+
+    async function deleteRule(rowElement) {
+      const ruleId = String(rowElement.getAttribute('data-rule-id') || '').trim();
+      if (!ruleId) return;
+      const confirmed = window.confirm('確定刪除此規則嗎？');
+      if (!confirmed) return;
+      await api.delete(`/health-education/source-rules/${encodeURIComponent(ruleId)}`);
+      showSuccess('已刪除規則');
+      await loadRules();
+    }
+
+    document.getElementById('btn-create-rule').addEventListener('click', async () => {
+      try {
+        await createRule();
+      } catch (error) {
+        showError(error.message || '新增失敗');
+      }
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', async () => {
+      const refreshButton = document.getElementById('btn-refresh');
+      const originalLabel = String(refreshButton.textContent || '重新整理');
+      refreshButton.disabled = true;
+      refreshButton.textContent = '更新中...';
+      try {
+        await loadRules();
+        showSuccess('已重新整理規則列表');
+      } catch (error) {
+        showError(error.message || '更新失敗');
+      } finally {
+        refreshButton.disabled = false;
+        refreshButton.textContent = originalLabel;
+      }
+    });
+
+    document.getElementById('rules-table-body').addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.matches('[data-toggle-field]')) {
+        toggleRuleButton(target);
+        return;
+      }
+      const action = target.getAttribute('data-action');
+      if (!action) return;
+      const row = target.closest('[data-rule-id]');
+      if (!(row instanceof HTMLElement)) return;
+      try {
+        if (action === 'save') await updateRule(row);
+        if (action === 'delete') await deleteRule(row);
+      } catch (error) {
+        showError(error.message || '操作失敗');
+      }
+    });
+
+    (async function initializePage() {
+      const capabilities = await getCapabilities();
+      if (!hasAnyPermission(capabilities, canAccessWith)) {
+        throw new Error('你沒有搜尋網站維護權限。');
+      }
+      await loadRules();
+    })().catch((error) => {
+      showError(error.message || '初始化失敗');
+      setTimeout(() => {
+        window.close();
+      }, 1200);
+    });
+  </script>
+</body>
+</html>

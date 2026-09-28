@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import asyncio
 import json
 import os
 import shutil
 import uuid
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, text, and_
+from sqlalchemy import and_, func, text
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
 from src.middleware.auth import get_current_user
 from src.middleware.rbac import require_permission
-from src.models import Agent, Conversation, Message, User, LlmTurn, ToolExecutionAudit
+from src.models import Agent, Conversation, LlmTurn, Message, ToolExecutionAudit, User
 from src.models.events import EventPart
 from src.services.qdrant_service import qdrant_service
 from src.services.redis_service import redis_service
@@ -62,7 +62,7 @@ def _read_mem_info() -> dict[str, int | float | None]:
     }
     try:
         data = {}
-        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+        with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if ":" not in line:
                     continue

@@ -66,6 +66,49 @@ LEGACY_ROLE_PERMISSIONS = {
         'private.rag.read',
         'private.rag.update',
         'private.rag.delete',
+        'renal.create',
+        'renal.read',
+        'renal.update',
+        'renal.delete',
+        'nursing.overview',
+        'nursing.ai_care',
+        'nursing.dialysis',
+        'nursing.trends',
+        'nursing.line',
+        'nursing.tracing',
+        'line.center',
+        'monitoring.compliance.read',
+        'monitoring.reminder.dispatch',
+        'monitoring.reminder.policy.read',
+        'monitoring.reminder.policy.update',
+        'monitoring.reminder.log.read',
+        'monitoring.backfill.run',
+        'monitoring.backfill.read',
+        'health_education.content.read',
+        'health_education.content.create',
+        'health_education.content.update',
+        'health_education.content.delete',
+        'health_education.content.approve',
+        'health_education.content.reject',
+        'health_education.content.send',
+        'health_education.content.schedule',
+        'health_education.log.read',
+        'health_education.import.mcp',
+        'health_education.import.manual',
+        'health_education.source_rule.read',
+        'health_education.source_rule.create',
+        'health_education.source_rule.update',
+        'health_education.source_rule.delete',
+        'scheduler.task.read',
+        'scheduler.task.create',
+        'scheduler.task.update',
+        'scheduler.task.delete',
+        'scheduler.task.run',
+        'scheduler.run.read',
+        'scheduler.template.read',
+        'scheduler.template.create',
+        'scheduler.template.update',
+        'scheduler.template.delete',
     },
     'agent_admin': {
         'read_agent',
@@ -74,6 +117,31 @@ LEGACY_ROLE_PERMISSIONS = {
     },
     'user': {
         'chat',
+    },
+    'renal_manager': {
+        'renal.create',
+        'renal.read',
+        'renal.update',
+        'renal.delete',
+        'nursing.overview',
+        'nursing.ai_care',
+        'nursing.dialysis',
+        'nursing.trends',
+        'nursing.line',
+        'nursing.tracing',
+        'line.center',
+    },
+    'nurse_operator': {
+        'nursing.overview',
+        'nursing.ai_care',
+        'nursing.dialysis',
+        'nursing.trends',
+        'nursing.line',
+        'nursing.tracing',
+    },
+    'line_operator': {
+        'line.center',
+        'nursing.line',
     },
 }
 
@@ -90,6 +158,22 @@ SYSTEM_ROLE_DEFAULTS = {
     'admin': {
         'name': '系統管理者',
         'permissions': None,
+    },
+}
+
+
+RECOMMENDED_DOMAIN_ROLES = {
+    'renal_manager': {
+        'name': '腎友管理者',
+        'permissions': set(LEGACY_ROLE_PERMISSIONS.get('renal_manager', set())),
+    },
+    'nurse_operator': {
+        'name': '護理站操作員',
+        'permissions': set(LEGACY_ROLE_PERMISSIONS.get('nurse_operator', set())),
+    },
+    'line_operator': {
+        'name': 'LINE 對話操作員',
+        'permissions': set(LEGACY_ROLE_PERMISSIONS.get('line_operator', set())),
     },
 }
 
@@ -149,7 +233,8 @@ class AccessControlService:
             logger.warning('access_control.schema_not_ready_fallback_legacy', error=str(error), user_id=str(user.id))
             return self._build_legacy_capability(user=user, group_codes=[])
 
-        if dynamic_permission_keys:
+        has_dynamic_bindings = bool(dynamic_role_codes or dynamic_group_codes)
+        if has_dynamic_bindings:
             return EffectiveCapability(
                 role_codes=dynamic_role_codes,
                 group_codes=dynamic_group_codes,
@@ -193,6 +278,9 @@ class AccessControlService:
                 if not bool(getattr(role_row, 'enabled', True)):
                     role_row.enabled = True
                     has_changes = True
+
+        if self._ensure_recommended_domain_roles(db):
+            has_changes = True
 
         admin_permissions = self._load_all_permission_keys_for_admin(db)
         user_permissions = set(SYSTEM_ROLE_DEFAULTS['user']['permissions'])
@@ -242,6 +330,33 @@ class AccessControlService:
         if has_changes:
             db.commit()
 
+    def _ensure_recommended_domain_roles(self, db: Session) -> bool:
+        # 目的：建立腎友照護領域的建議角色。
+        # 為什麼：提供可直接指派的授權基線，降低每次手動配置角色的成本。
+        has_changes = False
+        for role_code, role_config in RECOMMENDED_DOMAIN_ROLES.items():
+            role_row = db.query(AccessRole).filter(AccessRole.code == role_code).first()
+            if role_row is None:
+                role_row = AccessRole(
+                    code=role_code,
+                    name=str(role_config.get('name') or role_code),
+                    enabled=True,
+                    is_system=False,
+                )
+                db.add(role_row)
+                db.flush()
+                has_changes = True
+
+            permission_rows = self.ensure_permission_keys(db, sorted(set(role_config.get('permissions') or set())))
+            existing_rows = db.query(AccessRolePermission).filter(AccessRolePermission.role_id == role_row.id).all()
+            existing_permission_ids = {row.permission_id for row in existing_rows}
+            for permission_row in permission_rows:
+                if permission_row.id in existing_permission_ids:
+                    continue
+                db.add(AccessRolePermission(role_id=role_row.id, permission_id=permission_row.id))
+                has_changes = True
+        return has_changes
+
     def sync_user_system_role_binding(self, db: Session, user: User, role_code: str) -> None:
         # 目的：同步單一使用者的系統角色綁定至 access control 模型。
         # 為什麼：舊流程仍會寫入 users.role，需即時鏡像到 user_role_bindings 才能維持授權一致。
@@ -282,6 +397,8 @@ class AccessControlService:
         for role_code in ROLE_PRIORITY:
             if role_code in role_codes:
                 return role_code
+        if role_codes:
+            return sorted(role_codes)[0]
         return 'user'
 
     def ensure_permission_keys(self, db: Session, permission_keys: list[str]) -> list[AccessPermission]:

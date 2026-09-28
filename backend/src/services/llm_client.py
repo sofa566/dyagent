@@ -12,15 +12,17 @@ LLM 客戶端（骨架）
 
 from __future__ import annotations
 
-from typing import Generator, Optional
-import time
 import os
+import time
+from collections.abc import Generator
+from urllib.parse import urlparse
+
 import httpx
+
 from src.core.config import settings, validate_llm_settings
 from src.core.logging import get_logger
 from src.services.secrets import SecretsProvider, get_secrets_provider
 from src.utils.temp_env import temp_env
-from urllib.parse import urlparse
 
 
 class LLMClient:
@@ -43,7 +45,7 @@ class LLMClient:
         self._secrets: SecretsProvider = get_secrets_provider()
         self._last_route: dict = {}
 
-    def init_for_session(self, *, session_id: str, preferred_tier: Optional[str] = None, overrides: Optional[dict] = None) -> None:
+    def init_for_session(self, *, session_id: str, preferred_tier: str | None = None, overrides: dict | None = None) -> None:
         """於 Session 建立階段初始化必要狀態。
 
         備註：此處僅保留狀態欄位，實際 LangChain/LiteLLM 實例化於後續任務補上。
@@ -81,7 +83,7 @@ class LLMClient:
         # TODO: 以 LangChain + LiteLLM 取代，並加入串流/重試/逾時
         return "（模型尚未連接；已使用地端骨架回覆）"
 
-    def complete(self, *, prompt: str, tier: Optional[str] = None) -> str:
+    def complete(self, *, prompt: str, tier: str | None = None) -> str:
         """根據 tier（cloud/onprem）選擇路由執行。
 
         若未指定 tier，使用 Session 層級或系統預設層級。
@@ -134,7 +136,7 @@ class LLMClient:
         return ""
 
     # T007/T008：簡化的串流封裝 + 重試/逾時 + 結構化日誌（start/finish/tokens/cost）
-    def stream_complete(self, *, prompt: str, tier: Optional[str] = None, max_retries: int = 2) -> Generator[str, None, None]:
+    def stream_complete(self, *, prompt: str, tier: str | None = None, max_retries: int = 2) -> Generator[str, None, None]:
         """以簡化方式產生串流輸出（骨架）。
 
         - 採用指數退避策略於暫時性錯誤（此處以 RuntimeError 模擬）
@@ -226,7 +228,7 @@ class LLMClient:
             self._log.warning("langchain.not_available_fallback")
             return False
 
-    def _stream_via_langchain(self, *, prompt: str, tier: Optional[str]) -> Generator[str, None, None]:
+    def _stream_via_langchain(self, *, prompt: str, tier: str | None) -> Generator[str, None, None]:
         """以 LangChain 嘗試真實串流（若環境可用）。失敗則丟擲以便上層重試/降級。"""
         from langchain_core.messages import HumanMessage
 
@@ -352,9 +354,9 @@ class LLMClient:
                     if text:
                         yield text
             return
-        except Exception as e:
+        except Exception as error:
             # 讓上層的重試/降級處理（將回退到本地切片策略）
-            raise RuntimeError(str(e))
+            raise RuntimeError(str(error)) from error
 
     def _select_cloud_model(self) -> str:
         # session override 模型優先
@@ -388,7 +390,7 @@ class LLMClient:
         return settings.LITELLM_ONPREM_BASE_URL
 
     # 結構化輸出：優先嘗試供應商原生/LC 路徑，失敗則回退最小可用物件
-    def structured_output(self, *, prompt: str, schema: dict, tier: Optional[str] = None) -> dict:
+    def structured_output(self, *, prompt: str, schema: dict, tier: str | None = None) -> dict:
         # 嘗試 OpenAI 的 json_schema response_format（若可用）
         try:
             if self._lc_available:
@@ -427,7 +429,7 @@ class LLMClient:
                             data = json.loads(text)
                         except Exception:
                             # 若服務端直接回傳結構已包在訊息中（有時 content 為 dict/list），嘗試以字典回傳
-                            if isinstance(content, (dict, list)):
+                            if isinstance(content, dict | list):
                                 data = content  # type: ignore[assignment]
                     if isinstance(data, dict):
                         return data
@@ -442,7 +444,7 @@ class LLMClient:
             "schema_keys": list(schema.keys()) if isinstance(schema, dict) else [],
         }
 
-    def _resolve_api_key(self, provider: str) -> Optional[str]:
+    def _resolve_api_key(self, provider: str) -> str | None:
         # 先看 overrides.api_key；否則以 api_key_ref 經由 SecretsProvider 取得
         if hasattr(self, "_session_overrides"):
             direct = self._session_overrides.get("api_key")

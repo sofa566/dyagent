@@ -9,17 +9,21 @@ MCP 客戶端骨架
 
 from __future__ import annotations
 
-from typing import Any, Dict, AsyncGenerator, Optional
-import httpx
-from src.core.logging import get_logger
-from src.core.config import settings
-from urllib.parse import urlparse, urlunparse
-import subprocess
-import os
-import sys
 import json as _json
-import threading
+import os
 import queue
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import AsyncGenerator
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+import httpx
+
+from src.core.config import settings
+from src.core.logging import get_logger
 
 
 class MCPClient:
@@ -41,8 +45,8 @@ class MCPClient:
         except Exception:
             self._stdio_max_sessions = 8
 
-    def _build_headers(self, auth: Dict[str, Any] | None) -> Dict[str, str]:
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
+    def _build_headers(self, auth: dict[str, Any] | None) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         if not auth:
             return headers
         token = auth.get("token") if isinstance(auth, dict) else None
@@ -85,7 +89,7 @@ class MCPClient:
             return "tls_error"
         return "unknown_error"
 
-    def test_connection(self, *, base_url: str, auth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def test_connection(self, *, base_url: str, auth: dict[str, Any] | None = None) -> dict[str, Any]:
         """嘗試對 MCP base_url 進行最小連線測試。
 
         策略：
@@ -102,7 +106,7 @@ class MCPClient:
                     status = he.response.status_code if he.response else None
                     reason = self._classify_error(he, status)
                     return {"ok": False, "error": reason, "status": status}
-                except Exception as e:
+                except Exception:
                     # 改以 GET 嘗試 well-known
                     try:
                         r = client.get(base_url.rstrip("/") + "/.well-known", headers=headers, follow_redirects=True)
@@ -115,7 +119,7 @@ class MCPClient:
             reason = self._classify_error(e)
             return {"ok": False, "error": reason, "status": None}
 
-    def list_tools(self, *, base_url: str, auth: Dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def list_tools(self, *, base_url: str, auth: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         headers = self._build_headers(auth)
         paths = [
             "/tools",
@@ -137,7 +141,7 @@ class MCPClient:
                     continue
         return []
 
-    def discover_tools(self, *, base_url: str, auth: Dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def discover_tools(self, *, base_url: str, auth: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """盡力探索遠端 MCP 的工具描述。
 
         優先順序：
@@ -163,7 +167,7 @@ class MCPClient:
                 continue
         return []
 
-    def discover_tools_stdio(self, *, command: str, args: list[str] | None = None, env: Dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def discover_tools_stdio(self, *, command: str, args: list[str] | None = None, env: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """以 stdio 啟動正式 MCP server，完成 initialize 後嘗試 tools/list。"""
         if not command or not isinstance(command, str):
             return []
@@ -174,7 +178,7 @@ class MCPClient:
         env_map = os.environ.copy()
         if isinstance(env, dict):
             for k, v in env.items():
-                if isinstance(k, str) and isinstance(v, (str, int, float)):
+                if isinstance(k, str) and isinstance(v, str | int | float):
                     env_map[k] = str(v)
         try:
             proc = subprocess.Popen(
@@ -283,7 +287,7 @@ class MCPClient:
             'tools': tools,
         }
 
-    def invoke(self, *, base_url: str, name: str, arguments: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def invoke(self, *, base_url: str, name: str, arguments: dict[str, Any] | None = None, auth: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = self._build_headers(auth)
         # 嘗試幾種可預期的端點
         candidates = [
@@ -296,7 +300,7 @@ class MCPClient:
         ]
         last_error: Exception | None = None
         with httpx.Client(timeout=self._timeout) as client:
-            for (method, url), body in zip(candidates, payloads):
+            for (method, url), body in zip(candidates, payloads, strict=False):
                 try:
                     if method == "POST":
                         r = client.post(url, headers=headers, json=body)
@@ -321,7 +325,7 @@ class MCPClient:
             reason = "unknown_error"
         return {"ok": False, "error": reason, "tool": name}
 
-    def rpc_call(self, *, base_url: str, method: str, params: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def rpc_call(self, *, base_url: str, method: str, params: dict[str, Any] | None = None, auth: dict[str, Any] | None = None) -> dict[str, Any]:
         """以 JSON-RPC 2.0 嘗試呼叫 MCP 服務（HTTP 傳輸）。
 
         端點猜測：/jsonrpc 或 /rpc；回傳統一結構 {ok, result|error}
@@ -353,15 +357,16 @@ class MCPClient:
         p = path if path.startswith('/') else ('/' + path)
         return urlunparse(new._replace(path=p))
 
-    async def rpc_call_ws(self, *, base_url: str, method: str, params: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    async def rpc_call_ws(self, *, base_url: str, method: str, params: dict[str, Any] | None = None, auth: dict[str, Any] | None = None) -> dict[str, Any]:
         """以 WebSocket JSON-RPC 2.0 呼叫單次方法。
 
         需求：伺服端支援 WS 並以 settings.MCP_WS_PATH 為端點；
         若環境缺少 websockets 套件或伺服器不可用，回傳 {ok: False, error: ws_not_available}。
         """
         try:
-            import websockets  # type: ignore
             import json as _json
+
+            import websockets  # type: ignore
         except Exception:
             return {"ok": False, "error": "ws_not_available"}
 
@@ -383,15 +388,16 @@ class MCPClient:
             self._log.warning("mcp.ws.rpc_failed", url=url, error=str(e))
             return {"ok": False, "error": self._classify_error(e)}
 
-    async def stream_rpc_call_ws(self, *, base_url: str, method: str, params: Dict[str, Any] | None = None, auth: Dict[str, Any] | None = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_rpc_call_ws(self, *, base_url: str, method: str, params: dict[str, Any] | None = None, auth: dict[str, Any] | None = None) -> AsyncGenerator[dict[str, Any], None]:
         """以 WebSocket JSON-RPC 2.0 串流模式收取多段輸出。
 
         回傳每段訊息的原始 JSON（已解析為 dict）。遇到包含 result 或 error 時結束。
         若不可用則直接 yield 一段 {ok: False, error: 'ws_not_available'} 後結束。
         """
         try:
-            import websockets  # type: ignore
             import json as _json
+
+            import websockets  # type: ignore
         except Exception:
             yield {"ok": False, "error": "ws_not_available"}
             return
@@ -411,7 +417,7 @@ class MCPClient:
         except Exception as e:
             yield {"ok": False, "error": self._classify_error(e)}
 
-    async def stream_rpc_call_stdio(self, *, command: str, args: Optional[list[str]] = None, env: Optional[Dict[str, Any]] = None, method: str, params: Optional[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_rpc_call_stdio(self, *, command: str, args: list[str] | None = None, env: dict[str, Any] | None = None, method: str, params: dict[str, Any] | None = None) -> AsyncGenerator[dict[str, Any], None]:
         """以持久 stdio 連線進行 JSON-RPC 串流呼叫。
 
         - 若尚無對應進程，會啟動並快取；之後重用。
@@ -465,7 +471,7 @@ class MCPClient:
         except Exception as e:
             yield {"ok": False, "error": f"stdio_stream_failed: {e}"}
 
-    def _stdio_key(self, command: str, args: list[str], env: Dict[str, Any]) -> str:
+    def _stdio_key(self, command: str, args: list[str], env: dict[str, Any]) -> str:
         try:
             env_items = sorted([(str(k), str(env[k])) for k in env]) if isinstance(env, dict) else []
         except Exception:
@@ -476,7 +482,8 @@ class MCPClient:
         if self._janitor_started:
             return
         self._janitor_started = True
-        import threading, time
+        import threading
+        import time
 
         def _run():
             try:
@@ -504,15 +511,15 @@ class MCPClient:
         t.start()
 
     # ===== STDIO JSON-RPC (local process) =====
-    def _write_rpc_stdio(self, stdin, obj: Dict[str, Any]) -> None:
+    def _write_rpc_stdio(self, stdin, obj: dict[str, Any]) -> None:
         try:
             data = (_json.dumps(obj, ensure_ascii=False) + "\n").encode('utf-8')
             stdin.write(data)
             stdin.flush()
-        except Exception as e:
-            raise RuntimeError(f"stdio_write_failed: {e}")
+        except Exception as error:
+            raise RuntimeError(f"stdio_write_failed: {error}") from error
 
-    def _read_rpc_stdio_timeout(self, stdout, timeout_sec: float | None = None) -> Dict[str, Any]:
+    def _read_rpc_stdio_timeout(self, stdout, timeout_sec: float | None = None) -> dict[str, Any]:
         q: queue.Queue = queue.Queue(maxsize=1)
 
         def _worker() -> None:
@@ -525,13 +532,13 @@ class MCPClient:
         t.start()
         try:
             item = q.get(timeout=timeout_sec or self._timeout)
-        except Exception:
-            raise RuntimeError('stdio_read_timeout')
+        except Exception as error:
+            raise RuntimeError('stdio_read_timeout') from error
         if isinstance(item, Exception):
             raise item
         return item
 
-    def _read_rpc_stdio(self, stdout) -> Dict[str, Any]:
+    def _read_rpc_stdio(self, stdout) -> dict[str, Any]:
         # 優先讀取行分隔 JSON（MCP Python SDK stdio）；若是 Content-Length 也相容。
         try:
             first_line = stdout.readline()
@@ -551,10 +558,10 @@ class MCPClient:
                 body = stdout.read(length) if length > 0 else b""
                 return _json.loads(body.decode('utf-8', errors='replace') or '{}')
             return _json.loads(first_text or '{}')
-        except Exception as e:
-            raise RuntimeError(f"stdio_read_failed: {e}")
+        except Exception as error:
+            raise RuntimeError(f"stdio_read_failed: {error}") from error
 
-    def invoke_stdio(self, *, command: str, args: list[str] | None = None, env: Dict[str, Any] | None = None, method: str = 'tools/call', params: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def invoke_stdio(self, *, command: str, args: list[str] | None = None, env: dict[str, Any] | None = None, method: str = 'tools/call', params: dict[str, Any] | None = None) -> dict[str, Any]:
         """以 subprocess 啟動本機 MCP Server 並透過 stdio 進行單次 JSON-RPC 呼叫。
 
         注意：此為最小可用版，僅做單次請求/回應；長連線/串流可於後續擴充。
@@ -568,7 +575,7 @@ class MCPClient:
         env_map = os.environ.copy()
         if isinstance(env, dict):
             for k, v in env.items():
-                if isinstance(k, str) and isinstance(v, (str, int, float)):
+                if isinstance(k, str) and isinstance(v, str | int | float):
                     env_map[k] = str(v)
         try:
             proc = subprocess.Popen(
@@ -612,13 +619,35 @@ class MCPClient:
 
             req = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
             self._write_rpc_stdio(proc.stdin, req)
-            # 讀取一個回應（帶逾時，避免永久阻塞）
-            resp = self._read_rpc_stdio_timeout(proc.stdout, timeout_sec=timeout_sec)
+            deadline = time.monotonic() + timeout_sec
+            last_non_terminal_response: dict[str, Any] | None = None
+            resp: dict[str, Any] | None = None
+            while time.monotonic() < deadline:
+                remaining_timeout = max(0.2, deadline - time.monotonic())
+                current_response = self._read_rpc_stdio_timeout(proc.stdout, timeout_sec=remaining_timeout)
+                if not isinstance(current_response, dict):
+                    continue
+                response_id = current_response.get('id')
+                if response_id not in (None, 1, '1'):
+                    continue
+                if 'result' in current_response or 'error' in current_response:
+                    resp = current_response
+                    break
+                last_non_terminal_response = current_response
             # 結束進程（避免殭屍）
             try:
                 proc.kill()
             except Exception:
                 pass
+            if resp is None:
+                if isinstance(last_non_terminal_response, dict):
+                    self._log.warning(
+                        'mcp.invoke_stdio.non_terminal_response',
+                        method=method,
+                        response_keys=list(last_non_terminal_response.keys()),
+                        response_preview=str(last_non_terminal_response)[:500],
+                    )
+                return {'ok': False, 'error': 'invalid_rpc_response'}
             if isinstance(resp, dict):
                 if 'result' in resp:
                     return {"ok": True, "result": resp.get('result')}
@@ -640,14 +669,14 @@ class _StdioSession:
     - 以 JSON-RPC id 映射到每次請求的 async 佇列（拉流）
     """
 
-    def __init__(self, *, command: str, args: list[str], env: Dict[str, Any]):
+    def __init__(self, *, command: str, args: list[str], env: dict[str, Any]):
         self._cmd = command
         self._args = args or []
         self._env = env or {}
-        self._proc: Optional[subprocess.Popen] = None
+        self._proc: subprocess.Popen | None = None
         self._stdin = None
         self._stdout = None
-        self._reader: Optional[threading.Thread] = None
+        self._reader: threading.Thread | None = None
         self._alive = False
         self._lock = threading.Lock()
         self._id_counter = 1
@@ -655,7 +684,7 @@ class _StdioSession:
         self._streams: dict[int, queue.Queue] = {}
         self._last_used: float = 0.0
         self._active_ids: list[int] = []
-        self._req_meta: dict[int, Dict[str, Any]] = {}
+        self._req_meta: dict[int, dict[str, Any]] = {}
 
     @property
     def alive(self) -> bool:
@@ -684,7 +713,7 @@ class _StdioSession:
             return
         env_map = os.environ.copy()
         for k, v in (self._env or {}).items():
-            if isinstance(k, str) and isinstance(v, (str, int, float)):
+            if isinstance(k, str) and isinstance(v, str | int | float):
                 env_map[k] = str(v)
         self._proc = subprocess.Popen(
             [self._cmd] + self._args,
@@ -796,7 +825,7 @@ class _StdioSession:
         finally:
             self._alive = False
 
-    def _read_frame(self) -> Optional[Dict[str, Any]]:
+    def _read_frame(self) -> dict[str, Any] | None:
         # 優先讀取行分隔 JSON；若收到 Content-Length 也相容處理。
         assert self._stdout is not None
         try:
@@ -820,14 +849,14 @@ class _StdioSession:
         except Exception:
             return {"ok": False, "error": "invalid_json"}
 
-    def _send(self, obj: Dict[str, Any]) -> None:
+    def _send(self, obj: dict[str, Any]) -> None:
         assert self._stdin is not None
         data = (_json.dumps(obj, ensure_ascii=False) + "\n").encode('utf-8')
         self._stdin.write(data)
         self._stdin.flush()
         self.touch()
 
-    async def stream_request(self, *, method: str, params: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_request(self, *, method: str, params: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         # 建立請求 id 與對應佇列
         with self._lock:
             _id = self._id_counter
